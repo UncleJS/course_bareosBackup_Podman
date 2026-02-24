@@ -240,31 +240,37 @@ You do **not** need prior knowledge of Bareos, Podman, containers, or backup the
 By the end of this course, you will have built and understood every component of this architecture:
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        RHEL 10 Host                                 │
-│                                                                     │
-│  ┌─────────────────── Podman (rootless, user: bareos) ──────────┐   │
-│  │                                                              │   │
-│  │  ┌──────────────┐   ┌──────────────┐   ┌────────────────┐  │   │
-│  │  │   Bareos     │   │   Bareos     │   │   MariaDB      │  │   │
-│  │  │  Director    │◄──►  Storage     │   │   Catalog      │  │   │
-│  │  │  (port 9101) │   │  Daemon      │   │  (port 3306)   │  │   │
-│  │  │              │   │  (port 9103) │   │                │  │   │
-│  │  └──────┬───────┘   └──────────────┘   └────────────────┘  │   │
-│  │         │                                                    │   │
-│  └─────────┼──────────────────────────────────────────────────-┘   │
-│            │  TCP 9102                                              │
-│            │                                                        │
-│  ┌─────────▼──────────────────────────────────────────────────┐    │
-│  │              Bareos File Daemon (host RPM)                  │    │
-│  │         Accesses: /data, Podman volumes, DB dumps           │    │
-│  └────────────────────────────────────────────────────────────┘    │
-│                                                                     │
-│  ┌─────────────────────── Podman Workloads ───────────────────┐    │
-│  │  web-app container    │  mariadb container  │  other app   │    │
-│  │  (named volume: app-data)  (volume: db-data)               │    │
-│  └────────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                            RHEL 10 Host                                  │
+│                                                                          │
+│  ┌──────────────────── Podman (rootless, user: bareos) ───────────────┐  │
+│  │                                                                    │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐ │  │
+│  │  │   Bareos     │  │   Bareos     │  │   MariaDB                │ │  │
+│  │  │  Director    │◄─►  Storage     │  │   Catalog (port 3306)    │ │  │
+│  │  │  (port 9101) │  │  Daemon      │  │                          │ │  │
+│  │  │              │  │  (port 9103) │  └──────────────────────────┘ │  │
+│  │  └──────┬───────┘  └──────────────┘                               │  │
+│  │         │  ▲                        ┌──────────────────────────┐  │  │
+│  │         │  │ port 9101              │   Bareos WebUI           │  │  │
+│  │         │  └────────────────────────┤   (port 80→host:9100)    │  │  │
+│  │         │                           │   Browser interface      │  │  │
+│  │         │                           └──────────────────────────┘  │  │
+│  └─────────┼──────────────────────────────────────────────────────────┘  │
+│            │  TCP 9102                                                    │
+│            ▼                                                              │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │              Bareos File Daemon (host RPM)                        │    │
+│  │         Accesses: /data, Podman volumes, DB dumps                 │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  ┌───────────────────────── Podman Workloads ────────────────────────┐   │
+│  │  web-app container  │  mariadb container  │  other-app container  │   │
+│  │  (volume: app-data) │  (volume: db-data)  │  (volume: app2-data)  │   │
+│  └───────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+│  Your browser → http://localhost:9100 → WebUI → Director (port 9101)     │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 You will be able to:
@@ -272,7 +278,8 @@ You will be able to:
 - Back up Podman container volumes safely, with pre/post hooks
 - Dump MariaDB and PostgreSQL databases inside containers before backing them up
 - Monitor job outcomes and receive email alerts on failures
-- Perform a complete restore — including to a different path
+- **Use the Bareos WebUI** to monitor jobs, browse backup history, and run restores from a browser at `http://localhost:9100`
+- Perform a complete restore — including to a different path or client
 - Recover from a catastrophic failure (lost Director host)
 - Tune performance for large datasets
 - Troubleshoot any common Bareos issue using logs and debug tools
@@ -299,7 +306,7 @@ Before diving in, establish this vocabulary. These terms appear throughout the c
 | **Schedule** | A timed trigger that causes the Director to run Jobs automatically. |
 | **Retention** | How long Bareos keeps backup data before it is eligible for pruning/overwriting. |
 | **bconsole** | The Bareos command-line console — the primary operator interface to the Director. |
-| **Bareos WebUI** | A web-based graphical interface for Bareos (optional, covered briefly). |
+| **Bareos WebUI** | A web-based graphical interface for Bareos. Runs as a Podman container (port 9100). Used for job monitoring, restore operations, and pool/volume management. Deployed in Chapter 17. |
 | **Quadlet** | A systemd-native mechanism for managing Podman containers as systemd units via declarative `.container` files. |
 | **Rootless Podman** | Running Podman containers under a non-root user account. Containers cannot gain root privileges on the host. |
 | **SELinux** | Security-Enhanced Linux — mandatory access control built into RHEL. Always enforcing in this course. |
