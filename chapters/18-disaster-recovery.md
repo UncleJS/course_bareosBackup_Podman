@@ -599,13 +599,13 @@ dnf install -y \
 #    The --system flag creates a system account (no home dir by default,
 #    no aging). We explicitly set a home directory because rootless Podman
 #    needs one for its configuration and storage.
-useradd \
-  --uid 1001 \
+sudo useradd \
   --system \
+  --uid 1001 \
   --create-home \
   --home-dir /home/bareos \
   --shell /sbin/nologin \
-  --comment "Bareos Backup System" \
+  --comment "Bareos Backup Service Account" \
   bareos
 
 # 4. Verify the UID
@@ -1156,6 +1156,10 @@ A successful test restore confirms:
 
 When the Catalog is unavailable or corrupted, bootstrap files are your lifeline. The `bextract` and `bscan` utilities work directly with volume files, bypassing the Director entirely.
 
+> **Container context:** `bextract` and `bscan` are part of the `bareos-storage` container image. You run them via `podman exec bareos-storage bextract …`. All paths in these commands are **paths inside the container** — for example `/var/lib/bareos/storage` is the container's bind-mounted storage volume, and `/tmp/bextract-output` is a path inside the container's filesystem.
+>
+> Before running `bextract`, stop the Director to ensure no jobs are active, but **keep the `bareos-storage` container running** so you can exec into it. If you want to run `bextract` with the SD fully stopped (e.g., to avoid any file locking), start a one-shot container with the same volume mounts instead of `podman exec`.
+
 ### Method 1: bextract with a Bootstrap File
 
 ```bash
@@ -1300,6 +1304,10 @@ sudo -u bareos bash -c '
 ## 11. Testing Your DR Plan: The DR Drill Procedure
 
 A backup system you have never tested is not a backup system — it is a hope. You must perform DR drills regularly. Here is a structured drill procedure.
+
+> **Critical: Run DR drills on a spare/staging host, not on production.**
+>
+> The drill procedure below intentionally destroys the catalog database to simulate a failure. If run on your production backup server, you will interrupt active backup jobs and temporarily lose catalog access for all clients. Always provision a separate test host, copy the catalog dump and volume files there, and perform the drill in that isolated environment. Only the final "restore and verify" phase of the drill should touch real backup data (read-only from the backup volumes).
 
 ### Quarterly DR Drill Checklist
 

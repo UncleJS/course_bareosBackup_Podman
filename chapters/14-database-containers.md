@@ -74,7 +74,7 @@
 - [Lab 14-1: Full MariaDB Container Backup](#lab-14-1-full-mariadb-container-backup)
 - [Lab 14-2: Point-in-Time Restore of MariaDB Container Database](#lab-14-2-point-in-time-restore-of-mariadb-container-database)
 - [Lab 14-3: Backup and Restore the Bareos Catalog](#lab-14-3-backup-and-restore-the-bareos-catalog)
-- [20. Summary](#20-summary)
+- [17. Summary](#17-summary)
 
 ## 1. Why Database Backup Is Fundamentally Different
 
@@ -780,6 +780,8 @@ When you install Bareos, the default configuration includes a pre-built `BackupC
 
 ## 11. make_catalog_backup.pl: The Built-in Bareos Catalog Script
 
+> **Bareos 23+ note:** Starting with Bareos 23, the `make_catalog_backup.pl` Perl script has been replaced by a shell script named `bareos-make-catalog-backup` (located at `/usr/lib/bareos/scripts/bareos-make-catalog-backup`). If you are running Bareos 23 or later, substitute `bareos-make-catalog-backup` wherever this section references `make_catalog_backup.pl`. The arguments and behavior are equivalent; only the script name changes. Bareos 21/22 deployments continue to use the `.pl` version.
+
 ### 11.1 What It Does
 
 `make_catalog_backup.pl` is a Perl script that ships with Bareos. It is designed to be called from a Bareos Job's `RunBeforeJob` directive. The script:
@@ -795,7 +797,7 @@ Inside the Bareos Director container:
 
 ```bash
 export XDG_RUNTIME_DIR=/run/user/1001
-podman exec bareos-dir find / -name "make_catalog_backup.pl" 2>/dev/null
+podman exec bareos-director find / -name "make_catalog_backup.pl" 2>/dev/null
 # Typically: /usr/lib/bareos/scripts/make_catalog_backup.pl
 ```
 
@@ -836,7 +838,7 @@ In our rootless Podman setup, `make_catalog_backup.pl` runs inside the Director 
 Ensure the containers are in the same Podman network:
 
 ```ini
-# In bareos-dir.container
+# In bareos-director.container
 Network=bareos.network
 
 # In bareos-db.container
@@ -1102,7 +1104,7 @@ We adapt `make_catalog_backup.pl`'s logic into a shell script that works with ou
 #!/bin/bash
 # /home/bareos/scripts/backup-catalog.sh
 # Dumps the Bareos catalog database to a file inside the Director container
-# This script runs INSIDE the bareos-dir container (via RunBeforeJob)
+# This script runs INSIDE the bareos-director container (via RunBeforeJob)
 
 set -euo pipefail
 
@@ -1419,7 +1421,7 @@ FS
 
 ```bash
 # Reload the Director configuration
-podman exec bareos-dir bconsole << 'EOF'
+podman exec bareos-director bconsole << 'EOF'
 reload
 run job=BackupMariaDB-Lab level=Full yes
 wait
@@ -1430,7 +1432,7 @@ EOF
 **Step 6: Verify in bconsole**
 
 ```bash
-podman exec -it bareos-dir bconsole
+podman exec -it bareos-director bconsole
 ```
 
 In `bconsole`:
@@ -1476,7 +1478,7 @@ podman exec bareos-db mariadb \
 **Step 2: Run the backup (captures the test data)**
 
 ```bash
-podman exec bareos-dir bconsole << 'EOF'
+podman exec bareos-director bconsole << 'EOF'
 run job=BackupMariaDB-Lab level=Full yes
 wait
 EOF
@@ -1501,7 +1503,7 @@ podman exec bareos-db mariadb \
 **Step 4: Restore the dump file via bconsole**
 
 ```bash
-podman exec -it bareos-dir bconsole
+podman exec -it bareos-director bconsole
 ```
 
 ```
@@ -1569,7 +1571,7 @@ podman exec bareos-db mariadb \
 **Step 1: Run the BackupCatalog job**
 
 ```bash
-podman exec bareos-dir bconsole << 'EOF'
+podman exec bareos-director bconsole << 'EOF'
 run job=BackupCatalog yes
 wait
 list jobs
@@ -1581,7 +1583,7 @@ Check that the job status is `T` (Terminated successfully).
 **Step 2: Identify the catalog dump volume**
 
 ```bash
-podman exec -it bareos-dir bconsole
+podman exec -it bareos-director bconsole
 ```
 
 ```
@@ -1610,19 +1612,19 @@ The bootstrap file tells Bareos which Volume and byte offset contains the catalo
 ```bash
 # CAUTION: This drops the entire Bareos catalog database.
 # Only do this in a lab environment.
-podman exec bareos-dir bconsole << 'EOF'
+podman exec bareos-director bconsole << 'EOF'
 drop catalog MyCatalog yes
 EOF
 
 # Stop the Director
-systemctl --user stop bareos-dir.service
+systemctl --user stop bareos-director.service
 ```
 
 **Step 5: Restore the catalog dump using bextract (catalog-less)**
 
 ```bash
 # Use bextract to restore without the catalog, using the bootstrap file
-podman exec bareos-sd \
+podman exec bareos-storage \
     bextract \
     -b /var/lib/bareos/BackupCatalog.bsr \
     -D File-1 \
@@ -1636,7 +1638,7 @@ ls /tmp/catalog-restore/var/lib/bareos/bareos-catalog.sql.gz
 
 ```bash
 # Recreate the Bareos database schema
-podman exec bareos-dir \
+podman exec bareos-director \
     /usr/lib/bareos/scripts/create_bareos_database
 
 # Restore the catalog data
@@ -1645,13 +1647,13 @@ zcat /tmp/catalog-restore/var/lib/bareos/bareos-catalog.sql.gz \
       mariadb -u bareos -p"${MARIADB_PASSWORD}" bareos
 
 # Restart the Director
-systemctl --user start bareos-dir.service
+systemctl --user start bareos-director.service
 ```
 
 **Step 7: Verify the catalog is intact**
 
 ```bash
-podman exec bareos-dir bconsole << 'EOF'
+podman exec bareos-director bconsole << 'EOF'
 list jobs
 list clients
 list volumes
@@ -1663,7 +1665,7 @@ EOF
 
 [↑ Back to Table of Contents](#table-of-contents)
 
-## 20. Summary
+## 17. Summary
 
 Database backup requires fundamentally different thinking from ordinary file backup. A database engine maintains complex internal state that can be captured correctly only by:
 

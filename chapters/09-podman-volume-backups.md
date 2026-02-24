@@ -62,7 +62,7 @@ When containers are updated, removed, and recreated, the data in named volumes p
 
 In rootless Podman, files inside a named volume are owned by the container's mapped UIDs, not the host user's UID. The Bareos File Daemon (running on the host) must be able to read those files. This requires understanding the UID mapping and either running the FD with appropriate privileges or pre-staging data.
 
-We cover this in depth in this chapter and Chapter 13.
+We cover this in depth in this chapter and [Chapter 13](./13-rootless-podman-specifics.md).
 
 ---
 
@@ -127,7 +127,7 @@ The Bareos File Daemon, running as root (via `bareos-fd` systemd service), needs
 sesearch --allow --source bareos_t --target container_file_t --class file --perm read
 ```
 
-If not permitted, add a custom SELinux module (covered in Chapter 13).
+If not permitted, add a custom SELinux module (covered in [Chapter 13](./13-rootless-podman-specifics.md)).
 
 ---
 
@@ -309,7 +309,7 @@ FileSet {
 Use this strategy for:
 - Stateless or low-write applications (static web content, config files)
 - Applications with their own internal consistency mechanisms (LevelDB, SQLite with WAL mode)
-- When a pre/post hook (Chapter 10) will quiesce the application before backup
+- When a pre/post hook ([Chapter 10](./10-podman-hooks.md)) will quiesce the application before backup
 
 ---
 
@@ -541,7 +541,7 @@ Web applications, log aggregators, and monitoring agents write continuously. For
 - Individual files are atomic (a complete write to a file is always consistent)
 - Application-level consistency doesn't require file-level consistency
 
-However, if the application maintains state across multiple files (like a database), live backup is problematic. For those cases, use pre/post hooks (Chapter 10).
+However, if the application maintains state across multiple files (like a database), live backup is problematic. For those cases, use pre/post hooks ([Chapter 10](./10-podman-hooks.md)).
 
 ### Applications That Use SQLite
 

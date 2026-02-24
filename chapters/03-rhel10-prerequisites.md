@@ -402,7 +402,7 @@ When a rootless Podman container runs as `root` inside the container (UID 0), th
 - Container root cannot perform privileged operations on the host
 - Different containers have different UID namespaces (security isolation)
 
-This is explored in depth in Chapter 13.
+This is explored in depth in [Chapter 13](./13-rootless-podman-specifics.md).
 
 ---
 

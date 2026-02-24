@@ -86,6 +86,10 @@
   - [What State a Killed Job Leaves Behind](#what-state-a-killed-job-leaves-behind)
   - [Cleanup Procedure](#cleanup-procedure)
   - [Preventing Data Loss After a Kill](#preventing-data-loss-after-a-kill)
+- [19b. Auto-Update Failures: Catalog Schema Mismatch](#19-auto-update-failures-catalog-schema-mismatch)
+  - [Symptoms](#symptoms)
+  - [Recovery Procedure](#recovery-procedure)
+  - [Prevention](#prevention)
 - [20. bconsole Diagnostic Commands Reference](#20-bconsole-diagnostic-commands-reference)
   - [status — Show Daemon Status](#status-show-daemon-status)
   - [list — Query the Catalog](#list-query-the-catalog)
@@ -1284,6 +1288,24 @@ When Bareos crashes or is forcefully killed mid-job, the catalog retains the job
 *run job=BackupClient1 level=Full yes
 ```
 
+### Check for Stale Lock Files
+
+In some cases the Director also leaves a runtime lock file in `/var/lib/bareos/` (inside the Director container). A stale lock file from a previous crash can prevent a new job from starting even after you cancel the catalog record:
+
+```bash
+# Check for stale .pid or lock files inside the Director container
+podman exec bareos-director ls -la /var/lib/bareos/*.pid 2>/dev/null
+podman exec bareos-director ls -la /var/lib/bareos/*.lck 2>/dev/null
+
+# If a stale .pid file exists for the Director process that is no longer running:
+podman exec bareos-director rm -f /var/lib/bareos/bareos-dir.9101.pid
+
+# Restart the Director container to allow it to re-create the pid file cleanly
+XDG_RUNTIME_DIR=/run/user/1001 systemctl --user restart bareos-director
+```
+
+> Only remove a `.pid` file if you have confirmed the listed process is no longer running. Removing a `.pid` for a live process will cause the Director to lose track of its own state.
+
 ---
 
 [↑ Back to Table of Contents](#table-of-contents)
@@ -1323,6 +1345,69 @@ When a job is killed (container killed, host rebooted, OOM killer) mid-execution
 ### Preventing Data Loss After a Kill
 
 Bareos uses a feature called "accurate backup" and its own internal volume verification to detect partial writes. The first backup after a kill should be a Full backup, not Incremental — the Incremental mechanism relies on a valid previous backup existing.
+
+---
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+## 19. Auto-Update Failures: Catalog Schema Mismatch
+
+`podman auto-update` can pull a new Bareos image that contains a **catalog schema migration** — a change to the MariaDB database structure. If this happens without manual intervention, the Director will refuse to start.
+
+### Symptoms
+
+```
+bareos-director: dird/dbdriver.cc Could not open Catalog "MyCatalog"
+bareos-director: dird/dbdriver.cc Database Version mismatch
+```
+
+Or in the journal:
+
+```bash
+journalctl --user -u bareos-director.service -n 30
+# Look for: "Could not open Catalog" / "Version mismatch" / "update_bareos_tables"
+```
+
+The Director container restarts repeatedly and enters the `failed` systemd state.
+
+### Recovery Procedure
+
+```bash
+# Step 1: Stop the Director (let the DB keep running)
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  systemctl --user stop bareos-director.service
+
+# Step 2: Confirm the error is a schema mismatch
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  journalctl --user -u bareos-director.service -n 50 --no-pager | grep -i "version\|mismatch\|catalog"
+
+# Step 3: Run the catalog migration script
+# This updates the DB schema to match the new Director image.
+# The bareos-db container must be running.
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman run --rm \
+    --network bareos-net \
+    --env-file /home/bareos/.config/bareos/bareos.env \
+    --env-file /home/bareos/.config/bareos/db.env \
+    docker.io/bareos/bareos-director:24 \
+    /usr/lib/bareos/scripts/update_bareos_tables
+
+# Step 4: Restart the Director
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  systemctl --user start bareos-director.service
+
+# Step 5: Verify
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman exec -it bareos-director bconsole -c /etc/bareos/bconsole.conf <<< "version"
+```
+
+If the migration script itself fails (e.g., due to a DB corruption), restore from the most recent `BackupCatalog` dump (see [Chapter 14](14-database-containers.md)) and then re-run the migration.
+
+### Prevention
+
+1. **Pin production images to digests** — use `Label=io.containers.autoupdate=registry` only in non-production environments (see [Chapter 12, Section 11](12-quadlet-systemd-integration.md#11-auto-update-with-podman-auto-update)).
+2. **Always take a catalog backup before upgrading** — ensure `BackupCatalog` ran successfully within 24 hours before any planned upgrade.
+3. **Read release notes** — check the Bareos changelog for mentions of "catalog migration" before pulling a new major version.
 
 ---
 

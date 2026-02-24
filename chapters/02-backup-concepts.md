@@ -251,7 +251,7 @@ In our course setup:
 - **Copy 2**: Bareos Volumes on local storage (the Bareos Storage Daemon)
 - **Copy 3**: A Bareos **Copy Job** that duplicates Volumes to a second pool (remote S3, NFS, or a second host)
 
-We cover Copy Jobs in Chapter 16 (Advanced Scheduling and Pools).
+We cover Copy Jobs in [Chapter 16](./16-advanced-schedules-pools.md) (Advanced Scheduling and Pools).
 
 ---
 
@@ -306,7 +306,7 @@ Sunday           → Full        → Weekly-Pool
 1st of month     → Full        → Monthly-Pool
 ```
 
-We implement this in full in Chapter 16.
+We implement this in full in [Chapter 16](./16-advanced-schedules-pools.md).
 
 ---
 
@@ -414,7 +414,7 @@ Some applications support a "hot backup" mode where they write a consistent snap
 - PostgreSQL has `pg_start_backup()` / `pg_stop_backup()`
 - MySQL InnoDB is generally safe to back up without stopping if you use `--single-transaction` with mysqldump
 
-We cover pre/post hooks deeply in Chapter 10 and database container dumps in Chapter 14.
+We cover pre/post hooks deeply in [Chapter 10](./10-podman-hooks.md) and database container dumps in [Chapter 14](./14-database-containers.md).
 
 ---
 
@@ -426,7 +426,7 @@ Backup data is often the most sensitive data in an organization — it contains 
 
 ### In-Transit Encryption
 
-All data moving between Bareos components (File Daemon → Storage Daemon, Director → File Daemon) should be encrypted with TLS. In Chapter 15, we configure mutual TLS with certificates for all daemon connections.
+All data moving between Bareos components (File Daemon → Storage Daemon, Director → File Daemon) should be encrypted with TLS. In [Chapter 15](./15-tls-security.md), we configure mutual TLS with certificates for all daemon connections.
 
 ### At-Rest Encryption
 
@@ -575,7 +575,7 @@ Before you touch a single config file, document your backup requirements. Use th
     [ ] Other: _____________
 ```
 
-Completing this worksheet before Chapter 6 will make your Bareos configuration purposeful rather than copied from examples.
+Completing this worksheet before [Chapter 6](./06-bareos-in-podman.md) will make your Bareos configuration purposeful rather than copied from examples.
 
 ---
 

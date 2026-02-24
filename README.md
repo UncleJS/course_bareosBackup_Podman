@@ -34,7 +34,7 @@ Running Bareos inside Podman containers — rather than as native RPM-installed 
 - Protecting files, Podman volumes, database containers, and container images
 - TLS encryption between all Bareos daemons
 - Advanced scheduling, pool management, and retention policies
-- Monitoring, alerting, and disaster recovery
+- Monitoring, alerting, and disaster recovery (including the Bareos WebUI browser interface, deployed in Chapter 17)
 - Performance tuning for large environments
 - Comprehensive troubleshooting with SELinux-aware diagnosis
 

@@ -310,7 +310,7 @@ podman run -d --pod bareos-pod --name bareos-dir bareos/bareos-director
 # Inside the pod, bareos-dir reaches bareos-db at 127.0.0.1:3306
 ```
 
-We use Pods for the Bareos stack in Chapter 6.
+We use Pods for the Bareos stack in [Chapter 6](./06-bareos-in-podman.md).
 
 ### Host Network Mode
 
@@ -399,7 +399,7 @@ podman run --userns=keep-id \
 # (determined from Bareos container image's internal bareos UID)
 ```
 
-We solve this definitively in Chapter 6 and revisit it in Chapter 13.
+We solve this definitively in [Chapter 6](./06-bareos-in-podman.md) and revisit it in [Chapter 13](./13-rootless-podman-specifics.md).
 
 ---
 
@@ -851,7 +851,7 @@ rm -rf /tmp/bareos-vol-test
 exit
 ```
 
-**Key takeaway:** The Bareos Storage Daemon container must be configured with `--userns=keep-id` OR the storage directory must be pre-owned by the mapped sub-UID. We handle this properly in Chapter 6.
+**Key takeaway:** The Bareos Storage Daemon container must be configured with `--userns=keep-id` OR the storage directory must be pre-owned by the mapped sub-UID. We handle this properly in [Chapter 6](./06-bareos-in-podman.md).
 
 ---
 

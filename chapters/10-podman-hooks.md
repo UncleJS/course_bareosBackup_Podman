@@ -274,6 +274,50 @@ The `PATH` inside the bareos-fd container may not include all the directories yo
 - Use `/usr/bin/podman` not just `podman`
 - Use `/usr/bin/mysqldump` not just `mysqldump`
 
+### Scripts must exist inside the bareos-fd container
+
+This is the single most common source of confusion for new Bareos-on-Podman deployments:
+
+> **The path in `Command = "/etc/bareos/scripts/..."` is a path *inside the bareos-fd container*, not on the host.**
+
+When bareos-fd forks a child process to run your hook script, it resolves that path in the container's own filesystem namespace. A script that exists only on the host at `/etc/bareos/scripts/backup-mariadb.sh` is completely invisible to the container unless you bind-mount that directory in.
+
+The recommended approach is to bind-mount the host's `/etc/bareos/scripts/` directory into `bareos-fd.container`:
+
+```ini
+# In /home/bareos/.config/containers/systemd/bareos-fd.container
+
+[Container]
+# ... other directives ...
+
+# Bind-mount hook scripts from host into the container (read-only).
+# Scripts created on the host at /etc/bareos/scripts/ are then
+# available inside the container at /etc/bareos/scripts/ — the
+# same path referenced in RunScript Command= directives.
+Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,Z
+```
+
+The `:ro` flag makes the mount read-only (scripts should not modify themselves), and `:Z` applies the correct SELinux label for container access.
+
+After adding this `Volume=` line, run:
+
+```bash
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user restart bareos-fd.service
+```
+
+You can then verify the script is visible inside the container:
+
+```bash
+podman exec bareos-fd ls -l /etc/bareos/scripts/
+```
+
+> **Note:** The dump output directories (e.g., `/var/tmp/bareos-dumps/`) referenced in the scripts also need to be bind-mounted into `bareos-fd.container` with **write** access (`:rw,Z`), otherwise the script cannot create dump files:
+>
+> ```ini
+> Volume=/var/tmp/bareos-dumps:/var/tmp/bareos-dumps:rw,Z
+> ```
+
 ### Script must be executable
 
 The hook script file must have the executable bit set (`chmod +x`) and must be readable and executable by UID 1001. If SELinux is enforcing (which it always is in this course), the file must also carry the correct SELinux type. We cover this in detail in Section 11.
@@ -569,7 +613,7 @@ This allows the dump up to 1 hour (3600 seconds) before killing it and returning
 
 ## 8. MariaDB Dump Hook Script
 
-Below is a complete, production-ready hook script for dumping a MariaDB container before backup. Save this file at `/etc/bareos/scripts/backup-mariadb.sh` on the client host.
+Below is a complete, production-ready hook script for dumping a MariaDB container before backup. Save this file at `/etc/bareos/scripts/backup-mariadb.sh` on the **host** (it will be accessible inside `bareos-fd` via the bind mount described in Section 3).
 
 ```bash
 #!/bin/bash
@@ -1718,7 +1762,7 @@ In this chapter you learned why backup hooks are not optional when backing up co
   2. Bareos backs up the dump file + raw volume data
   3. `ClientRunAfterJob` → `cleanup-dumps.sh` → removes old dump files
 
-**Next chapter**: Chapter 11 covers backing up and restoring the container images themselves — ensuring you can not only restore your data but also recreate the exact container environment that ran it.
+**Next chapter**: [Chapter 11](./11-podman-image-export.md) covers backing up and restoring the container images themselves — ensuring you can not only restore your data but also recreate the exact container environment that ran it.
 
 ---
 

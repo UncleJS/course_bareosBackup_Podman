@@ -118,7 +118,7 @@ In each of these scenarios, having a local archive of the exact image you were r
 
 Container images with mutable tags (`latest`, version numbers like `24`) can change over time. The image behind `docker.io/bareos/bareos-director:24` today is not guaranteed to be identical to the image behind that tag in six months. If your configuration or data was tuned to a specific version, restoring with a newer image may produce unexpected behavior.
 
-By archiving the actual image layers you were running, you preserve the exact software environment, byte-for-byte. Combined with a database dump and volume backup from Chapter 10, this gives you a fully reproducible system.
+By archiving the actual image layers you were running, you preserve the exact software environment, byte-for-byte. Combined with a database dump and volume backup from [Chapter 10](./10-podman-hooks.md), this gives you a fully reproducible system.
 
 ### The air-gapped environment problem
 
@@ -315,7 +315,7 @@ DIGEST=$(podman inspect --format '{{.Digest}}' docker.io/bareos/bareos-director:
 echo "${DIGEST}"  # a3b9c1d2e4f5 (first 12 chars after "sha256:")
 ```
 
-A filename like `bareos-director-24-20260224-a3b9c1d2e4f5.tar` tells you:
+A filename like `bareos-director-24-YYYYMMDD-a3b9c1d2e4f5.tar` tells you:
 - The image name and tag
 - When it was archived
 - The exact image version (via the digest prefix)
@@ -325,11 +325,11 @@ A filename like `bareos-director-24-20260224-a3b9c1d2e4f5.tar` tells you:
 For each archive, write a companion metadata file:
 
 ```bash
-cat > "bareos-director-24-20260224.meta" << EOF
+cat > "bareos-director-24-${DATE}.meta" << EOF
 image_name: docker.io/bareos/bareos-director:24
 image_tag: 24
 image_digest: sha256:a3b9c1d2e4f5...
-archive_date: 2026-02-24T14:00:00Z
+archive_date: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 archive_host: backup-server.example.com
 bareos_job: backup-container-images
 EOF
@@ -343,7 +343,7 @@ This metadata file is small (a few hundred bytes) and makes it trivial to identi
 
 ## 5. Integrating Image Exports into Bareos: RunScript + FileSet Approach
 
-The integration pattern for image backups is identical to the database dump pattern from Chapter 10:
+The integration pattern for image backups is identical to the database dump pattern from [Chapter 10](./10-podman-hooks.md):
 
 1. A `RunScript { RunsWhen = Before }` hook exports images to a staging directory
 2. The Bareos FileSet includes that staging directory
@@ -450,10 +450,16 @@ Calculate your required space:
 ```bash
 export XDG_RUNTIME_DIR=/run/user/1001
 # Sum of all image sizes:
+# Note: podman images --format "{{.Size}}" may output sizes with
+# "GB"/"MB" (decimal) or "GiB"/"MiB" (binary) suffixes depending on
+# the Podman version. This awk handles both conventions.
 podman images --format "{{.Size}}" | \
     awk '{
-        if ($1 ~ /GB$/) { sub(/GB$/, "", $1); total += $1 * 1024 }
-        else if ($1 ~ /MB$/) { sub(/MB$/, "", $1); total += $1 }
+        val = $1
+        if (val ~ /GiB$/) { sub(/GiB$/, "", val); total += val * 1024 }
+        else if (val ~ /MiB$/) { sub(/MiB$/, "", val); total += val }
+        else if (val ~ /GB$/)  { sub(/GB$/,  "", val); total += val * 1024 }
+        else if (val ~ /MB$/)  { sub(/MB$/,  "", val); total += val }
     } END { printf "Total: %.0f MB\n", total }'
 ```
 
@@ -694,10 +700,12 @@ Before starting the restore:
 ```bash
 # Create the bareos user on the new host
 sudo useradd \
+    --system \
     --uid 1001 \
     --create-home \
-    --shell /bin/bash \
-    --comment "Bareos backup system user" \
+    --home-dir /home/bareos \
+    --shell /sbin/nologin \
+    --comment "Bareos Backup Service Account" \
     bareos
 
 # Configure sub-UID and sub-GID ranges
@@ -760,7 +768,7 @@ Your Quadlet `.container`, `.volume`, and `.network` files should also be in the
 
 ```bash
 # Restore Quadlet configs
-sudo bconsole << 'EOF'
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole << 'EOF'
 restore
 5
 jobid=<last-config-backup-jobid>
@@ -780,7 +788,7 @@ Restore the database volumes (covered in Chapter 10's database backup approach):
 
 ```bash
 # Restore MariaDB volume data
-sudo bconsole << 'EOF'
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole << 'EOF'
 restore
 5
 jobid=<last-data-backup-jobid>
@@ -1198,7 +1206,7 @@ This lab configures the complete automated image export workflow using the `expo
 
 ### The complete `export-images.sh` script
 
-Save this at `/etc/bareos/scripts/export-images.sh`:
+Save this at `/etc/bareos/scripts/export-images.sh` on the **host** (accessible inside `bareos-fd` via the `Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,Z` bind mount in `bareos-fd.container` — see [Chapter 10, Section 3](10-podman-hooks.md#3-hook-execution-context)):
 
 ```bash
 #!/bin/bash
@@ -1573,11 +1581,13 @@ rpm -q podman
 # podman-5.x.x-x.el10.x86_64
 
 # Create the bareos user with correct UID and sub-UID ranges
-useradd \
+sudo useradd \
+    --system \
     --uid 1001 \
     --create-home \
-    --shell /bin/bash \
-    --comment "Bareos backup system user" \
+    --home-dir /home/bareos \
+    --shell /sbin/nologin \
+    --comment "Bareos Backup Service Account" \
     bareos
 
 echo "bareos:100000:65536" >> /etc/subuid

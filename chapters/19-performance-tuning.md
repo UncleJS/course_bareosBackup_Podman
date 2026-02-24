@@ -1210,9 +1210,15 @@ cat > /home/bareos/.config/bareos/mysql-conf.d/bareos-tuning.cnf << 'EOF'
 # If the relevant index pages are not in cache, it reads from disk (slow).
 # A larger buffer pool means fewer disk reads.
 #
-# Rule of thumb: set to 50–70% of the RAM available to the MariaDB container.
-# With a 2 GB container limit, 1 GB is appropriate.
-# For large catalogs (10M+ files), allocate 4–8 GB.
+# Sizing rule: set to 70–80% of the RAM available to the MariaDB container.
+# With a 2 GB container memory limit → 1.4–1.6 GB is appropriate.
+# With a 4 GB container memory limit → 2.8–3.2 GB is appropriate.
+# For large catalogs (10M+ files), plan for 4–8 GB and set the container
+# memory limit accordingly (add 20% headroom above the buffer pool size
+# for connection threads, sort buffers, and the OS page cache).
+#
+# The example below uses 1G, which suits a 1.5–2 GB container limit.
+# Adjust to match your actual container --memory= setting.
 innodb_buffer_pool_size = 1G
 
 # For buffer pools larger than 1 GB, split into multiple instances
@@ -1361,6 +1367,8 @@ sudo -u bareos bash -c '
 
 For large backups running over a LAN, TCP buffer sizes significantly impact throughput. The Linux kernel's default TCP buffer sizes were designed for internet latency, not local LAN transfers.
 
+> **Host-level changes required:** `sysctl` settings affect the kernel of the host machine, not individual containers. These commands **must be run on the host** with `sudo` (or as `root`). They cannot be applied from inside a Podman container — rootless containers do not have the `CAP_SYS_ADMIN` capability needed to modify kernel parameters. Apply these settings on the host that runs the Bareos Storage Daemon container, as the SD container inherits the host's TCP stack.
+
 ### Checking Current TCP Buffer Sizes
 
 ```bash
@@ -1380,7 +1388,8 @@ cat /proc/sys/net/ipv4/tcp_rmem
 
 ```bash
 # Create a sysctl configuration file for Bareos-specific network tuning
-cat > /etc/sysctl.d/80-bareos-network.conf << 'EOF'
+# Run this on the HOST as root/sudo — not inside a container
+sudo bash -c "cat > /etc/sysctl.d/80-bareos-network.conf << 'EOF'
 # TCP buffer tuning for large backup data transfers
 # These settings increase the maximum TCP window size, allowing the
 # kernel to buffer more data in flight and sustaining higher throughput
@@ -1412,9 +1421,10 @@ net.ipv4.tcp_sack = 1
 # Enable TCP timestamps for better RTT estimation
 net.ipv4.tcp_timestamps = 1
 EOF
+"
 
-# Apply immediately without rebooting
-sysctl --load /etc/sysctl.d/80-bareos-network.conf
+# Apply immediately without rebooting (host sudo required)
+sudo sysctl --load /etc/sysctl.d/80-bareos-network.conf
 
 # Verify
 sysctl net.core.rmem_max

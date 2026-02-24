@@ -1016,15 +1016,19 @@ Raw job logs from Bareos contain valuable metrics. Whether you're building a cus
 
 ### Log Location
 
-Job logs are stored in the Bareos catalog and also written to the log file inside the container:
+> **Containerized deployment note:** In this course Bareos runs as Podman containers under systemd (Quadlet). The **primary** log source is the **systemd journal**, not log files on disk. Container stdout/stderr is captured by the journal automatically. The commands below reflect this: prefer `journalctl` on the host over reading files inside the container.
+
+Job logs are stored in the Bareos catalog and also emitted on the Director's stdout (captured by the systemd journal):
 
 ```bash
-# Read the Director log
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
-  tail -100 /var/log/bareos/bareos.log
+# Primary: read Director logs via systemd journal (preferred, from the host)
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  journalctl --user -u bareos-director.service --since "1 hour ago"
 
-# Or via systemd journal (from the host)
-XDG_RUNTIME_DIR=/run/user/1001 journalctl --user -u bareos-dir --since "1 hour ago"
+# Alternative: read the log file inside the Director container
+# (only if Bareos is also configured to write to a file via the Messages resource)
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman exec bareos-director tail -100 /var/log/bareos/bareos.log
 ```
 
 ### Key Metrics to Extract
@@ -1094,6 +1098,8 @@ fi
 ## 8. Prometheus Integration: bareos-exporter
 
 The `bareos-exporter` project exposes Bareos job and volume metrics as a Prometheus `/metrics` endpoint. This integrates Bareos into any existing Prometheus-based monitoring stack (Prometheus + Alertmanager + Grafana).
+
+> **Community project:** `bareos-exporter` is a **community-maintained** project, not an official Bareos GmbH product. There are several independent implementations (the one used in this chapter is `docker.io/barcus/bareos-exporter`, referencing the upstream project at <https://github.com/vierbergenlars/bareos_exporter>). Before deploying in production, review the project's activity, license, and open issues. Pin to a specific image tag rather than `latest` to avoid unexpected behaviour changes from upstream updates.
 
 ### What bareos-exporter Exposes
 

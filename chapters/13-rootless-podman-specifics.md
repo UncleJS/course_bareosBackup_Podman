@@ -437,11 +437,11 @@ By default, Podman grants rootless containers a set of "safe" capabilities defin
 ```bash
 # Check the capabilities of the Bareos Director container
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman inspect bareos-dir --format '{{.HostConfig.CapAdd}} / {{.HostConfig.CapDrop}}'
+  podman inspect bareos-director --format '{{.HostConfig.CapAdd}} / {{.HostConfig.CapDrop}}'
 
 # Or from inside the container
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman exec bareos-dir capsh --print
+  podman exec bareos-director capsh --print
 ```
 
 ### Dropping Capabilities for Hardening
@@ -449,7 +449,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 Bareos daemons do not need many capabilities. For production hardening, explicitly drop all capabilities and add back only what is needed:
 
 ```ini
-# In bareos-dir.container [Container] section:
+# In bareos-director.container [Container] section:
 # Drop everything, then add only what Bareos needs.
 DropCapability=all
 AddCapability=CAP_SETUID
@@ -519,7 +519,7 @@ Packets between containers on the same rootless network flow through pasta, not 
 ```bash
 # Verify containers can reach each other by name
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman exec bareos-dir ping -c 3 bareos-db
+  podman exec bareos-director ping -c 3 bareos-db
 
 # Check the IP addresses assigned on bareos-net
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
@@ -662,7 +662,7 @@ export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus
 
 # Now run commands as bareos
 sudo -u bareos -E podman ps
-sudo -u bareos -E systemctl --user status bareos-dir.service
+sudo -u bareos -E systemctl --user status bareos-director.service
 ```
 
 ---
@@ -738,7 +738,7 @@ In production, the `bareos` user is a system account with no password and no int
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman ps
 
 # Run a systemctl --user command as bareos
-sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user status bareos-dir.service
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user status bareos-director.service
 
 # Run an interactive shell as bareos (for debugging sessions)
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus bash
@@ -781,7 +781,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman ps --filter label=app=bareo
 
 # Restart the entire Bareos stack
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  systemctl --user restart bareos-db.service bareos-dir.service bareos-sd.service bareos-fd.service
+  systemctl --user restart bareos-db.service bareos-director.service bareos-storage.service bareos-fd.service
 
 # Show disk usage of all bareos volumes
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
@@ -790,11 +790,11 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 
 # Enter the Director container for interactive debugging
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman exec -it bareos-dir bash
+  podman exec -it bareos-director bash
 
 # Run bconsole
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman exec -it bareos-dir bconsole
+  podman exec -it bareos-director bconsole
 ```
 
 ---
@@ -829,11 +829,11 @@ For rootless containers on RHEL 10:
 ```bash
 # See the SELinux context of processes inside a running container
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman exec bareos-dir ps -efZ | head -10
+  podman exec bareos-director ps -efZ | head -10
 # Output includes: system_u:system_r:container_t:s0:c234,c567
 
 # See the SELinux context from the host
-ps -efZ | grep bareos-dir | head -5
+ps -efZ | grep bareos-director | head -5
 ```
 
 ### Volume Labeling: :z vs. :Z
@@ -927,6 +927,8 @@ For rootless containers, the overlay implementation matters because unprivileged
 ### fuse-overlayfs: The Userspace Fallback
 
 `fuse-overlayfs` implements the overlay filesystem in user space using FUSE (Filesystem in Userspace). It does not require special kernel privileges — any user can use it. This was the default for rootless containers on older kernels (pre-5.12).
+
+> **RHEL 10 note:** On RHEL 10 (kernel 6.x), `fuse-overlayfs` is a fallback only. RHEL 10's kernel fully supports native unprivileged overlayfs, so `fuse-overlayfs` is not needed or used under normal circumstances. You may encounter references to `fuse-overlayfs` in older documentation, RHEL 8/9 guides, or when running rootless containers on a non-RHEL kernel below 5.11. For RHEL 10, expect and verify `overlay` (native), not `fuse-overlayfs`.
 
 Characteristics:
 - **Universally available**: Works on any kernel that supports FUSE.
@@ -1247,7 +1249,7 @@ cat /tmp/q-out/*.service 2>/dev/null || echo "No output files generated"
 
 ### Pitfall 7: Container Cannot Reach Other Containers by Name
 
-**Symptom:** `bareos-dir` cannot connect to `bareos-db` using the hostname `bareos-db`.
+**Symptom:** `bareos-director` cannot connect to `bareos-db` using the hostname `bareos-db`.
 
 **Root Cause:** Either the containers are not on the same Quadlet network, or the network's `DNS=true` is missing.
 
@@ -1259,12 +1261,12 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman network inspect bareos-net
 
 # If a container is missing, check its Network= directive
-grep Network /home/bareos/.config/containers/systemd/bareos-dir.container
+grep Network /home/bareos/.config/containers/systemd/bareos-director.container
 # Expected: Network=bareos-net.network
 
 # Test DNS resolution from inside the Director container
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman exec bareos-dir nslookup bareos-db
+  podman exec bareos-director nslookup bareos-db
 ```
 
 ### Pitfall 8: Missing XDG_RUNTIME_DIR in Scripts
@@ -1293,7 +1295,7 @@ This lab gives you hands-on experience reading and interpreting UID maps for the
 
 ```bash
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  systemctl --user start bareos-db.service bareos-dir.service
+  systemctl --user start bareos-db.service bareos-director.service
 ```
 
 ### Step 2: Inspect UID mapping for the database container
@@ -1365,19 +1367,19 @@ ps aux | grep mysqld | grep -v grep
 ```bash
 # Get Director container PID
 DIR_PID=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman inspect bareos-dir --format '{{.State.Pid}}')
+  podman inspect bareos-director --format '{{.State.Pid}}')
 
 # Read the map
 cat /proc/$DIR_PID/uid_map
 
 # Check the UID of the Director process inside the container
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman exec bareos-dir id
+  podman exec bareos-director id
 # If the Director runs as UID 0 (root inside container),
 # on the host it maps to UID 1001 (bareos)
 
 # Verify: on the host the Director process should show as UID 1001
-ps aux | grep bareos-dir | grep -v grep
+ps aux | grep bareos-director | grep -v grep
 ```
 
 ---
@@ -1486,7 +1488,7 @@ This lab confirms that the Bareos containers start automatically at boot (via li
 ```bash
 # Check that all bareos services are currently running
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  systemctl --user status bareos-db.service bareos-dir.service --no-pager
+  systemctl --user status bareos-db.service bareos-director.service --no-pager
 
 # Confirm lingering is enabled
 loginctl show-user bareos | grep Linger
@@ -1494,7 +1496,7 @@ loginctl show-user bareos | grep Linger
 
 # Confirm services are enabled (not just started)
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  systemctl --user is-enabled bareos-db.service bareos-dir.service bareos-sd.service bareos-fd.service
+  systemctl --user is-enabled bareos-db.service bareos-director.service bareos-storage.service bareos-fd.service
 # Expected: enabled (for all four)
 ```
 
@@ -1539,7 +1541,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 
 # Verify all services are active
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  systemctl --user status bareos-db.service bareos-dir.service bareos-sd.service bareos-fd.service
+  systemctl --user status bareos-db.service bareos-director.service bareos-storage.service bareos-fd.service
 ```
 
 ### Step 4: Test what happens without lingering (informational — do not do this in production)
@@ -1560,7 +1562,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 # Re-enable lingering
 # sudo loginctl enable-linger bareos
 # sudo systemctl start user@1001.service
-# sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start bareos-db.service bareos-dir.service
+# sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start bareos-db.service bareos-director.service
 ```
 
 ### Step 5: Add a boot verification script
@@ -1590,7 +1592,7 @@ sudo -u bareos XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR \
 
 echo ""
 echo "--- Service Status Summary ---"
-for svc in bareos-db bareos-dir bareos-sd bareos-fd; do
+for svc in bareos-db bareos-director bareos-storage bareos-fd; do
   status=$(sudo -u bareos XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR \
     systemctl --user is-active ${svc}.service 2>/dev/null)
   echo "  $svc: $status"

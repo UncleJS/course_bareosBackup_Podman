@@ -32,8 +32,8 @@
   - [File: `bareos-store.volume`](#file-bareos-storevolume)
   - [File: `bareos-net.network`](#file-bareos-netnetwork)
   - [File: `bareos-db.container`](#file-bareos-dbcontainer)
-  - [File: `bareos-dir.container`](#file-bareos-dircontainer)
-  - [File: `bareos-sd.container`](#file-bareos-sdcontainer)
+   - [File: `bareos-director.container`](#file-bareos-directorcontainer)
+  - [File: `bareos-storage.container`](#file-bareos-storagecontainer)
   - [File: `bareos-fd.container`](#file-bareos-fdcontainer)
 - [7. Volume Management: Named Volumes and Pre-Creation](#7-volume-management-named-volumes-and-pre-creation)
   - [Named Volumes vs. Bind Mounts](#named-volumes-vs-bind-mounts)
@@ -303,8 +303,8 @@ You can inspect the generated output:
 # After daemon-reload, look at generated units
 ls /run/user/1001/systemd/generator/
 
-# View the generated service file for bareos-dir.container
-cat /run/user/1001/systemd/generator/bareos-dir.service
+# View the generated service file for bareos-director.container
+cat /run/user/1001/systemd/generator/bareos-director.service
 ```
 
 The generated file will look like a normal `.service` unit with `ExecStart=` containing a long `podman run` command. This is valuable for debugging — you can see exactly what command Quadlet constructed.
@@ -322,10 +322,10 @@ This is equivalent to telling systemd: "Re-run all generators and reload my unit
 After a `daemon-reload`, you enable and start units as normal:
 
 ```bash
-sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user enable --now bareos-dir.service
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user enable --now bareos-director.service
 ```
 
-> **Important:** The `.service` suffix in `systemctl` commands refers to the *generated* service, not the `.container` file. The generated service name always matches the Quadlet file name with the extension replaced by `.service`. So `bareos-dir.container` → `bareos-dir.service`.
+> **Important:** The `.service` suffix in `systemctl` commands refers to the *generated* service, not the `.container` file. The generated service name always matches the Quadlet file name with the extension replaced by `.service`. So `bareos-director.container` → `bareos-director.service`.
 
 ### Verifying Generator Output
 
@@ -337,7 +337,7 @@ QUADLET_UNIT_DIRS=/home/bareos/.config/containers/systemd \
   /tmp/quadlet-out /tmp/quadlet-out /tmp/quadlet-out
 
 ls /tmp/quadlet-out/
-cat /tmp/quadlet-out/bareos-dir.service
+cat /tmp/quadlet-out/bareos-director.service
 ```
 
 ---
@@ -383,6 +383,15 @@ After=bareos-db.service
 
 `BindsTo=unitA` is even stronger than `Requires=`. If `unitA` stops *for any reason* (even a clean stop), this unit is also stopped immediately. This is appropriate for containers that are tightly coupled — a Bareos Director that cannot function without its database should use `BindsTo=` to ensure it is torn down when the database goes away.
 
+> **Important:** `BindsTo=` defines a *teardown* relationship, not a *start ordering* relationship. It does **not** guarantee that `unitA` starts before this unit. Always pair `BindsTo=` with a corresponding `After=` on the same unit to enforce startup ordering:
+>
+> ```ini
+> BindsTo=bareos-db.service
+> After=bareos-db.service   # ← required for correct start order
+> ```
+>
+> Without `After=`, systemd may attempt to start both units simultaneously, causing the Director to fail on first connect because the database is not yet ready.
+
 ### Bareos Dependency Graph
 
 For the Bareos stack:
@@ -391,20 +400,20 @@ For the Bareos stack:
 bareos-db-volume.service   ─┐
 bareos-store-volume.service ─┼─ Wants → bareos-db.service
 bareos-net-network.service  ─┘       ↓ (Requires + After)
-                                bareos-dir.service
+                                bareos-director.service
                                        ↓ (Wants + After)
-                               bareos-sd.service
+                               bareos-storage.service
                                bareos-fd.service
 ```
 
-In practice, the `[Unit]` section of `bareos-dir.container` should look like:
+In practice, the `[Unit]` section of `bareos-director.container` should look like:
 
 ```ini
 [Unit]
 Description=Bareos Director
 Requires=bareos-db.service bareos-net-network.service
 After=bareos-db.service bareos-net-network.service
-Wants=bareos-sd.service
+Wants=bareos-storage.service
 ```
 
 ### Waiting for Container Health
@@ -605,10 +614,10 @@ TimeoutStartSec=120
 WantedBy=default.target
 ```
 
-### File: `bareos-dir.container`
+### File: `bareos-director.container`
 
 ```ini
-# /home/bareos/.config/containers/systemd/bareos-dir.container
+# /home/bareos/.config/containers/systemd/bareos-director.container
 #
 # The Bareos Director is the central controller of the backup system.
 # It reads the backup configuration (jobs, schedules, file sets),
@@ -626,7 +635,7 @@ Requires=bareos-net-network.service
 
 [Container]
 Image=docker.io/bareos/bareos-director:24
-ContainerName=bareos-dir
+ContainerName=bareos-director
 Network=bareos-net.network
 
 # Mount the Bareos configuration directory.
@@ -644,9 +653,15 @@ EnvironmentFile=/home/bareos/.config/bareos/db.env
 # We publish this port so external clients can connect.
 PublishPort=9101:9101
 
-# Health check: use the Bareos CLI to verify the Director is
-# responding to commands.
-HealthCmd=bconsole -c /etc/bareos/bconsole.conf <<< "version" | grep -q "Bareos"
+# Health check: verify the Director's listener port is accepting TCP
+# connections. A TCP check is more reliable than running bconsole
+# inside the container — bconsole requires a valid config, TLS
+# negotiation, and a working catalog connection to succeed, making it
+# prone to false negatives during startup. A successful TCP connect on
+# port 9101 confirms the Director process is alive and listening.
+# (bconsole authentication errors would still leave the port open, so
+# add bconsole-level monitoring separately if needed.)
+HealthCmd=/bin/sh -c "exec 3<>/dev/tcp/127.0.0.1/9101 && echo OK && exec 3>&-"
 HealthInterval=30s
 HealthStartPeriod=60s
 HealthTimeout=10s
@@ -667,10 +682,10 @@ TimeoutStartSec=180
 WantedBy=default.target
 ```
 
-### File: `bareos-sd.container`
+### File: `bareos-storage.container`
 
 ```ini
-# /home/bareos/.config/containers/systemd/bareos-sd.container
+# /home/bareos/.config/containers/systemd/bareos-storage.container
 #
 # The Bareos Storage Daemon receives backup data from File Daemons
 # (via the Director's coordination) and writes it to storage volumes.
@@ -687,7 +702,7 @@ Requires=bareos-net-network.service bareos-store-volume.service
 
 [Container]
 Image=docker.io/bareos/bareos-storage:24
-ContainerName=bareos-sd
+ContainerName=bareos-storage
 Network=bareos-net.network
 
 # Mount the persistent backup storage.
@@ -736,7 +751,7 @@ After=bareos-net-network.service
 Requires=bareos-net-network.service
 # The FD only needs to run when the Director wants to talk to it.
 # It does not need to start before the Director.
-Wants=bareos-dir.service
+Wants=bareos-director.service
 
 [Container]
 Image=docker.io/bareos/bareos-client:24
@@ -748,10 +763,25 @@ Network=bareos-net.network
 Volume=/home/bareos:/backup/bareos-home:ro,Z
 Volume=/etc:/backup/etc:ro,Z
 
+# Mount hook scripts from host into the container (read-only).
+# RunScript Command= paths are resolved inside the container, so scripts
+# created at /etc/bareos/scripts/ on the host must be bind-mounted in.
+# See Chapter 10, Section 3 for the full explanation.
+Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,Z
+
+# Mount the dump output directory with write access so hook scripts
+# can create dump files that Bareos then reads for backup.
+Volume=/var/tmp/bareos-dumps:/var/tmp/bareos-dumps:rw,Z
+
 # Mount the FD configuration.
 Volume=/home/bareos/bareos-config/filedaemon:/etc/bareos:Z
 
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
+
+# Mount the Podman socket so hook scripts can issue podman exec / pause / stop
+# commands against the host container runtime (see Chapter 10, Section 3).
+Volume=/run/user/1001/podman/podman.sock:/run/user/1001/podman/podman.sock:Z
+Environment=CONTAINER_HOST=unix:///run/user/1001/podman/podman.sock
 
 # The FD listens on 9102 for Director connections.
 PublishPort=9102:9102
@@ -852,8 +882,8 @@ For the Bareos stack, this means:
 | Container | DNS hostname | Port |
 |---|---|---|
 | `bareos-db` | `bareos-db` | 3306 |
-| `bareos-dir` | `bareos-dir` | 9101 |
-| `bareos-sd` | `bareos-sd` | 9103 |
+| `bareos-director` | `bareos-director` | 9101 |
+| `bareos-storage` | `bareos-storage` | 9103 |
 | `bareos-fd` | `bareos-fd` | 9102 |
 
 In the Director's configuration file (`bareos-dir.conf`), you would write:
@@ -904,7 +934,7 @@ Multiple `EnvironmentFile=` lines are allowed. Variables defined later override 
 # Owner: bareos:bareos
 #
 # Environment variables for the MariaDB container.
-# These are read by both bareos-db.container and bareos-dir.container.
+# These are read by both bareos-db.container and bareos-director.container.
 
 # Root password for the MariaDB instance.
 # Change this to a strong random value in production.
@@ -932,7 +962,7 @@ MARIADB_HOST=%
 # Owner: bareos:bareos
 #
 # Bareos-specific environment variables.
-# Referenced by bareos-dir.container, bareos-sd.container, bareos-fd.container
+# Referenced by bareos-director.container, bareos-storage.container, bareos-fd.container
 
 # Password that the Director uses to authenticate with the Storage Daemon.
 BAREOS_SD_PASSWORD=change-me-sd-password
@@ -1085,7 +1115,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman inspect \
   --format '{{.Digest}}'
 # Output: sha256:abc123...
 
-# Edit bareos-dir.container to pin to the digest
+# Edit bareos-director.container to pin to the digest
 # Image=docker.io/bareos/bareos-director@sha256:abc123...
 ```
 
@@ -1096,7 +1126,51 @@ To update a pinned container:
 2. Get the new image's digest.
 3. Update the `Image=` line in the `.container` file.
 4. Run `systemctl --user daemon-reload`.
-5. Run `systemctl --user restart bareos-dir.service`.
+5. Run `systemctl --user restart bareos-director.service`.
+
+### Catalog Schema Incompatibility After Auto-Update
+
+> **Warning: This is the most dangerous failure mode of automatic image updates in a Bareos deployment.**
+
+When Bareos releases a new major version (e.g., 23.x → 24.x), the PostgreSQL/MariaDB catalog schema sometimes changes. If `podman auto-update` pulls a new image that expects a newer catalog schema, the Director will refuse to start or will crash shortly after start with an error such as:
+
+```
+bareos-director: dird/dbdriver.cc:1234 Could not open Catalog "MyCatalog", DB Version mismatch
+```
+
+**How to protect yourself:**
+
+1. **Pin images to digests in production.** Use `Label=io.containers.autoupdate=registry` only in staging/development where schema migrations are expected. In production, pin to a digest as shown above.
+
+2. **Always review the Bareos release notes** before upgrading. Look for any mention of "catalog migration" or `update_bareos_tables`.
+
+3. **If auto-update fires unexpectedly and the Director fails to start**, the recovery procedure is:
+
+   ```bash
+   # Step 1: Stop the Director
+   sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+     systemctl --user stop bareos-director.service
+
+   # Step 2: Check the Director logs for the schema version error
+   sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+     journalctl --user -u bareos-director.service -n 50 --no-pager
+
+   # Step 3: Run the catalog migration script inside the Director container
+   # (this upgrades the DB schema to match the new image)
+   sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+     podman run --rm \
+       --network bareos-net \
+       --env-file /home/bareos/.config/bareos/bareos.env \
+       --env-file /home/bareos/.config/bareos/db.env \
+       docker.io/bareos/bareos-director:24 \
+       /usr/lib/bareos/scripts/update_bareos_tables
+
+   # Step 4: Restart the Director
+   sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+     systemctl --user start bareos-director.service
+   ```
+
+4. **Take a catalog backup before any upgrade.** The `BackupCatalog` job (see [Chapter 14](14-database-containers.md)) provides a dump you can restore from if migration fails. See [Chapter 20, Section 19](20-troubleshooting.md#19-auto-update-failures-catalog-schema-mismatch) for the full troubleshooting procedure.
 
 ---
 
@@ -1113,19 +1187,19 @@ When Quadlet-managed containers run under systemd, their stdout and stderr are a
 ```bash
 # Follow logs for the Director in real time
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  journalctl --user -u bareos-dir.service -f
+  journalctl --user -u bareos-director.service -f
 
 # Show the last 100 lines
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  journalctl --user -u bareos-dir.service -n 100
+  journalctl --user -u bareos-director.service -n 100
 
 # Show logs since a specific time
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  journalctl --user -u bareos-dir.service --since "2026-02-24 09:00:00"
+  journalctl --user -u bareos-director.service --since "2026-02-24 09:00:00"
 
 # Show logs with full metadata (useful for debugging)
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  journalctl --user -u bareos-dir.service -o verbose | head -50
+  journalctl --user -u bareos-director.service -o verbose | head -50
 
 # Show logs for ALL bareos units at once
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
@@ -1146,7 +1220,7 @@ The `-o` flag controls the output format:
 
 ```bash
 # Export logs in JSON for ingestion by a log aggregator
-journalctl --user -u bareos-dir.service -o json --no-pager > /tmp/bareos-dir.json
+journalctl --user -u bareos-director.service -o json --no-pager > /tmp/bareos-director.json
 ```
 
 ### Podman's Own Logging
@@ -1172,7 +1246,7 @@ When a unit fails to start, work through this checklist:
 
 ```bash
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  systemctl --user status bareos-dir.service
+  systemctl --user status bareos-director.service
 ```
 
 This shows: whether the unit is active/failed, the last few log lines, the ExecStart command, and any error codes.
@@ -1181,13 +1255,13 @@ This shows: whether the unit is active/failed, the last few log lines, the ExecS
 
 ```bash
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  journalctl --user -u bareos-dir.service -n 50 --no-pager
+  journalctl --user -u bareos-director.service -n 50 --no-pager
 ```
 
 **Step 3: Check the Quadlet-generated unit file**
 
 ```bash
-cat /run/user/1001/systemd/generator/bareos-dir.service
+cat /run/user/1001/systemd/generator/bareos-director.service
 ```
 
 Verify that the `podman run` command in `ExecStart=` has all expected flags (volumes, networks, env files). If a Volume= or Network= reference is wrong, Quadlet may silently drop it or generate an invalid command.
@@ -1270,7 +1344,7 @@ RestartSec=15s
 
 ### `StartLimitIntervalSec=` and `StartLimitBurst=`
 
-systemd's default start limit is 5 starts in 10 seconds. If a unit fails this many times in the interval, systemd stops trying to restart it and marks it as "failed" permanently. You need `systemctl --user reset-failed bareos-dir.service` to allow it to restart again.
+systemd's default start limit is 5 starts in 10 seconds. If a unit fails this many times in the interval, systemd stops trying to restart it and marks it as "failed" permanently. You need `systemctl --user reset-failed bareos-director.service` to allow it to restart again.
 
 For services that have long initialization periods (like database containers), relax this limit:
 
@@ -1301,7 +1375,8 @@ This lab guides you through creating all Quadlet files on a fresh RHEL 10 system
 
 ```bash
 # Create the bareos system user (if not already done)
-sudo useradd -r -u 1001 -m -d /home/bareos -s /bin/bash bareos
+sudo useradd --system --uid 1001 --create-home --home-dir /home/bareos \
+    --shell /sbin/nologin --comment "Bareos Backup Service Account" bareos
 
 # Enable lingering so containers survive logout
 sudo loginctl enable-linger bareos
@@ -1383,8 +1458,8 @@ ls /home/bareos/.config/containers/systemd/
 # bareos-store.volume
 # bareos-net.network
 # bareos-db.container
-# bareos-dir.container
-# bareos-sd.container
+# bareos-director.container
+# bareos-storage.container
 # bareos-fd.container
 ```
 
@@ -1439,11 +1514,11 @@ done
 
 # Start the Director (it will wait for DB health automatically via Notify=healthy)
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user enable --now \
-  bareos-dir.service
+  bareos-director.service
 
 # Start Storage Daemon and File Daemon
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user enable --now \
-  bareos-sd.service \
+  bareos-storage.service \
   bareos-fd.service
 ```
 
@@ -1452,7 +1527,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user enable --now \
 ```bash
 # Check all service statuses
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  systemctl --user status bareos-db.service bareos-dir.service bareos-sd.service bareos-fd.service
+  systemctl --user status bareos-db.service bareos-director.service bareos-storage.service bareos-fd.service
 
 # Check container health
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
@@ -1460,9 +1535,9 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 
 # Run bconsole to verify Director connectivity
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman exec -it bareos-dir bconsole -c /etc/bareos/bconsole.conf
+  podman exec -it bareos-director bconsole -c /etc/bareos/bconsole.conf
 # Type: version
-# Expected: Bareos bareos-dir 24.x.x ...
+# Expected: Bareos bareos-director 24.x.x ...
 ```
 
 ---
@@ -1478,7 +1553,7 @@ This lab demonstrates that `Restart=on-failure` works correctly and that systemd
 ```bash
 # Get the container ID before the simulated crash
 BEFORE_ID=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman inspect bareos-dir --format '{{.Id}}')
+  podman inspect bareos-director --format '{{.Id}}')
 echo "Container ID before crash: $BEFORE_ID"
 ```
 
@@ -1488,11 +1563,11 @@ echo "Container ID before crash: $BEFORE_ID"
 # Kill the main process inside the container with SIGKILL
 # SIGKILL cannot be caught, so the process exits with code 137 (128 + 9)
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman kill --signal SIGKILL bareos-dir
+  podman kill --signal SIGKILL bareos-director
 
 # Immediately watch the journal for restart events
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  journalctl --user -u bareos-dir.service -f &
+  journalctl --user -u bareos-director.service -f &
 JOURNAL_PID=$!
 ```
 
@@ -1505,7 +1580,7 @@ sleep 20
 
 # Check if the container is running again with a NEW container ID
 AFTER_ID=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman inspect bareos-dir --format '{{.Id}}' 2>/dev/null)
+  podman inspect bareos-director --format '{{.Id}}' 2>/dev/null)
 
 if [ "$BEFORE_ID" != "$AFTER_ID" ] && [ -n "$AFTER_ID" ]; then
   echo "SUCCESS: Container was restarted (new ID: $AFTER_ID)"
@@ -1520,11 +1595,11 @@ kill $JOURNAL_PID 2>/dev/null
 
 ```bash
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  systemctl --user status bareos-dir.service
+  systemctl --user status bareos-director.service
 
 # Check restart count
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  systemctl --user show bareos-dir.service --property=NRestarts
+  systemctl --user show bareos-director.service --property=NRestarts
 ```
 
 ---
@@ -1570,18 +1645,18 @@ echo "Current digest: $DIGEST"
 # With:    Image=<DIGEST from above>
 ```
 
-Edit `/home/bareos/.config/containers/systemd/bareos-dir.container` and update the `Image=` line. Then:
+Edit `/home/bareos/.config/containers/systemd/bareos-director.container` and update the `Image=` line. Then:
 
 ```bash
 # Reload daemon to pick up the change
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload
 
 # Restart the Director with the pinned image
-sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user restart bareos-dir.service
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user restart bareos-director.service
 
 # Run auto-update again — the pinned container should be skipped
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman auto-update --dry-run
-# Expected: bareos-dir shows "pinned" or is not listed
+# Expected: bareos-director shows "pinned" or is not listed
 ```
 
 ---

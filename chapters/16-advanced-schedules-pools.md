@@ -619,6 +619,8 @@ When Bareos needs a new volume and `Label Format` is set on the pool, it automat
 
 ### Available Template Variables
 
+> **Note:** `Label Format` uses Bareos's own built-in variable substitution — **not** shell `date` formatting or C `strftime` specifiers. Variables like `${Year}`, `${Month}`, and `${Day}` are evaluated by the Bareos Director at label-creation time. Do not use `%Y`, `%m`, or `%d` (those are `strftime` format codes and will appear literally in the volume name).
+
 | Variable | Description | Example |
 |---|---|---|
 | `${Year}` | 4-digit year | `2025` |
@@ -1105,6 +1107,8 @@ The result is a synthetic Full stored on a new volume that can be used as the ba
 - Reduce the gap between Full backups without the network overhead
 - Create a single self-contained Full from many incremental pieces
 - Consolidate storage: once the Virtual Full is created, you can safely prune the constituent Incrementals
+
+> **Storage caveat:** A Virtual Full **does not reduce physical storage** — it writes a new, complete set of file data to a new volume. The storage used is approximately equal to the combined size of the original Full plus all Incrementals that were merged. Physical storage savings only occur *after* you prune the original Full and its Incrementals. Until those volumes are pruned and recycled, total storage usage will temporarily increase. Plan for at least 2× the size of a typical Full backup as headroom when running Virtual Full jobs.
 
 ### How Virtual Full Works Internally
 

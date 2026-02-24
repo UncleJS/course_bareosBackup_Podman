@@ -273,6 +273,8 @@ By the end of this course, you will have built and understood every component of
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
+> **Note on the File Daemon in this course:** The diagram above shows the File Daemon as a "host RPM" installation — this is the typical production pattern for backing up external client machines. In this course, however, we run the File Daemon as a **Podman container** on the same host as the Director and Storage Daemon. This simplifies the lab setup and demonstrates how to back up a Podman host's own container volumes. When the course covers backing up remote hosts (Chapter 7 onwards), those clients would run the FD as an RPM install. Chapter 9 covers the Podman-specific FD configuration needed to access container volumes.
+
 You will be able to:
 - Run full, incremental, and differential backup jobs on a schedule
 - Back up Podman container volumes safely, with pre/post hooks

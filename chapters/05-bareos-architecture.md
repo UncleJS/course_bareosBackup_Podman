@@ -336,7 +336,7 @@ Without a recent catalog backup:
 - Volume recycle decisions are lost (Volumes may be incorrectly reused)
 - Job history is gone
 
-We configure this in Chapter 7.
+We configure this in [Chapter 7](./07-first-backup-job.md).
 
 ---
 
@@ -805,7 +805,7 @@ sudo dnf install bareos-filedaemon-mariabackup-python-plugin
 sudo dnf install bareos-storage-droplet
 ```
 
-Plugins are loaded via configuration in the daemon's config files. We use the Python FD plugin for database backups in Chapter 14.
+Plugins are loaded via configuration in the daemon's config files. We use the Python FD plugin for database backups in [Chapter 14](./14-database-containers.md).
 
 ---
 

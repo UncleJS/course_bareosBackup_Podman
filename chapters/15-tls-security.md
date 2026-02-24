@@ -106,7 +106,7 @@ Bareos uses a three-component architecture. Understanding which component commun
 ```
 ┌───────────────┐     DIR:9101     ┌───────────────────┐
 │   bconsole    │ ───────────────> │  Bareos Director  │
-│  (operator)   │                  │    (bareos-dir)   │
+│  (operator)   │                  │    (bareos-director)   │
 └───────────────┘                  └────────┬──────────┘
                                             │
                           DIR→SD: 9103      │      DIR→FD: 9102
@@ -114,7 +114,7 @@ Bareos uses a three-component architecture. Understanding which component commun
                                    │                   │
                           ┌────────▼──────┐   ┌────────▼──────┐
                           │ Storage Daemon│   │  File Daemon  │
-                          │ (bareos-sd)   │   │ (bareos-fd)   │
+                          │ (bareos-storage)   │   │ (bareos-fd)   │
                           └────────┬──────┘   └───────────────┘
                                    │
                           SD←FD: 9103 (data channel)
@@ -387,6 +387,8 @@ We will use the following file naming convention throughout this chapter:
 
 We use OpenSSL configuration files (`.cnf`) to embed Subject Alternative Names (SANs) in each certificate. SANs are required for modern TLS — browsers and many TLS libraries reject certificates without them. While Bareos itself checks the CN (`TLS Allowed CN`), using SANs is still best practice.
 
+Each component (Director, Storage Daemon, File Daemon, bconsole) gets its own extension file. In Section 8.3 these files are created at paths like `${TLS_DIR}/director.ext`, `${TLS_DIR}/storage.ext`, etc. — i.e., directly inside the `tls/` directory created in Section 8.1. They are referenced during the certificate signing commands in Sections 8.4–8.7 and can be deleted once all certificates have been signed.
+
 ---
 
 [↑ Back to Table of Contents](#table-of-contents)
@@ -462,7 +464,7 @@ ST = State
 L  = City
 O  = Bareos Lab
 OU = Backup Infrastructure
-CN = bareos-dir
+CN = bareos-director
 
 [v3_req]
 subjectAltName = @alt_names
@@ -470,7 +472,7 @@ keyUsage = critical, digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth, clientAuth
 
 [alt_names]
-DNS.1 = bareos-dir
+DNS.1 = bareos-director
 DNS.2 = localhost
 IP.1  = 127.0.0.1
 EOF
@@ -490,7 +492,7 @@ ST = State
 L  = City
 O  = Bareos Lab
 OU = Backup Infrastructure
-CN = bareos-sd
+CN = bareos-storage
 
 [v3_req]
 subjectAltName = @alt_names
@@ -498,7 +500,7 @@ keyUsage = critical, digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth, clientAuth
 
 [alt_names]
-DNS.1 = bareos-sd
+DNS.1 = bareos-storage
 DNS.2 = localhost
 IP.1  = 127.0.0.1
 EOF
@@ -735,14 +737,14 @@ Certificates expire (our certificates are valid for 365 days). When you rotate a
 #### Director Container
 
 ```ini
-# /home/bareos/.config/containers/systemd/bareos-dir.container
+# /home/bareos/.config/containers/systemd/bareos-director.container
 [Unit]
 Description=Bareos Director
 After=network-online.target bareos-db.service
 
 [Container]
 Image=docker.io/bareos/bareos-director:24
-ContainerName=bareos-dir
+ContainerName=bareos-director
 
 # Configuration bind-mount (includes bareos-dir.conf with TLS settings)
 Volume=/etc/bareos:/etc/bareos:ro,Z
@@ -756,8 +758,8 @@ Volume=/home/bareos/.config/bareos/tls/private/director.key:/etc/bareos/tls/dire
 Volume=/home/bareos/.config/bareos/tls/dh2048.pem:/etc/bareos/tls/dh2048.pem:ro,Z
 
 # State and log volumes
-Volume=bareos-dir-var:/var/lib/bareos:Z
-Volume=bareos-dir-log:/var/log/bareos:Z
+Volume=bareos-director-var:/var/lib/bareos:Z
+Volume=bareos-director-log:/var/log/bareos:Z
 
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 Network=bareos.network
@@ -773,14 +775,14 @@ WantedBy=default.target
 #### Storage Daemon Container
 
 ```ini
-# /home/bareos/.config/containers/systemd/bareos-sd.container
+# /home/bareos/.config/containers/systemd/bareos-storage.container
 [Unit]
 Description=Bareos Storage Daemon
 After=network-online.target
 
 [Container]
 Image=docker.io/bareos/bareos-storage:24
-ContainerName=bareos-sd
+ContainerName=bareos-storage
 
 Volume=/etc/bareos:/etc/bareos:ro,Z
 
@@ -846,11 +848,11 @@ systemctl --user daemon-reload
 
 # Restart all Bareos services in the correct order
 systemctl --user restart bareos-fd.service
-systemctl --user restart bareos-sd.service
-systemctl --user restart bareos-dir.service
+systemctl --user restart bareos-storage.service
+systemctl --user restart bareos-director.service
 
 # Verify all three are running
-systemctl --user status bareos-fd.service bareos-sd.service bareos-dir.service
+systemctl --user status bareos-fd.service bareos-storage.service bareos-director.service
 ```
 
 ---
@@ -927,7 +929,7 @@ Client {
 
 Storage {
   Name = File-1
-  Address = bareos-sd       # Container name on the Podman network
+  Address = bareos-storage       # Container name on the Podman network
   SD Port = 9103
   Password = "StorageDaemonPassword"
   Device = FileStorage
@@ -941,7 +943,7 @@ Storage {
   TLS Certificate = /etc/bareos/tls/director.pem
   TLS Key = /etc/bareos/tls/director.key
 
-  TLS Allowed CN = "bareos-sd"
+  TLS Allowed CN = "bareos-storage"
 }
 ```
 
@@ -975,7 +977,7 @@ Storage {
   TLS DH File = /etc/bareos/tls/dh2048.pem
 
   # Accept connections from Director and File Daemons by their CN
-  TLS Allowed CN = "bareos-dir"
+  TLS Allowed CN = "bareos-director"
   TLS Allowed CN = "bareos-fd"
 }
 ```
@@ -995,7 +997,7 @@ Director {
   TLS Require = yes
   TLS Verify Peer = yes
   TLS CA Certificate File = /etc/bareos/tls/ca.pem
-  TLS Allowed CN = "bareos-dir"
+  TLS Allowed CN = "bareos-director"
 }
 ```
 
@@ -1046,7 +1048,7 @@ Director {
   TLS Require = yes
   TLS Verify Peer = yes
   TLS CA Certificate File = /etc/bareos/tls/ca.pem
-  TLS Allowed CN = "bareos-dir"
+  TLS Allowed CN = "bareos-director"
 }
 ```
 
@@ -1088,7 +1090,7 @@ Director {
 The bconsole certificate and key must also be bind-mounted into the Director container, since that is where `bconsole` runs:
 
 ```ini
-# In bareos-dir.container, add:
+# In bareos-director.container, add:
 Volume=/home/bareos/.config/bareos/tls/certs/console.pem:/etc/bareos/tls/console.pem:ro,Z
 Volume=/home/bareos/.config/bareos/tls/private/console.key:/etc/bareos/tls/console.key:ro,Z
 ```
@@ -1131,10 +1133,10 @@ After configuring TLS, you must verify that:
 export XDG_RUNTIME_DIR=/run/user/1001
 
 # Check Director logs for TLS-related messages
-journalctl --user -u bareos-dir.service -n 100 | grep -i tls
+journalctl --user -u bareos-director.service -n 100 | grep -i tls
 
 # Check Storage Daemon logs
-journalctl --user -u bareos-sd.service -n 100 | grep -i tls
+journalctl --user -u bareos-storage.service -n 100 | grep -i tls
 
 # Check File Daemon logs
 journalctl --user -u bareos-fd.service -n 100 | grep -i tls
@@ -1142,8 +1144,8 @@ journalctl --user -u bareos-fd.service -n 100 | grep -i tls
 
 Successful TLS connection messages look like:
 ```
-bareos-dir: Connecting to Storage Daemon "File-1" at bareos-sd:9103
-bareos-dir: TLS negotiation failed for SD "bareos-sd" [or: TLS connection established]
+bareos-director: Connecting to Storage Daemon "File-1" at bareos-storage:9103
+bareos-director: TLS negotiation failed for SD "bareos-storage" [or: TLS connection established]
 ```
 
 ### 14.2 Testing with openssl s_client
@@ -1173,11 +1175,11 @@ Look for these lines in the output:
 CONNECTED(00000003)
 depth=1 CN = Bareos-Lab-CA
 verify return:1
-depth=0 CN = bareos-dir
+depth=0 CN = bareos-director
 verify return:1
 ---
 Certificate chain
- 0 s:CN = bareos-dir
+ 0 s:CN = bareos-director
    i:CN = Bareos-Lab-CA
 ---
 ...
@@ -1235,7 +1237,7 @@ openssl s_client \
 ### 14.4 Running a Test Backup Job to Confirm End-to-End TLS
 
 ```bash
-podman exec bareos-dir bconsole << 'EOF'
+podman exec bareos-director bconsole << 'EOF'
 run job=BackupClient1 level=Full yes
 wait
 messages
@@ -1247,7 +1249,7 @@ If TLS is working correctly, the job should complete successfully. If there are 
 ### 14.5 bconsole Status Check
 
 ```bash
-podman exec bareos-dir bconsole << 'EOF'
+podman exec bareos-director bconsole << 'EOF'
 status dir
 status storage
 status client
@@ -1257,7 +1259,7 @@ EOF
 If any component cannot be reached due to TLS errors, the status output will show connection failure messages. A successful status shows:
 
 ```
-bareos-dir Version: 24.x.x ...
+bareos-director Version: 24.x.x ...
 ...
 No jobs running.
 ```
@@ -1403,7 +1405,7 @@ ls -laZ /home/bareos/.config/bareos/tls/certs/
 When you add `:Z` to a Podman volume bind-mount, Podman automatically relabels the mounted files with `container_file_t:s0:cXXX,cYYY` (the container's MCS label). This is the simplest solution:
 
 ```ini
-# In bareos-dir.container — already shown in Section 9.2
+# In bareos-director.container — already shown in Section 9.2
 Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,Z
 ```
 
@@ -1577,8 +1579,8 @@ EXTEOF
     echo "Created: ${name} (CN=${cn})"
 }
 
-create_cert "director" "bareos-dir"
-create_cert "storage"  "bareos-sd"
+create_cert "director" "bareos-director"
+create_cert "storage"  "bareos-storage"
 create_cert "client"   "bareos-fd"
 create_cert "console"  "bareos-console"
 ```
@@ -1638,14 +1640,14 @@ ls -laZ /home/bareos/.config/bareos/tls/certs/ca.pem
 **Step 2: Update the Director Quadlet file**
 
 ```bash
-cat > /home/bareos/.config/containers/systemd/bareos-dir.container << 'EOF'
+cat > /home/bareos/.config/containers/systemd/bareos-director.container << 'EOF'
 [Unit]
 Description=Bareos Director
 After=network-online.target bareos-db.service
 
 [Container]
 Image=docker.io/bareos/bareos-director:24
-ContainerName=bareos-dir
+ContainerName=bareos-director
 Volume=/etc/bareos:/etc/bareos:ro,Z
 Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,z
 Volume=/home/bareos/.config/bareos/tls/certs/director.pem:/etc/bareos/tls/director.pem:ro,z
@@ -1653,7 +1655,7 @@ Volume=/home/bareos/.config/bareos/tls/private/director.key:/etc/bareos/tls/dire
 Volume=/home/bareos/.config/bareos/tls/certs/console.pem:/etc/bareos/tls/console.pem:ro,z
 Volume=/home/bareos/.config/bareos/tls/private/console.key:/etc/bareos/tls/console.key:ro,Z
 Volume=/home/bareos/.config/bareos/tls/dh2048.pem:/etc/bareos/tls/dh2048.pem:ro,z
-Volume=bareos-dir-var:/var/lib/bareos:Z
+Volume=bareos-director-var:/var/lib/bareos:Z
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 Network=bareos.network
 PublishPort=9101:9101
@@ -1699,13 +1701,13 @@ systemctl --user daemon-reload
 
 systemctl --user restart bareos-fd.service
 sleep 3
-systemctl --user restart bareos-sd.service
+systemctl --user restart bareos-storage.service
 sleep 3
-systemctl --user restart bareos-dir.service
+systemctl --user restart bareos-director.service
 sleep 5
 
 # Check all three are active
-systemctl --user status bareos-fd.service bareos-sd.service bareos-dir.service \
+systemctl --user status bareos-fd.service bareos-storage.service bareos-director.service \
     --no-pager | grep -E "Active:|●"
 ```
 
@@ -1713,16 +1715,16 @@ Expected output — all three should show `active (running)`:
 ```
 ● bareos-fd.service - Bareos File Daemon
      Active: active (running) ...
-● bareos-sd.service - Bareos Storage Daemon
+● bareos-storage.service - Bareos Storage Daemon
      Active: active (running) ...
-● bareos-dir.service - Bareos Director
+● bareos-director.service - Bareos Director
      Active: active (running) ...
 ```
 
 **Step 5: Run a test backup to confirm TLS end-to-end**
 
 ```bash
-podman exec bareos-dir bconsole << 'EOF'
+podman exec bareos-director bconsole << 'EOF'
 status dir
 run job=BackupClient1 level=Full yes
 wait
@@ -1871,7 +1873,7 @@ openssl s_client \
 
 ```bash
 export XDG_RUNTIME_DIR=/run/user/1001
-podman exec bareos-dir bconsole << 'EOF'
+podman exec bareos-director bconsole << 'EOF'
 run job=BackupClient1 level=Full yes
 wait
 messages
