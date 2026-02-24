@@ -1,17 +1,32 @@
 # Chapter 1: What is Bareos and Why Use It?
 
 ## Table of Contents
-1. [What is Bareos?](#1-what-is-bareos)
-2. [A Brief History: From Bacula to Bareos](#2-a-brief-history-from-bacula-to-bareos)
-3. [Why Bareos on RHEL 10?](#3-why-bareos-on-rhel-10)
-4. [Bareos vs. the Alternatives](#4-bareos-vs-the-alternatives)
-5. [Why Run Bareos in Podman Containers?](#5-why-run-bareos-in-podman-containers)
-6. [Course Roadmap and How to Use This Guide](#6-course-roadmap-and-how-to-use-this-guide)
-7. [Lab 1-1: Setting Expectations — What You Will Build](#7-lab-1-1-setting-expectations--what-you-will-build)
-8. [Key Terminology Glossary](#8-key-terminology-glossary)
-9. [Summary](#9-summary)
 
----
+- [1. What is Bareos?](#1-what-is-bareos)
+  - [What Makes a Backup System "Enterprise-Grade"?](#what-makes-a-backup-system-enterprise-grade)
+- [2. A Brief History: From Bacula to Bareos](#2-a-brief-history-from-bacula-to-bareos)
+- [3. Why Bareos on RHEL 10?](#3-why-bareos-on-rhel-10)
+  - [SELinux is Always On](#selinux-is-always-on)
+  - [Podman is the First-Class Container Runtime](#podman-is-the-first-class-container-runtime)
+  - [systemd is the Init and Service Manager](#systemd-is-the-init-and-service-manager)
+  - [Active Directory / LDAP Integration](#active-directory-ldap-integration)
+  - [Support Lifecycle](#support-lifecycle)
+- [4. Bareos vs. the Alternatives](#4-bareos-vs-the-alternatives)
+  - [Bareos vs. Amanda](#bareos-vs-amanda)
+  - [Bareos vs. Restic](#bareos-vs-restic)
+  - [Bareos vs. BorgBackup](#bareos-vs-borgbackup)
+  - [Bareos vs. Veeam / Commvault / Veritas](#bareos-vs-veeam-commvault-veritas)
+  - [When *Not* to Use Bareos](#when-not-to-use-bareos)
+- [5. Why Run Bareos in Podman Containers?](#5-why-run-bareos-in-podman-containers)
+  - [Traditional Approach: RPM Installation](#traditional-approach-rpm-installation)
+  - [Container Approach: Podman + Quadlet](#container-approach-podman-quadlet)
+  - [What About the File Daemon?](#what-about-the-file-daemon)
+- [6. Course Roadmap and How to Use This Guide](#6-course-roadmap-and-how-to-use-this-guide)
+  - [How to Use Each Chapter](#how-to-use-each-chapter)
+  - [Prerequisites to Follow Along](#prerequisites-to-follow-along)
+- [7. Lab 1-1: Setting Expectations — What You Will Build](#7-lab-1-1-setting-expectations-what-you-will-build)
+- [8. Key Terminology Glossary](#8-key-terminology-glossary)
+- [9. Summary](#9-summary)
 
 ## 1. What is Bareos?
 
