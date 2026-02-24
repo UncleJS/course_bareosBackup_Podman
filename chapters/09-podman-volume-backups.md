@@ -120,14 +120,12 @@ ls -Zd /home/bareos/.local/share/containers/storage/volumes/myapp-data/_data
 # Output: system_u:object_r:container_file_t:s0  _data/
 ```
 
-The Bareos File Daemon, running as root (via `bareos-fd` systemd service), needs read access to `container_file_t` labeled files. By default, the `bareos_t` SELinux context has this permission, but verify:
+The Bareos File Daemon runs as the `bareos` user inside its container (`container_t` SELinux context). Because the container FD itself also runs under `container_t`, it already has access to files labeled `container_file_t` — **no custom SELinux policy is required**. The host filesystem is bind-mounted read-only at `/hostfs` inside the container, so volume paths are accessed as `/hostfs/home/bareos/.local/share/containers/storage/volumes/...`
 
 ```bash
-# Check if bareos_t can read container_file_t
-sesearch --allow --source bareos_t --target container_file_t --class file --perm read
+ls -Zd /home/bareos/.local/share/containers/storage/volumes/myapp-data/_data
+# Output: system_u:object_r:container_file_t:s0  _data/
 ```
-
-If not permitted, add a custom SELinux module (covered in [Chapter 13](./13-rootless-podman-specifics.md)).
 
 ---
 
@@ -179,11 +177,11 @@ FileSet {
   Name = "Application-Data"
   Include {
     Options { Signature = SHA256; Compression = ZSTD; AclSupport = yes; XattrSupport = yes }
-    File = /srv/webapp
-    File = /srv/mariadb
+    File = /hostfs/srv/webapp
+    File = /hostfs/srv/mariadb
   }
   Exclude {
-    File = /srv/mariadb/data/mysql_upgrade_info  # non-critical runtime file
+    File = /hostfs/srv/mariadb/data/mysql_upgrade_info  # non-critical runtime file
   }
 }
 ```
@@ -215,50 +213,15 @@ ls -lan /home/bareos/.local/share/containers/storage/volumes/myapp-data/_data/
 #          -rw-r--r--. 1 100000 100000  ...  config.json
 ```
 
-The Bareos File Daemon runs as the `bareos` system user (UID 1001). It tries to read files owned by UID 100000. Since 100000 ≠ 1001, the FD must rely on:
+The Bareos File Daemon runs as the `bareos` user (UID 1001) **inside its container**. It tries to read files owned by UID 100000. Since 100000 ≠ 1001, the FD must rely on:
 - **Other permissions** (the world-readable bit on the files), or
-- **DAC override via `bareos_t` SELinux context**, or
-- **Running the FD as root** (the default for `bareos-fd` systemd service)
+- **Container SELinux access**: the FD container runs as `container_t`, which can already read `container_file_t` labeled files — no special configuration needed
 
 ### How bareos-fd Gets Access
 
-The `bareos-fd` RPM service runs as **root** by default (unlike the containers). This is intentional — the File Daemon needs to access all files on the client, including those owned by any UID. Check:
+The `bareos-fd` container runs with the host filesystem bind-mounted read-only at `/hostfs`. The container process runs as the `bareos` user under the `container_t` SELinux context, which by default has read access to `container_file_t` volumes (both use the same SELinux category). **No custom SELinux policy module is required** — this is a key advantage of running the FD as a container rather than a host RPM service.
 
-```bash
-systemctl cat bareos-fd | grep User
-# If blank: runs as root (default)
-# If "User = bareos": runs as the bareos user
-```
-
-When running as root, the FD can read any file regardless of ownership. However, SELinux still applies — even root cannot access `container_file_t` files if the SELinux policy does not permit it.
-
-### Granting SELinux Access to Named Volume Files
-
-```bash
-# Allow bareos_t to read container_file_t files
-sudo tee /tmp/bareos-container-access.te > /dev/null <<'EOF'
-module bareos-container-access 1.0;
-
-require {
-  type bareos_t;
-  type container_file_t;
-  class file { open read getattr };
-  class dir { open read search getattr };
-}
-
-allow bareos_t container_file_t:file { open read getattr };
-allow bareos_t container_file_t:dir { open read search getattr };
-EOF
-
-sudo checkmodule -M -m -o /tmp/bareos-container-access.mod /tmp/bareos-container-access.te
-sudo semodule_package -o /tmp/bareos-container-access.pp -m /tmp/bareos-container-access.mod
-sudo semodule -i /tmp/bareos-container-access.pp
-
-# Verify the policy was loaded
-sudo semodule -l | grep bareos-container
-```
-
-This policy module allows the `bareos_t` process context to read files and directories labeled `container_file_t`. This is the correct, minimal SELinux fix.
+> **Note for host RPM FD users:** If you ever deploy a host-installed `bareos-fd` RPM service (e.g., for a non-containerized client), the `bareos_t` process context may need an explicit SELinux allow rule to read `container_file_t` files. See [Chapter 13](./13-rootless-podman-specifics.md) for details.
 
 ---
 
@@ -281,9 +244,10 @@ FileSet {
 
     # Back up all named volumes for the bareos user
     # The _data subdirectory contains the actual application data
-    File = /home/bareos/.local/share/containers/storage/volumes/myapp-data/_data
-    File = /home/bareos/.local/share/containers/storage/volumes/webapp-uploads/_data
-    File = /home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data
+    # Note: /hostfs maps to / on the host (the FD container bind-mount)
+    File = /hostfs/home/bareos/.local/share/containers/storage/volumes/myapp-data/_data
+    File = /hostfs/home/bareos/.local/share/containers/storage/volumes/webapp-uploads/_data
+    File = /hostfs/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data
 
   }
   Exclude {
@@ -357,7 +321,7 @@ FileSet {
   Name = "Volume-Exports"
   Include {
     Options { Signature = SHA256 }
-    File = /tmp/bareos-volume-exports
+    File = /hostfs/tmp/bareos-volume-exports
   }
 }
 ```
@@ -478,16 +442,16 @@ FileSet {
     }
 
     # --- Bind mount paths (host directories, normal ownership) ---
-    File = /srv/webapp/data
-    File = /srv/webapp/uploads
-    File = /srv/webapp/config
+    File = /hostfs/srv/webapp/data
+    File = /hostfs/srv/webapp/uploads
+    File = /hostfs/srv/webapp/config
 
     # --- Named volume data (subordinate UID ownership) ---
-    File = /home/bareos/.local/share/containers/storage/volumes/myapp-data/_data
-    File = /home/bareos/.local/share/containers/storage/volumes/app-config/_data
+    File = /hostfs/home/bareos/.local/share/containers/storage/volumes/myapp-data/_data
+    File = /hostfs/home/bareos/.local/share/containers/storage/volumes/app-config/_data
 
     # --- Volume exports (if using export strategy) ---
-    File = /var/lib/bareos/volume-exports
+    File = /hostfs/var/lib/bareos/volume-exports
 
   }
 
@@ -762,11 +726,11 @@ FileSet {
       AclSupport = yes
       XattrSupport = yes
     }
-    File = /srv/testwebapp/config
-    File = /srv/testwebapp/data
+    File = /hostfs/srv/testwebapp/config
+    File = /hostfs/srv/testwebapp/data
   }
   Exclude {
-    File = /srv/testwebapp/logs   # logs managed separately
+    File = /hostfs/srv/testwebapp/logs   # logs managed separately
   }
 }
 FEOF

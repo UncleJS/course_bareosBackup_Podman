@@ -818,18 +818,21 @@ After=network-online.target
 Image=docker.io/bareos/bareos-client:24
 ContainerName=bareos-fd
 
-Volume=/etc/bareos:/etc/bareos:ro,Z
+# FD config volume (set up in Chapter 6)
+Volume=bareos-fd-config:/etc/bareos:Z
 
 # File Daemon TLS certificates
 Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,Z
 Volume=/home/bareos/.config/bareos/tls/certs/client.pem:/etc/bareos/tls/client.pem:ro,Z
 Volume=/home/bareos/.config/bareos/tls/private/client.key:/etc/bareos/tls/client.key:ro,Z
 
-# Data to be backed up
-Volume=/home/bareos/backups:/var/bareos/backups:ro,Z
+# Host filesystem — read-only; FileSet paths use /hostfs/ prefix
+Volume=/:/hostfs:ro,z
+
+# Podman socket — allows hook scripts to manage containers
+Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock:z
 
 Network=bareos.network
-PublishPort=9102:9102
 
 [Service]
 Restart=always
@@ -1037,10 +1040,10 @@ Client {
 The FD has a `Director` resource that authenticates incoming Director connections:
 
 ```
-# /etc/bareos/bareos-fd.d/director/bareos-dir.conf
+# /etc/bareos/bareos-fd.d/director/bareos-director.conf
 
 Director {
-  Name = bareos-dir
+  Name = bareos-director
   Password = "FileDaemonPassword"
 
   # TLS settings to validate the Director's certificate

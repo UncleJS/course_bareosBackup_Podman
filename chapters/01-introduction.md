@@ -189,9 +189,9 @@ Running Bareos in containers addresses all of these:
 **SELinux compatibility:** Podman containers on RHEL 10 run with their own SELinux labels. Volumes are automatically relabeled (`:z` or `:Z` options), making SELinux compliance straightforward rather than a fight.
 
 ### What About the File Daemon?
-The **Bareos File Daemon** (the component that runs on each client being backed up) is typically installed directly on the client machine (via RPM), *not* in a container. The client might be a bare-metal server, a VM, or even another container host. This is the standard and correct approach — you need the File Daemon to access the client's real filesystem.
+The **Bareos File Daemon** (the component that runs on each client being backed up) can be deployed in two ways: installed directly on the client machine via RPM, or run as a Podman container alongside the other Bareos components. In this course we deploy the File Daemon as a **container** (`bareos-client:24`) on the same Podman host, which demonstrates backing up the host's own container volumes and is fully consistent with the course's container-first philosophy.
 
-The exception is when backing up data *from* a Podman host, where the File Daemon runs on the host but needs special configuration to access container volumes. We cover this in depth in Chapters 9–14.
+For backing up external client machines (bare-metal servers, VMs, etc.), you would install the File Daemon via RPM on that remote host — that pattern is standard and covered in the multi-client scenarios in later chapters.
 
 ---
 
@@ -255,14 +255,13 @@ By the end of this course, you will have built and understood every component of
 │  │         │  │ port 9101              │   Bareos WebUI           │  │  │
 │  │         │  └────────────────────────┤   (port 80→host:9100)    │  │  │
 │  │         │                           │   Browser interface      │  │  │
-│  │         │                           └──────────────────────────┘  │  │
-│  └─────────┼──────────────────────────────────────────────────────────┘  │
-│            │  TCP 9102                                                    │
-│            ▼                                                              │
-│  ┌──────────────────────────────────────────────────────────────────┐    │
-│  │              Bareos File Daemon (host RPM)                        │    │
-│  │         Accesses: /data, Podman volumes, DB dumps                 │    │
-│  └──────────────────────────────────────────────────────────────────┘    │
+│  │         │  TCP 9102                 └──────────────────────────┘  │  │
+│  │         ▼                                                          │  │
+│  │  ┌──────────────────────────────────────────────────────────────┐ │  │
+│  │  │   Bareos File Daemon (container: bareos-fd)                   │ │  │
+│  │  │   /hostfs → accesses /data, Podman volumes, DB dumps          │ │  │
+│  │  └──────────────────────────────────────────────────────────────┘ │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
 │                                                                          │
 │  ┌───────────────────────── Podman Workloads ────────────────────────┐   │
 │  │  web-app container  │  mariadb container  │  other-app container  │   │
@@ -272,8 +271,6 @@ By the end of this course, you will have built and understood every component of
 │  Your browser → http://localhost:9100 → WebUI → Director (port 9101)     │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
-
-> **Note on the File Daemon in this course:** The diagram above shows the File Daemon as a "host RPM" installation — this is the typical production pattern for backing up external client machines. In this course, however, we run the File Daemon as a **Podman container** on the same host as the Director and Storage Daemon. This simplifies the lab setup and demonstrates how to back up a Podman host's own container volumes. When the course covers backing up remote hosts (Chapter 7 onwards), those clients would run the FD as an RPM install. Chapter 9 covers the Podman-specific FD configuration needed to access container volumes.
 
 You will be able to:
 - Run full, incremental, and differential backup jobs on a schedule
@@ -308,7 +305,7 @@ Before diving in, establish this vocabulary. These terms appear throughout the c
 | **Schedule** | A timed trigger that causes the Director to run Jobs automatically. |
 | **Retention** | How long Bareos keeps backup data before it is eligible for pruning/overwriting. |
 | **bconsole** | The Bareos command-line console — the primary operator interface to the Director. |
-| **Bareos WebUI** | A web-based graphical interface for Bareos. Runs as a Podman container (port 9100). Used for job monitoring, restore operations, and pool/volume management. Deployed in Chapter 17. |
+| **Bareos WebUI** | A web-based graphical interface for Bareos. Runs as a Podman container (port 9100). Used for job monitoring, restore operations, and pool/volume management. Deployed in Chapter 6. |
 | **Quadlet** | A systemd-native mechanism for managing Podman containers as systemd units via declarative `.container` files. |
 | **Rootless Podman** | Running Podman containers under a non-root user account. Containers cannot gain root privileges on the host. |
 | **SELinux** | Security-Enhanced Linux — mandatory access control built into RHEL. Always enforcing in this course. |
@@ -325,7 +322,7 @@ In this chapter you learned:
 - It provides capabilities far beyond simple scripts: centralized job management, per-file catalog, automated retention, TLS security, and more.
 - **RHEL 10** is the target platform because it represents the current enterprise Linux standard, with Podman as the native container runtime and SELinux always enforced.
 - **Running Bareos in Podman containers** provides isolation, portability, version flexibility, rootless security, and native systemd integration through Quadlet.
-- The **File Daemon** is still typically installed on clients via RPM — but special Podman-aware configuration is needed to back up container workloads.
+- The **File Daemon** runs as a container (`bareos-fd`) alongside the Director and Storage Daemon — with the host filesystem bind-mounted read-only so all local data is accessible for backup. Remote clients would install the FD via RPM.
 - By the end of this course you will have built a complete, production-quality Bareos deployment protecting Podman container workloads on RHEL 10.
 
 ---

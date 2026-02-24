@@ -20,11 +20,12 @@
 - [7. Deploying the Bareos Director Container](#7-deploying-the-bareos-director-container)
   - [Quadlet File for Director](#quadlet-file-for-director)
   - [Director Configuration Files](#director-configuration-files)
-- [8. Installing the File Daemon on the Host](#8-installing-the-file-daemon-on-the-host)
-  - [Installing bareos-filedaemon](#installing-bareos-filedaemon)
-  - [File Daemon Configuration](#file-daemon-configuration)
+- [8. Deploying the Bareos File Daemon Container](#8-deploying-the-bareos-file-daemon-container)
+  - [Volume Definition for FD Config](#volume-definition-for-fd-config)
+  - [File Daemon Configuration Files](#file-daemon-configuration-files)
   - [Register the Client in the Director](#register-the-client-in-the-director)
-  - [Enable and Start the File Daemon](#enable-and-start-the-file-daemon)
+  - [Quadlet File for the File Daemon](#quadlet-file-for-the-file-daemon)
+  - [Start the File Daemon](#start-the-file-daemon)
 - [9. Initializing the Catalog Database](#9-initializing-the-catalog-database)
   - [Running the Bareos Schema Setup](#running-the-bareos-schema-setup)
 - [10. Starting All Services and Verifying](#10-starting-all-services-and-verifying)
@@ -56,10 +57,12 @@ This chapter deploys the complete Bareos stack as rootless Podman containers man
 │   │   ├── bareos.network
 │   │   ├── bareos-db-data.volume
 │   │   ├── bareos-config.volume
+│   │   ├── bareos-fd-config.volume
 │   │   ├── bareos-webui-config.volume
 │   │   ├── bareos-db.container
 │   │   ├── bareos-storage.container
 │   │   ├── bareos-director.container
+│   │   ├── bareos-fd.container
 │   │   └── bareos-webui.container
 │   └── bareos/
 │       ├── db.env                  ← MariaDB credentials (mode 600)
@@ -69,10 +72,9 @@ This chapter deploys the complete Bareos stack as rootless Podman containers man
 /srv/bareos-storage/
 └── volumes/                        ← Bareos backup Volumes (on dedicated disk)
 
-/etc/bareos/                        ← Bareos configuration (bind-mounted into Director)
+/etc/bareos/                        ← Bareos configuration (bind-mounted into Director + Storage)
 ├── bareos-dir.d/
-├── bareos-sd.d/
-└── bareos-fd.d/
+└── bareos-sd.d/
 ```
 
 ### Service Dependencies
@@ -80,8 +82,9 @@ This chapter deploys the complete Bareos stack as rootless Podman containers man
 ```
 bareos-director  ──depends on──► bareos-storage
                  ──depends on──► bareos-db
-                 ──depends on──► bareos-fd (host RPM service)
+                 ──depends on──► bareos-fd (container)
 
+bareos-fd        ──depends on──► bareos.network (Quadlet)
 bareos-storage   ──depends on──► bareos.network (Quadlet)
 bareos-db        ──depends on──► bareos.network (Quadlet)
 ```
@@ -98,15 +101,14 @@ Systemd/Quadlet automatically enforces these dependencies based on `After=` and 
 
 ```bash
 # Run as root (to create /etc/bareos owned by bareos user)
-sudo mkdir -p /etc/bareos/{bareos-dir.d,bareos-sd.d,bareos-fd.d}
+sudo mkdir -p /etc/bareos/{bareos-dir.d,bareos-sd.d}
 sudo mkdir -p /etc/bareos/bareos-dir.d/{catalog,client,console,director,fileset,job,jobdefs,messages,pool,profile,schedule,storage}
 sudo mkdir -p /etc/bareos/bareos-sd.d/{device,director,messages,storage}
-sudo mkdir -p /etc/bareos/bareos-fd.d/{client,director,messages}
 
 # Own all config by the bareos user
 sudo chown -R bareos:bareos /etc/bareos
 sudo chmod -R 750 /etc/bareos
-sudo chmod -R 640 /etc/bareos/bareos-dir.d /etc/bareos/bareos-sd.d /etc/bareos/bareos-fd.d
+sudo chmod -R 640 /etc/bareos/bareos-dir.d /etc/bareos/bareos-sd.d
 
 # Set correct SELinux context for Bareos config
 sudo semanage fcontext -a -t bareos_etc_t "/etc/bareos(/.*)?"
@@ -223,6 +225,16 @@ sudo -u bareos tee /home/bareos/.config/containers/systemd/bareos-working.volume
 Driver=local
 Label=app=bareos
 Label=component=working
+EOF
+
+# File Daemon config volume (directors.ini equivalent lives here)
+sudo -u bareos tee /home/bareos/.config/containers/systemd/bareos-fd-config.volume > /dev/null <<'EOF'
+# bareos-fd-config.volume — File Daemon configuration (/etc/bareos inside the container)
+
+[Volume]
+Driver=local
+Label=app=bareos
+Label=component=fd
 EOF
 ```
 
@@ -640,27 +652,36 @@ EOF
 
 [↑ Back to Table of Contents](#table-of-contents)
 
-## 8. Installing the File Daemon on the Host
+## 8. Deploying the Bareos File Daemon Container
 
-The File Daemon runs as an RPM service directly on the RHEL 10 host. It needs to access the host filesystem (including Podman volume paths) directly.
+The File Daemon (`bareos-fd`) runs as a rootless Podman container managed by Quadlet — consistent with every other Bareos component in this course. It uses the `bareos-client:24` image, which contains the same `bareos-fd` binary as the RPM package.
 
-### Installing bareos-filedaemon
+The container gets full read access to the host filesystem via a bind-mount (`/:/hostfs:ro,z`), so it can back up any path on the host just as a traditional RPM-based FD would. It also mounts the host Podman socket so that `ClientRunBeforeJob` hook scripts (Chapter 10) can call `podman exec` against running containers.
+
+> **Production clients on other hosts** — when the course refers to backing up a remote machine, that host runs the File Daemon as an RPM install (`dnf install bareos-filedaemon`). The container FD used here is for the local Podman host itself. The config file format is identical in both cases.
+
+### Volume Definition for FD Config
+
+The FD configuration lives in a named volume (`bareos-fd-config`) mounted at `/etc/bareos` inside the container. This mirrors the layout the RPM would create at `/etc/bareos/bareos-fd.d/` on the host.
 
 ```bash
-# Install the File Daemon package
-sudo dnf install -y bareos-filedaemon
+# The volume was already defined in Section 4; create it now
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman volume create bareos-fd-config
 
-# The installation creates:
-# /etc/bareos/bareos-fd.d/       ← configuration directory
-# /usr/lib/systemd/system/bareos-fd.service  ← systemd unit
+FD_VOL=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman volume inspect bareos-fd-config --format "{{.Mountpoint}}")
+
+# Create the subdirectory layout that bareos-fd expects
+sudo -u bareos mkdir -p "${FD_VOL}/bareos-fd.d/"{client,director,messages}
 ```
 
-### File Daemon Configuration
+### File Daemon Configuration Files
 
-**FD identity (client itself):**
+**FD identity (`client/myself.conf`):**
 
 ```bash
-sudo tee /etc/bareos/bareos-fd.d/client/myself.conf > /dev/null <<'EOF'
+sudo -u bareos tee "${FD_VOL}/bareos-fd.d/client/myself.conf" > /dev/null <<'EOF'
 Client {
   Name = bareos-fd
   FDPort = 9102
@@ -672,29 +693,30 @@ Client {
 EOF
 ```
 
-**Authorize the Director to connect:**
+**Authorize the Director to connect (`director/bareos-director.conf`):**
 
 ```bash
-sudo tee /etc/bareos/bareos-fd.d/director/bareos-dir.conf > /dev/null <<'EOF'
+sudo -u bareos tee "${FD_VOL}/bareos-fd.d/director/bareos-director.conf" > /dev/null <<'EOF'
 Director {
-  Name = bareos-dir
+  Name = bareos-director
   Password = "CHANGEME_FD_PASSWORD"   # must match Director's Client resource password
   Monitor = No
 }
 EOF
 ```
 
-**FD messages:**
+**FD messages (`messages/Daemon.conf`):**
 
 ```bash
-sudo tee /etc/bareos/bareos-fd.d/messages/Daemon.conf > /dev/null <<'EOF'
+sudo -u bareos tee "${FD_VOL}/bareos-fd.d/messages/Daemon.conf" > /dev/null <<'EOF'
 Messages {
   Name = Daemon
   Syslog = all, !skipped, !saved, !audit
-  Append = /var/log/bareos/bareos-fd.log = all, !skipped, !saved, !audit
 }
 EOF
 ```
+
+> **Note:** Log output goes to the systemd journal (via `journalctl --user -u bareos-fd`) rather than a log file. The `Syslog` destination in a container context routes to stdout/stderr, which Podman captures into the journal automatically.
 
 ### Register the Client in the Director
 
@@ -702,7 +724,7 @@ EOF
 sudo -u bareos tee /etc/bareos/bareos-dir.d/client/bareos-fd.conf > /dev/null <<'EOF'
 Client {
   Name = bareos-fd
-  Address = 127.0.0.1     # FD is on the same host; connect via loopback
+  Address = bareos-fd         # container DNS name on bareos.network
   FDPort = 9102
   Catalog = MyCatalog
   Password = "CHANGEME_FD_PASSWORD"   # must match FD's Director password
@@ -713,17 +735,72 @@ Client {
 EOF
 ```
 
-### Enable and Start the File Daemon
+### Quadlet File for the File Daemon
 
 ```bash
-# Fix SELinux context (the RPM should do this, but verify)
-sudo restorecon -Rv /etc/bareos/bareos-fd.d
+sudo -u bareos tee /home/bareos/.config/containers/systemd/bareos-fd.container > /dev/null <<'EOF'
+# bareos-fd.container — Bareos File Daemon (client)
+# Bareos 24 · RHEL 10 · rootless Podman Quadlet
 
-# Enable and start the file daemon
-sudo systemctl enable --now bareos-fd
+[Unit]
+Description=Bareos File Daemon
+Documentation=https://docs.bareos.org/Configuration/FileDaemon.html
+After=network-online.target
 
-# Verify it's running
-sudo systemctl status bareos-fd
+[Container]
+Image=docker.io/bareos/bareos-client:24
+ContainerName=bareos-fd
+
+# ── Config volume ─────────────────────────────────────────────────
+# bareos-fd.d/ lives inside this volume (created above)
+Volume=bareos-fd-config.volume:/etc/bareos:Z
+
+# ── Host filesystem access ────────────────────────────────────────
+# Read-only bind-mount of the entire host filesystem so the FD can
+# back up any host path. Backup jobs use paths under /hostfs/.
+# Example: to back up /home on the host, use File = /hostfs/home
+Volume=/:/hostfs:ro,z
+
+# ── Podman socket ─────────────────────────────────────────────────
+# Allows ClientRunBeforeJob scripts (Chapter 10) to call
+# `podman exec` against containers running on the host.
+Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock:z
+
+# ── Networking ────────────────────────────────────────────────────
+Network=bareos.network
+
+# File Daemon port — Director connects inbound on 9102
+PublishPort=127.0.0.1:9102:9102
+
+[Service]
+Restart=on-failure
+RestartSec=10
+Environment=XDG_RUNTIME_DIR=/run/user/1001
+
+[Install]
+WantedBy=default.target
+EOF
+```
+
+> **File paths in FileSet resources:** Because the host filesystem is mounted at `/hostfs` inside the container, any `File =` directive in a Bareos FileSet that should back up host paths must use the `/hostfs/` prefix. For example: `File = /hostfs/home` backs up `/home` on the RHEL 10 host. See Chapter 7 for the first backup job using this convention.
+
+### Start the File Daemon
+
+```bash
+# Reload systemd to pick up the new Quadlet file
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  systemctl --user daemon-reload
+
+# Enable (auto-start at boot) and start immediately
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  systemctl --user enable --now bareos-fd.service
+
+# Verify it is running
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  systemctl --user status bareos-fd.service --no-pager
+
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman ps --filter name=bareos-fd
 ```
 
 ---
@@ -817,9 +894,15 @@ sleep 5
 sudo -u bareos XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR} \
   systemctl --user start bareos-director.service
 
+sleep 5
+
+sudo -u bareos XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR} \
+  systemctl --user start bareos-fd.service
+
 # Enable all services to start at boot
 sudo -u bareos XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR} \
-  systemctl --user enable bareos-db.service bareos-storage.service bareos-director.service
+  systemctl --user enable bareos-db.service bareos-storage.service \
+  bareos-director.service bareos-fd.service
 ```
 
 ### Verifying Container Status
@@ -835,6 +918,7 @@ Expected output:
 NAMES              STATUS                   PORTS
 bareos-director    Up 2 minutes             0.0.0.0:9101->9101/tcp
 bareos-storage     Up 3 minutes             0.0.0.0:9103->9103/tcp
+bareos-fd          Up 1 minute
 bareos-db          Up 4 minutes (healthy)   127.0.0.1:3306->3306/tcp
 ```
 
@@ -848,6 +932,10 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 # Storage Daemon logs
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   journalctl --user -u bareos-storage.service -n 50
+
+# File Daemon logs
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  journalctl --user -u bareos-fd.service -n 50
 
 # DB logs
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
@@ -1173,6 +1261,7 @@ bareos_run podman pull docker.io/bareos/bareos-director:24
 bareos_run podman pull docker.io/bareos/bareos-storage:24
 bareos_run podman pull docker.io/library/mariadb:10.11
 bareos_run podman pull docker.io/bareos/bareos-webui:24
+bareos_run podman pull docker.io/bareos/bareos-client:24
 
 # Step 2: Reload Quadlet units
 echo "Loading Quadlet definitions..."
@@ -1224,10 +1313,15 @@ echo "Starting Bareos WebUI..."
 bareos_run systemctl --user start bareos-webui.service
 sleep 5
 
-# Step 8: Enable all services
+# Step 8: Start File Daemon
+echo "Starting File Daemon..."
+bareos_run systemctl --user start bareos-fd.service
+sleep 5
+
+# Step 9: Enable all services
 bareos_run systemctl --user enable \
   bareos-db.service bareos-storage.service \
-  bareos-director.service bareos-webui.service
+  bareos-director.service bareos-webui.service bareos-fd.service
 
 # Step 9: Verify
 echo ""
@@ -1267,9 +1361,11 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   nc -zv bareos-db 3306
 # Expected: Connection to bareos-db 3306 port [tcp] succeeded!
 
-# Test 3: Director can reach the File Daemon on the host
-echo "status client" | sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole \
-  | grep -E "FD|File Daemon|Connected|Version"
+# Test 3: Director can reach the File Daemon container
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman exec bareos-director \
+  nc -zv bareos-fd 9102
+# Expected: Connection to bareos-fd 9102 port [tcp] succeeded!
 
 # Test 4: Storage Daemon can write to the volume path
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
@@ -1298,7 +1394,7 @@ curl -sI http://localhost:9100/bareos-webui/ | head -3
 # Test 8: Verify all five containers are running
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-# Expected: bareos-db, bareos-storage, bareos-director, bareos-webui all Up
+# Expected: bareos-db, bareos-storage, bareos-director, bareos-fd, bareos-webui all Up
 ```
 
 ---
@@ -1309,12 +1405,12 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 
 In this chapter you deployed the complete Bareos stack as rootless Podman containers:
 
-- **Architecture**: Director + Storage Daemon + MariaDB + WebUI in containers, File Daemon as a host RPM service. All containers on a dedicated Quadlet-managed bridge network.
+- **Architecture**: Director + Storage Daemon + MariaDB + File Daemon + WebUI — all five components running as rootless Podman containers on a dedicated Quadlet-managed bridge network.
 - **Secrets management**: Passwords stored in mode-600 environment files, never in Quadlet unit files. All placeholder values must be replaced with generated random passwords.
 - **MariaDB catalog**: Dedicated named volume for data persistence; health check ensures Director starts only when DB is ready.
 - **Storage Daemon**: Bind-mounted to `/srv/bareos-storage/volumes` on the dedicated backup disk, using `:z` SELinux label for shared access.
 - **Director**: Reads `/etc/bareos/bareos-dir.d/` as a read-only bind mount. Connects to SD and DB by container name (DNS-resolved within the Quadlet network).
-- **File Daemon**: Installed via RPM, configured to authorize the containerized Director.
+- **File Daemon**: Deployed as `bareos-fd` container (`bareos-client:24` image) on the Quadlet network. The host filesystem is bind-mounted at `/hostfs` (read-only) so FileSet paths use the `/hostfs/` prefix. The Podman socket is mounted so hook scripts can manage containers from within the FD.
 - **Catalog initialization**: Run `create_bareos_database` and `grant_bareos_privileges` scripts in a temporary Director container before the Director starts.
 - **WebUI**: Deployed as `bareos-webui` container (port 9100), authenticated to the Director via a dedicated `Console` resource with the `webui-admin` profile. Configuration in the `bareos-webui-config` named volume.
 - **All services enabled**: `systemctl --user enable` ensures all containers start at boot via lingering.

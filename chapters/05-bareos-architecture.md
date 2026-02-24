@@ -248,12 +248,14 @@ The File Daemon (`bareos-fd`) runs on every client machine that Bareos backs up.
 
 **Plugin support:** File Daemon plugins extend what Bareos can back up: MariaDB hot backups, PostgreSQL, LDAP, VMware, etc.
 
-### File Daemon Installation
+### File Daemon Deployment
 
-Unlike the Director and Storage Daemon (which run in containers in our setup), the File Daemon is typically installed via RPM on each client:
+In this course, the File Daemon runs as a **Podman container** (`bareos-client:24`) on the same host as the Director and Storage Daemon. It is managed by a Quadlet unit (`bareos-fd.container`) like every other Bareos component. The host filesystem is bind-mounted read-only at `/hostfs` inside the container, so FileSet paths use the `/hostfs/` prefix (e.g. `File = /hostfs/home`).
+
+For backing up **remote client machines** (bare-metal servers, VMs, other Linux hosts), you would install the File Daemon via RPM on that client instead:
 
 ```bash
-# On a RHEL 10 client
+# On a remote RHEL 10 client — not needed for the course lab
 sudo dnf install bareos-filedaemon
 
 # Configuration
@@ -794,8 +796,12 @@ SD plugins extend where data can be written:
 
 ### Installing Plugins
 
+File Daemon plugins ship **inside the `bareos-client:24` container image** — no separate installation is needed for the course lab. The Python plugin framework and common database plugins are pre-installed.
+
+For remote RPM-based clients you would install plugins separately:
+
 ```bash
-# File daemon Python plugin framework
+# File daemon Python plugin framework (remote RPM clients only)
 sudo dnf install bareos-filedaemon-python-plugins
 
 # MariaDB hot backup plugin

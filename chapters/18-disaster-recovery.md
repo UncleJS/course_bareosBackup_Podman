@@ -764,8 +764,8 @@ Volume=bareos-db-data.volume:/var/lib/mysql:z
 EnvironmentFile=/home/bareos/.config/bareos/db.env
 
 # Expose MariaDB only on the container network, not on the host.
-# Other Bareos containers reach it via the 'bareos-net' network.
-Network=bareos-net.network
+  # Other Bareos containers reach it via the 'bareos' network.
+Network=bareos.network
 
 # Health check: verify MariaDB is accepting connections.
 HealthCmd=mysqladmin --user=root --password=${MARIADB_ROOT_PASSWORD} ping --silent
@@ -782,7 +782,7 @@ WantedBy=default.target
 EOF
 
 # 4. Write the network Quadlet file
-cat > /home/bareos/.config/containers/systemd/bareos-net.network << 'EOF'
+cat > /home/bareos/.config/containers/systemd/bareos.network << 'EOF'
 [Network]
 # An isolated bridge network for all Bareos containers.
 # Containers on this network can reach each other by container name.
@@ -899,7 +899,7 @@ Volume=bareos-dir-state.volume:/var/lib/bareos:z
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 
 # Connect to the bareos network so it can reach bareos-db by hostname
-Network=bareos-net.network
+Network=bareos.network
 
 # bconsole port — exposed on localhost only for security
 PublishPort=127.0.0.1:9101:9101
@@ -929,7 +929,7 @@ Volume=bareos-sd-config.volume:/etc/bareos:z
 # The :z suffix relabels the directory for SELinux container access.
 Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
 
-Network=bareos-net.network
+Network=bareos.network
 
 # Storage Daemon port — accessible from the network for File Daemons
 PublishPort=9103:9103
@@ -949,13 +949,17 @@ After=network-online.target
 
 [Container]
 Image=docker.io/bareos/bareos-client:24
+ContainerName=bareos-fd
 
-Volume=bareos-fd-config.volume:/etc/bareos:z
+Volume=bareos-fd-config:/etc/bareos:Z
 
-Network=bareos-net.network
+# Host filesystem — read-only; FileSet paths use /hostfs/ prefix
+Volume=/:/hostfs:ro,z
 
-# File Daemon port
-PublishPort=9102:9102
+# Podman socket — allows hook scripts to manage containers
+Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock:z
+
+Network=bareos.network
 
 [Service]
 Restart=always
@@ -982,7 +986,7 @@ Volume=bareos-webui-config.volume:/etc/bareos-webui:Z
 # Bind to loopback only; use nginx for HTTPS remote access (see Chapter 17)
 PublishPort=127.0.0.1:9100:80
 
-Network=bareos-net.network
+Network=bareos.network
 
 [Service]
 Restart=on-failure

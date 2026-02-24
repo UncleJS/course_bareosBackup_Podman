@@ -338,13 +338,13 @@ Messages {
 # ─────────────────────────────────────────────────────────────────
 # File Daemon Messages resource.
 # FD messages are forwarded to the Director.
+# Container FD logs go to the journal (stdout) — no Append needed.
 # ─────────────────────────────────────────────────────────────────
 
 Messages {
   Name = "Standard"
 
-  Director = bareos-dir = all
-  Append   = "/var/log/bareos/bareos-fd.log" = all, !skipped, !restored
+  Director = bareos-director = all
   Syslog   = daemon.warning = error, fatal
 }
 ```

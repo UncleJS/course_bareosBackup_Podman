@@ -80,7 +80,7 @@ Storage Daemon (bareos-storage container)
   ├── Seek to offset 1,234,567 (catalog provides exact position)
   └── Stream data directly to File Daemon
 
-File Daemon (host RPM service)
+File Daemon (container: bareos-fd)
   │
   ├── Receive data stream from Storage Daemon
   ├── Verify checksums
@@ -497,7 +497,7 @@ A common disaster recovery scenario: the original client is destroyed, and you n
 
 ### Requirements
 
-1. The new host must have the Bareos File Daemon installed and configured to accept the Director's connection
+1. The new host must have the Bareos File Daemon installed and configured to accept the Director's connection (via RPM for a remote host, or via the `bareos-client:24` container for a Podman host)
 2. The restore path must exist and be writable on the new client
 3. File ownership after restore will use the UIDs/GIDs as stored in the backup; these must make sense on the new host
 

@@ -627,7 +627,8 @@ Below is a complete, production-ready hook script for dumping a MariaDB containe
 # mysqldump inside the container to produce a consistent SQL dump.
 #
 # Requirements:
-#   - Podman socket bind-mounted at /run/user/1001/podman/podman.sock
+#   - Podman socket bind-mounted at /run/podman/podman.sock (inside container)
+#     (host path: /run/user/1001/podman/podman.sock → mounted via bareos-fd.container)
 #   - MYSQL_ROOT_PASSWORD environment variable set (via bareos-fd env config)
 #   - Container named "mariadb" must be running
 #
@@ -818,7 +819,8 @@ sudo chcon -t bareos_script_exec_t /etc/bareos/scripts/backup-mariadb.sh
 # a complete server-level dump including roles, tablespaces, and all databases.
 #
 # Requirements:
-#   - Podman socket bind-mounted at /run/user/1001/podman/podman.sock
+#   - Podman socket bind-mounted at /run/podman/podman.sock (inside container)
+#     (host path: /run/user/1001/podman/podman.sock → mounted via bareos-fd.container)
 #   - POSTGRES_PASSWORD or PGPASSWORD environment variable set
 #   - Container named "postgres" must be running
 #
@@ -1749,7 +1751,7 @@ In this chapter you learned why backup hooks are not optional when backing up co
 
 - **Bareos RunScript**: The `RunScript` directive (and its shorthands `ClientRunBeforeJob` / `ClientRunAfterJob`) lets you run arbitrary scripts before and after a backup job, either on the client or on the Director.
 
-- **Execution context**: Hook scripts run under the bareos-fd process identity. In a rootless Podman setup, they access containers via the Podman socket (`/run/user/1001/podman/podman.sock`).
+- **Execution context**: Hook scripts run under the bareos-fd process identity. In a rootless Podman setup, they access containers via the Podman socket (`/run/podman/podman.sock` inside the bareos-fd container, bind-mounted from the host's `/run/user/1001/podman/podman.sock`).
 
 - **Stop vs pause**: `podman stop` gives a clean shutdown but causes downtime. `podman pause` uses the cgroup freezer for near-zero-downtime freezing, but should be combined with a logical dump since the raw files may not be clean.
 
