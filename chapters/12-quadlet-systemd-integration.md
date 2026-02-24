@@ -798,6 +798,77 @@ RestartSec=10s
 WantedBy=default.target
 ```
 
+### File: `bareos-webui-config.volume`
+
+The WebUI configuration volume holds the two INI files (`directors.ini` and `configuration.ini`) that the WebUI container reads on startup.
+
+```ini
+# /home/bareos/.config/containers/systemd/bareos-webui-config.volume
+#
+# Named volume for Bareos WebUI configuration.
+# Populated with directors.ini and configuration.ini before first start.
+# See Chapter 6, Section 12 for population commands.
+
+[Volume]
+Label=app=bareos
+Label=component=webui-config
+```
+
+### File: `bareos-webui.container`
+
+```ini
+# /home/bareos/.config/containers/systemd/bareos-webui.container
+#
+# Bareos WebUI — the graphical management interface.
+# Connects to the Director's console API on port 9101.
+# Exposed on localhost:9100; place nginx in front for HTTPS.
+
+[Unit]
+Description=Bareos WebUI
+Documentation=https://docs.bareos.org/IntroductionAndTutorial/BareosWebui.html
+# The WebUI is useless without the Director — hard-depend on it.
+After=bareos-director.service
+Requires=bareos-director.service
+
+[Container]
+Image=docker.io/bareos/bareos-webui:24
+ContainerName=bareos-webui
+
+# Join the bareos network so the WebUI can reach the Director by container name.
+Network=bareos-net.network
+
+# Mount the config volume at the path the WebUI image expects.
+Volume=bareos-webui-config:/etc/bareos-webui:Z
+
+# Expose the WebUI on localhost only.
+PublishPort=127.0.0.1:9100:80
+
+Label=io.containers.autoupdate=registry
+Label=app=bareos
+Label=component=webui
+
+[Service]
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=default.target
+```
+
+The complete Bareos Quadlet stack now consists of **seven units**:
+
+| File | Type | Purpose |
+|------|------|---------|
+| `bareos-net.network` | Network | Isolated bridge for all Bareos containers |
+| `bareos-db.volume` | Volume | MariaDB catalog data |
+| `bareos-store.volume` | Volume | Backup archive storage |
+| `bareos-webui-config.volume` | Volume | WebUI INI configuration files |
+| `bareos-db.container` | Container | MariaDB catalog |
+| `bareos-storage.container` | Container | Bareos Storage Daemon |
+| `bareos-director.container` | Container | Bareos Director |
+| `bareos-fd.container` | Container | Bareos File Daemon (local client) |
+| `bareos-webui.container` | Container | Bareos WebUI (graphical interface) |
+
 ---
 
 [↑ Back to Table of Contents](#table-of-contents)

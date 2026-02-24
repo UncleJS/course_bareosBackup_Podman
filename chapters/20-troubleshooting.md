@@ -99,7 +99,15 @@
   - [query — Run Catalog Queries](#query-run-catalog-queries)
   - [run — Start Jobs](#run-start-jobs)
   - [restore — Interactive Restore Wizard](#restore-interactive-restore-wizard)
-- [21. Lab 20-1: Diagnose an Authorization Failure](#21-lab-20-1-diagnose-an-authorization-failure)
+- [21. WebUI Troubleshooting](#21-webui-troubleshooting)
+  - [Container Not Starting](#container-not-starting)
+  - [Login Error: "Could Not Connect to Director"](#login-error-could-not-connect-to-director)
+  - [Login Error: "Authentication Failed"](#login-error-authentication-failed)
+  - [HTTP 500 / Blank Page After Login](#http-500--blank-page-after-login)
+  - [Slow or Empty File Tree on Restore Page](#slow-or-empty-file-tree-on-restore-page)
+  - [SELinux Blocking the WebUI](#selinux-blocking-the-webui)
+  - [WebUI Accessible but Shows No Jobs / Wrong Data](#webui-accessible-but-shows-no-jobs--wrong-data)
+- [22. Lab 20-1: Diagnose an Authorization Failure](#22-lab-20-1-diagnose-an-authorization-failure)
   - [Prerequisites](#prerequisites)
   - [Step 1: Record the Current Password](#step-1-record-the-current-password)
   - [Step 2: Introduce a Wrong Password](#step-2-introduce-a-wrong-password)
@@ -109,7 +117,7 @@
   - [Step 6: Check the FD Journal](#step-6-check-the-fd-journal)
   - [Step 7: Restore the Correct Password](#step-7-restore-the-correct-password)
   - [What You Learned](#what-you-learned)
-- [22. Lab 20-2: Create and Resolve a SELinux Denial](#22-lab-20-2-create-and-resolve-a-selinux-denial)
+- [23. Lab 20-2: Create and Resolve a SELinux Denial](#23-lab-20-2-create-and-resolve-a-selinux-denial)
   - [Prerequisites](#prerequisites)
   - [Step 1: Create a Test Directory with Wrong Context](#step-1-create-a-test-directory-with-wrong-context)
   - [Step 2: Add a New Storage Device Pointing to This Directory](#step-2-add-a-new-storage-device-pointing-to-this-directory)
@@ -118,7 +126,7 @@
   - [Step 5: Apply the Correct Context (The Right Fix)](#step-5-apply-the-correct-context-the-right-fix)
   - [Step 6: Generate an audit2allow Module (Demonstration)](#step-6-generate-an-audit2allow-module-demonstration)
   - [Step 7: Verify the Fix](#step-7-verify-the-fix)
-- [23. Lab 20-3: Use dbcheck to Repair a Catalog Inconsistency](#23-lab-20-3-use-dbcheck-to-repair-a-catalog-inconsistency)
+- [24. Lab 20-3: Use dbcheck to Repair a Catalog Inconsistency](#24-lab-20-3-use-dbcheck-to-repair-a-catalog-inconsistency)
   - [Prerequisites](#prerequisites)
   - [Step 1: Find a Volume to "Lose"](#step-1-find-a-volume-to-lose)
   - [Step 2: Manually Delete the Volume File](#step-2-manually-delete-the-volume-file)
@@ -126,9 +134,9 @@
   - [Step 4: Update the Volume Status to Reflect the Loss](#step-4-update-the-volume-status-to-reflect-the-loss)
   - [Step 5: Stop the Director and Run dbcheck](#step-5-stop-the-director-and-run-dbcheck)
   - [Step 6: Restart and Verify](#step-6-restart-and-verify)
-- [24. Quick-Reference Error Table](#24-quick-reference-error-table)
-- [25. Diagnostic Decision Tree](#25-diagnostic-decision-tree)
-- [26. Summary](#26-summary)
+- [25. Quick-Reference Error Table](#25-quick-reference-error-table)
+- [26. Diagnostic Decision Tree](#26-diagnostic-decision-tree)
+- [27. Summary](#27-summary)
 
 ## 1. Troubleshooting Philosophy
 
@@ -1494,7 +1502,218 @@ If the migration script itself fails (e.g., due to a DB corruption), restore fro
 
 [↑ Back to Table of Contents](#table-of-contents)
 
-## 21. Lab 20-1: Diagnose an Authorization Failure
+## 21. WebUI Troubleshooting
+
+The Bareos WebUI is deployed as a container in Chapter 6 and is the primary day-to-day interface throughout this course. This section covers all known failure modes.
+
+### Container Not Starting
+
+**Symptom:** `systemctl --user status bareos-webui` shows `failed` or `activating` forever.
+
+```bash
+# Check the container log for startup errors
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  journalctl --user -u bareos-webui.service -n 50 --no-pager
+
+# Confirm the container is (or isn't) running
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman ps --filter name=bareos-webui
+```
+
+| Root cause | Symptom in logs | Fix |
+|------------|----------------|-----|
+| Volume doesn't exist | `volume not found: bareos-webui-config` | `podman volume create bareos-webui-config` then recreate `directors.ini` and `configuration.ini` — see Chapter 6, Section 12 |
+| Quadlet file syntax error | Unit not generated after `daemon-reload` | Check `/home/bareos/.config/containers/systemd/bareos-webui.container` for typos; run `systemd-analyze verify bareos-webui.service` |
+| Image not pulled | `Error: image not known` | `podman pull docker.io/bareos/bareos-webui:24` |
+| Director not running | Container starts then exits | Start `bareos-director.service` first; the `Requires=` in the Quadlet means the WebUI won't stay up without it |
+
+---
+
+### Login Error: "Could Not Connect to Director"
+
+**Symptom:** After entering credentials, the WebUI shows an error like *"Could not connect to director bareos-dir"*.
+
+**Cause:** The `diraddress` in `directors.ini` does not match the actual Director container name, or the Director is not running.
+
+```bash
+# 1. Check the Director is running
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman ps --filter name=bareos-director
+
+# 2. Check what diraddress is set to
+WEBUI_VOL=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman volume inspect bareos-webui-config --format "{{.Mountpoint}}")
+grep diraddress "${WEBUI_VOL}/directors.ini"
+# Must be: diraddress = "bareos-director"
+# (the canonical container name used in this course)
+
+# 3. Verify the WebUI container can reach the Director by name
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman exec bareos-webui ping -c 2 bareos-director
+```
+
+If `diraddress` is wrong, edit `directors.ini`:
+
+```bash
+WEBUI_VOL=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman volume inspect bareos-webui-config --format "{{.Mountpoint}}")
+
+# Fix the diraddress line
+sudo -u bareos bash -c "
+sed -i 's/^diraddress.*/diraddress = \"bareos-director\"/' ${WEBUI_VOL}/directors.ini
+"
+
+# Restart the WebUI to pick up the change
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  systemctl --user restart bareos-webui.service
+```
+
+---
+
+### Login Error: "Authentication Failed"
+
+**Symptom:** The WebUI shows the login page, accepts the URL/director name, but rejects the username/password.
+
+**Cause:** The password typed at login does not match the `Password` in the Console resource (`webui-admin.conf`) in the Director config.
+
+```bash
+# Check the Console resource password
+DIR_VOL=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman volume inspect bareos-director-config --format "{{.Mountpoint}}")
+grep -A5 "Console {" "${DIR_VOL}/bareos-dir.d/console/webui-admin.conf"
+```
+
+The `Name` field in the Console resource is the login **username**. Make sure you are using `webui-admin` as the username (not `admin` or `bareos`).
+
+If the Console resource is missing entirely:
+
+```bash
+# Recreate it — see Chapter 6 Section 12 for the full block
+cat > "${DIR_VOL}/bareos-dir.d/console/webui-admin.conf" << 'EOF'
+Console {
+  Name     = "webui-admin"
+  Password = "your_strong_password_here"
+  Profile  = "webui-admin"
+  TLS Enable = no
+}
+EOF
+
+# Reload the Director
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman exec bareos-director bconsole <<< "reload"
+```
+
+---
+
+### HTTP 500 / Blank Page After Login
+
+**Symptom:** Login succeeds but the dashboard shows a blank page or an HTTP 500 error.
+
+**Cause:** Usually a `configuration.ini` parse error or a missing/malformed `directors.ini` section.
+
+```bash
+# Check the Apache error log inside the container
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman exec bareos-webui cat /var/log/apache2/error.log 2>/dev/null || \
+  podman exec bareos-webui cat /var/log/httpd/error_log 2>/dev/null
+
+# Also check the container stdout for PHP errors
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman logs bareos-webui --tail 40
+```
+
+Common fixes:
+- Ensure `directors.ini` has a section header in square brackets, e.g. `[bareos-director]`
+- Ensure `configuration.ini` is named exactly that (not `bareos.ini`)
+- Ensure neither file is empty (the container can silently fail with an empty config)
+
+---
+
+### Slow or Empty File Tree on Restore Page
+
+**Symptom:** When navigating to **Restore → Browse Files**, the file tree takes a very long time to load or shows no files.
+
+**Cause:** The Bvfs (Backup Virtual Filesystem) cache in the Catalog is stale or has never been populated.
+
+```bash
+# Manually trigger a full Bvfs cache rebuild
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman exec bareos-director bconsole <<< ".bvfs_update"
+
+# For a specific job only:
+# sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+#   podman exec bareos-director bconsole <<< ".bvfs_update jobid=<id>"
+```
+
+For the cache to be kept automatically up to date, add a `RunScript` block to your backup jobs — see Chapter 6, Section 12, or Chapter 17, Section 6.
+
+If the restore page times out even after the cache is populated, increase the `filetree_refresh_timeout` in `configuration.ini`:
+
+```bash
+WEBUI_VOL=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman volume inspect bareos-webui-config --format "{{.Mountpoint}}")
+
+sudo -u bareos bash -c "
+sed -i 's/^filetree_refresh_timeout.*/filetree_refresh_timeout = 300000/' \
+  ${WEBUI_VOL}/configuration.ini
+"
+# Then restart the WebUI
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  systemctl --user restart bareos-webui.service
+```
+
+---
+
+### SELinux Blocking the WebUI
+
+**Symptom:** WebUI container starts, but connecting to the Director fails, or the Apache process inside the container cannot read the config volume. Check for AVC denials:
+
+```bash
+sudo ausearch -m avc -ts recent | grep bareos-webui
+```
+
+**Container-to-container traffic** (WebUI → Director on the same host, same Podman network) is permitted under the default `container_t` policy — no booleans needed.
+
+**Config volume access** requires the `:Z` flag in the Volume mount (already present in the Quadlet file from Chapter 6). If you manually recreated the volume data files with root privileges, the SELinux context may be wrong:
+
+```bash
+# Re-label the WebUI config volume
+WEBUI_VOL=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman volume inspect bareos-webui-config --format "{{.Mountpoint}}")
+sudo restorecon -Rv "${WEBUI_VOL}"
+```
+
+**Nginx proxy** (if used): nginx on the host proxying to `localhost:9100` does need the boolean:
+
+```bash
+sudo setsebool -P httpd_can_network_connect on
+```
+
+---
+
+### WebUI Accessible but Shows No Jobs / Wrong Data
+
+**Symptom:** Login works, dashboard loads, but shows 0 jobs or stale data.
+
+```bash
+# Verify the Director the WebUI is connected to is the right one
+# Check which section [name] is in directors.ini
+WEBUI_VOL=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman volume inspect bareos-webui-config --format "{{.Mountpoint}}")
+cat "${WEBUI_VOL}/directors.ini"
+
+# Confirm jobs exist in the catalog
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman exec bareos-director bconsole <<< "list jobs last=5"
+```
+
+If jobs exist in bconsole but not in the WebUI, the WebUI may be connected to a different Director instance. Check that `diraddress` points to `bareos-director` and that only one Director container is running.
+
+---
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+## 22. Lab 20-1: Diagnose an Authorization Failure
 
 In this lab, you will intentionally introduce a password mismatch between the Director and the File Daemon, observe the error, and then fix it.
 
@@ -1604,7 +1823,7 @@ EOF
 
 [↑ Back to Table of Contents](#table-of-contents)
 
-## 22. Lab 20-2: Create and Resolve a SELinux Denial
+## 23. Lab 20-2: Create and Resolve a SELinux Denial
 
 In this lab, you will create a new directory, give it the wrong SELinux context, observe Bareos failing to write to it, and use `audit2allow` to generate a fix.
 
@@ -1729,7 +1948,7 @@ EOF
 
 [↑ Back to Table of Contents](#table-of-contents)
 
-## 23. Lab 20-3: Use dbcheck to Repair a Catalog Inconsistency
+## 24. Lab 20-3: Use dbcheck to Repair a Catalog Inconsistency
 
 In this lab, you will manually delete a volume file from disk (simulating a disk failure), then use `dbcheck` to identify and clean up the orphaned catalog records.
 
@@ -1821,7 +2040,7 @@ The deleted volume should either be gone from the catalog or marked in a state t
 
 [↑ Back to Table of Contents](#table-of-contents)
 
-## 24. Quick-Reference Error Table
+## 25. Quick-Reference Error Table
 
 | Error Message | Most Likely Cause | Immediate Fix |
 |---|---|---|
@@ -1853,7 +2072,7 @@ The deleted volume should either be gone from the catalog or marked in a state t
 
 [↑ Back to Table of Contents](#table-of-contents)
 
-## 25. Diagnostic Decision Tree
+## 26. Diagnostic Decision Tree
 
 The following ASCII art flowchart guides you through the most common failure scenarios. Start at the top and follow the branches.
 
@@ -1976,7 +2195,7 @@ The following ASCII art flowchart guides you through the most common failure sce
 
 [↑ Back to Table of Contents](#table-of-contents)
 
-## 26. Summary
+## 27. Summary
 
 This chapter has given you a complete toolkit for diagnosing and resolving Bareos failures in a rootless Podman environment on RHEL 10. The key points to take away:
 
@@ -1992,7 +2211,7 @@ This chapter has given you a complete toolkit for diagnosing and resolving Bareo
 
 **`dbcheck` is the catalog repair tool.** Run it with the Director stopped, in `-v` mode first to assess damage, then with `-B -f` to repair it.
 
-**The Quick-Reference Error Table** (Section 24) and the Diagnostic Decision Tree (Section 25) are your quick-lookup guides for the most common problems.
+**The Quick-Reference Error Table** (Section 25) and the Diagnostic Decision Tree (Section 26) are your quick-lookup guides for the most common problems.
 
 With the techniques in this chapter, you can confidently diagnose and resolve the full range of issues that arise in a production Bareos deployment.
 

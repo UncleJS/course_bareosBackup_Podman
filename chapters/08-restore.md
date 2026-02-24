@@ -7,6 +7,10 @@
   - [Critical Point: Multiple Jobs in One Restore](#critical-point-multiple-jobs-in-one-restore)
 - [3. The bconsole Restore Wizard](#3-the-bconsole-restore-wizard)
   - [Starting the Restore](#starting-the-restore)
+- [3b. The WebUI Restore Browser](#3b-the-webui-restore-browser)
+  - [Navigating the File Tree](#navigating-the-file-tree)
+  - [Running the Restore from WebUI](#running-the-restore-from-webui)
+  - [The Bvfs Cache](#the-bvfs-cache)
 - [4. Restore Selection Methods](#4-restore-selection-methods)
   - [Selecting by Directory (most common)](#selecting-by-directory-most-common)
   - [Selecting Specific Files](#selecting-specific-files)
@@ -174,6 +178,63 @@ $ help
   quit       quit without doing restore
   ?          print help
 ```
+
+---
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+## 3b. The WebUI Restore Browser
+
+The Bareos WebUI provides a **graphical file-tree browser** for restores. It is the recommended interface for day-to-day file-level restores — it is faster to navigate than the bconsole wizard and does not require memorising commands.
+
+The file-tree browser is powered by the **Bvfs (Bareos Virtual Filesystem) cache**, a set of Catalog tables that the Director populates after each backup job. If the cache is stale or empty, the browser will be slow or show no files.
+
+### Navigating the File Tree
+
+1. Log in to the WebUI at `http://localhost:9100/bareos-webui`
+2. Go to **Restore** in the left sidebar
+3. Select the **Client** to restore from (e.g., `bareos-fd`)
+4. Select the **Backup Job** or a point-in-time — the WebUI shows the most recent available backup
+5. A file-tree appears. Navigate by clicking directories, or use the search box to find files by name
+6. Tick the checkboxes next to files or directories you want to restore. Use the top-level checkbox to select everything
+7. Click **Restore** when your selection is complete
+
+### Running the Restore from WebUI
+
+In the **Restore** dialog that appears:
+
+| Field | Recommended value |
+|-------|-------------------|
+| **Client** | The client that will receive the files (can differ from the backup client) |
+| **Restore Location** | `/tmp/bareos-restores` for test restores; `/` for full DR restores |
+| **Replace** | `never` for test restores (skip files that already exist); `always` for DR |
+| **Restore Job** | Leave as default (`RestoreFiles`) |
+
+Click **Run Restore**. The job appears in **Jobs → Running** and then in **Jobs → All Jobs** when complete.
+
+### The Bvfs Cache
+
+The Bvfs cache must be populated for the file browser to work. If you see an empty tree or very slow loading after a large backup, rebuild the cache:
+
+```bash
+# Rebuild Bvfs cache for all jobs
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< ".bvfs_update"
+
+# Or rebuild only for a specific client
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< ".bvfs_update client=bareos-fd"
+```
+
+To keep the cache always current, add a `RunScript` to your backup jobs (see [Chapter 17](./17-monitoring-alerts.md)):
+
+```
+RunScript {
+  Runs When   = After
+  Runs On Client = No
+  Command     = ".bvfs_update"
+}
+```
+
+> **Note:** The bconsole wizard (Section 3) and the WebUI browser (this section) both trigger the same restore mechanism in the Director. Use whichever you prefer — the outcome is identical.
 
 ---
 
@@ -622,12 +683,13 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 
 ## 12. Lab 8-1: Full Directory Restore Walkthrough
 
+This lab shows both the `bconsole` restore wizard and the **WebUI restore browser**. Both produce the same result.
+
 ```bash
 # Step 1: Create test data to restore
 sudo mkdir -p /tmp/restore-lab-source
 sudo tee /tmp/restore-lab-source/testfile1.txt > /dev/null <<'EOF'
 This is test file 1 for restore lab
-Created on: $(date)
 EOF
 sudo tee /tmp/restore-lab-source/testfile2.txt > /dev/null <<'EOF'
 This is test file 2 for restore lab
@@ -639,7 +701,7 @@ EOF
 # Add: File = /tmp/restore-lab-source
 
 # Step 3: Run a Full backup including the test data
-bconsole <<'EOF'
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'EOF'
 reload
 run job=BackupLocalHost level=Full yes
 wait
@@ -648,14 +710,17 @@ quit
 EOF
 
 # Step 4: Record the JobId of the backup
-echo "list jobs" | bconsole
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< "list jobs"
 
 # Step 5: Delete the original data (simulating a disaster)
 sudo rm -rf /tmp/restore-lab-source
 echo "Source data deleted. Starting restore..."
+```
 
-# Step 6: Restore using the wizard
-bconsole <<'EOF'
+**Restore Option A — bconsole wizard:**
+
+```bash
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'EOF'
 restore
 5
 1
@@ -670,8 +735,18 @@ wait
 messages
 quit
 EOF
+```
 
-# Step 7: Verify restoration
+**Restore Option B — WebUI browser:**
+
+1. Open `http://localhost:9100/bareos-webui` → **Restore**
+2. Select client `bareos-fd`, choose the most recent Full backup
+3. Navigate to `/tmp/restore-lab-source` and tick the directory checkbox
+4. Click **Restore**, set Restore Location to `/tmp/restore-lab-destination`, Replace = `never`
+5. Click **Run Restore** and wait for the job to complete in **Jobs → All Jobs**
+
+```bash
+# Step 7: Verify restoration (same regardless of which method you used)
 ls -la /tmp/restore-lab-destination/tmp/restore-lab-source/
 cat /tmp/restore-lab-destination/tmp/restore-lab-source/testfile1.txt
 
@@ -690,19 +765,23 @@ sudo rm -rf /tmp/restore-lab-source /tmp/restore-lab-destination
 
 ```bash
 # Create multiple files in a test directory
+mkdir -p /tmp/selective-restore-test
 for i in $(seq 1 10); do
   echo "Content of file $i" > /tmp/selective-restore-test/file${i}.txt
 done
 
 # Run a backup
-bconsole <<'EOF'
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'EOF'
 run job=BackupLocalHost level=Full yes
 wait
 quit
 EOF
+```
 
-# Simulate: only need to restore file5.txt
-bconsole <<'BEOF'
+**Restore Option A — bconsole wizard (restore only file5.txt):**
+
+```bash
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'BEOF'
 restore
 5
 1
@@ -723,7 +802,16 @@ wait
 messages
 quit
 BEOF
+```
 
+**Restore Option B — WebUI browser:**
+
+1. Open **Restore** → select client → select the Full backup job
+2. Navigate to `/tmp/selective-restore-test`
+3. Tick **only** `file5.txt` — leave all other files unticked
+4. Click **Restore**, set Restore Location to `/tmp/selective-destination`, Replace = `never`, click **Run Restore**
+
+```bash
 # Verify: only file5.txt should be present
 ls -la /tmp/selective-destination/tmp/selective-restore-test/
 # Expected: only file5.txt
@@ -738,11 +826,12 @@ rm -rf /tmp/selective-restore-test /tmp/selective-destination
 
 ## 14. Lab 8-3: Restore to Alternate Path
 
-```bash
-# This lab demonstrates recovering /etc/hosts to a test directory
-# (safe: does not overwrite the live /etc/hosts)
+This lab demonstrates recovering `/etc/hosts` to a test directory — safe because it does not overwrite the live file.
 
-bconsole <<'BEOF'
+**Restore Option A — bconsole wizard:**
+
+```bash
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'BEOF'
 restore
 5
 1
@@ -764,8 +853,17 @@ wait
 messages
 quit
 BEOF
+```
 
-# Verify the file was restored
+**Restore Option B — WebUI browser:**
+
+1. Open **Restore** → select client → select the most recent Full backup
+2. Navigate to `/etc` in the file tree
+3. Tick `hosts`
+4. Click **Restore**, set Restore Location to `/tmp/etc-recovery-test`, Replace = `never`, click **Run Restore**
+
+```bash
+# Verify the file was restored (same for both methods)
 ls -la /tmp/etc-recovery-test/etc/hosts
 cat /tmp/etc-recovery-test/etc/hosts
 
@@ -790,9 +888,10 @@ In this chapter you mastered Bareos restore operations:
 - **The restore philosophy**: Test restores regularly, document results, and time them. A backup is only proven by a successful restore.
 - **Internal mechanics**: The Director queries the Catalog for file locations and Volume offsets, then instructs the SD to stream data directly to the FD. Data never flows through the Director.
 - **Multiple-job restores**: When restoring from an incremental chain, Bareos assembles the most recent version of each file from the correct job automatically.
-- **The restore wizard**: `restore` in bconsole provides an interactive virtual filesystem browser. `cd`, `mark`, `unmark`, `find`, and `done` navigate and select files.
+- **The bconsole wizard**: `restore` in bconsole provides an interactive virtual filesystem browser. `cd`, `mark`, `unmark`, `find`, and `done` navigate and select files. Essential for scripted and emergency restores.
+- **The WebUI restore browser**: A graphical file-tree browser at **Restore** in the WebUI. The recommended interface for day-to-day restores. Powered by the Bvfs cache — run `.bvfs_update` if the tree is empty or slow.
 - **Restore destination**: Always use `Where = /tmp/bareos-restores` or a custom alternate path during tests. Use `Where = /` only for real disaster recovery.
-- **Restoring to a different client**: Set `Restore Client` to a different host via `mod` in the wizard.
+- **Restoring to a different client**: Set `Restore Client` to a different host via `mod` in the wizard, or via the Client field in the WebUI restore dialog.
 - **Verification**: Always verify restored data with file count comparisons, checksum matching, and `diff`.
 - **bscan and bextract**: Emergency tools for recovering data when the Catalog is lost. `bscan` rebuilds the Catalog from Volumes; `bextract` extracts files directly without any Catalog.
 

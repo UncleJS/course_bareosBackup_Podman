@@ -873,6 +873,7 @@ sudo -u bareos bash -c '
   podman pull docker.io/bareos/bareos-director:24
   podman pull docker.io/bareos/bareos-storage:24
   podman pull docker.io/bareos/bareos-client:24
+  podman pull docker.io/bareos/bareos-webui:24
   echo "All images pulled."
   podman images
 '
@@ -963,7 +964,36 @@ Restart=always
 WantedBy=default.target
 EOF
 
-# 5. Restore the Bareos configuration from backup into the named volumes.
+# 5. Write the WebUI Quadlet file
+cat > /home/bareos/.config/containers/systemd/bareos-webui.container << 'EOF'
+[Unit]
+Description=Bareos WebUI
+Documentation=https://docs.bareos.org/IntroductionAndTutorial/BareosWebui.html
+After=network-online.target bareos-director.service
+Requires=bareos-director.service
+
+[Container]
+Image=docker.io/bareos/bareos-webui:24
+ContainerName=bareos-webui
+
+# WebUI config volume — restored from backup below (directors.ini, configuration.ini)
+Volume=bareos-webui-config.volume:/etc/bareos-webui:Z
+
+# Bind to loopback only; use nginx for HTTPS remote access (see Chapter 17)
+PublishPort=127.0.0.1:9100:80
+
+Network=bareos-net.network
+
+[Service]
+Restart=on-failure
+RestartSec=10
+Environment=XDG_RUNTIME_DIR=/run/user/1001
+
+[Install]
+WantedBy=default.target
+EOF
+
+# 6. Restore the Bareos configuration from backup into the named volumes.
 #    If the volumes were already restored in step 8b, skip this.
 #    If you are working from a config backup (e.g., git repo):
 
@@ -971,7 +1001,7 @@ sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
 
   # Create volumes if they do not exist
-  for vol in bareos-dir-config bareos-dir-state bareos-sd-config bareos-fd-config; do
+  for vol in bareos-dir-config bareos-dir-state bareos-sd-config bareos-fd-config bareos-webui-config; do
     podman volume create "$vol" 2>/dev/null || true
   done
 
@@ -986,6 +1016,18 @@ sudo -u bareos bash -c '
   # Restore File Daemon config
   FD_CONFIG=$(podman volume inspect bareos-fd-config --format "{{.Mountpoint}}")
   cp -r /mnt/backup-drive/bareos-config/client/* "$FD_CONFIG/"
+
+  # Restore WebUI config (directors.ini, configuration.ini)
+  # These files are small and should be in your config backup.
+  WEBUI_CONFIG=$(podman volume inspect bareos-webui-config --format "{{.Mountpoint}}")
+  if [ -d /mnt/backup-drive/bareos-config/webui ]; then
+    cp -r /mnt/backup-drive/bareos-config/webui/* "$WEBUI_CONFIG/"
+    echo "WebUI config restored from backup."
+  else
+    echo "WARNING: No webui config backup found at /mnt/backup-drive/bareos-config/webui"
+    echo "You will need to recreate directors.ini and configuration.ini manually."
+    echo "See Chapter 6, Section 12 for the correct content."
+  fi
 
   echo "Configuration restored."
 '
@@ -1021,9 +1063,13 @@ sudo -u bareos bash -c '
   systemctl --user start bareos-director.service
   sleep 10
 
+  echo "Starting WebUI..."
+  systemctl --user start bareos-webui.service
+  sleep 5
+
   echo "Service status:"
   systemctl --user status bareos-db.service bareos-director.service \
-    bareos-storage.service bareos-fd.service --no-pager
+    bareos-storage.service bareos-fd.service bareos-webui.service --no-pager
 '
 
 # 2. Check Director logs for errors
@@ -1045,6 +1091,13 @@ sudo -u bareos bash -c '
 # *status director
 # You should see the Director status with no errors.
 # *quit to exit.
+
+# 4. Verify the WebUI is accessible
+curl -sI http://localhost:9100/ | head -3
+# Expected: HTTP/1.1 200 OK  or  302 Found (redirect to /bareos-webui/auth/login)
+# If the WebUI is not responding, check its logs:
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  journalctl --user -u bareos-webui.service -n 30 --no-pager
 ```
 
 ### 8f. Verify All Volumes and Jobs in bconsole

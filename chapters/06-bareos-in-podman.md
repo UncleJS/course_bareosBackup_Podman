@@ -36,9 +36,14 @@
   - [bconsole Configuration](#bconsole-configuration)
   - [First bconsole Connection](#first-bconsole-connection)
   - [Verifying All Components](#verifying-all-components)
-- [12. Lab 6-1: Full Deployment Walkthrough](#12-lab-6-1-full-deployment-walkthrough)
-- [13. Lab 6-2: Verifying Inter-Container Connectivity](#13-lab-6-2-verifying-inter-container-connectivity)
-- [14. Summary](#14-summary)
+- [12. Deploying the Bareos WebUI](#12-deploying-the-bareos-webui)
+  - [Step 1 — Create the WebUI Console Resource](#step-1-create-the-webui-console-resource)
+  - [Step 2 — Create the WebUI Configuration Volume](#step-2-create-the-webui-configuration-volume)
+  - [Step 3 — Write the Quadlet File](#step-3-write-the-quadlet-file)
+  - [Step 4 — Start the WebUI and Verify](#step-4-start-the-webui-and-verify)
+- [13. Lab 6-1: Full Deployment Walkthrough](#13-lab-6-1-full-deployment-walkthrough)
+- [14. Lab 6-2: Verifying Inter-Container Connectivity](#14-lab-6-2-verifying-inter-container-connectivity)
+- [15. Summary](#15-summary)
 
 ## 1. Deployment Architecture Overview
 
@@ -51,9 +56,11 @@ This chapter deploys the complete Bareos stack as rootless Podman containers man
 │   │   ├── bareos.network
 │   │   ├── bareos-db-data.volume
 │   │   ├── bareos-config.volume
+│   │   ├── bareos-webui-config.volume
 │   │   ├── bareos-db.container
 │   │   ├── bareos-storage.container
-│   │   └── bareos-director.container
+│   │   ├── bareos-director.container
+│   │   └── bareos-webui.container
 │   └── bareos/
 │       ├── db.env                  ← MariaDB credentials (mode 600)
 │       └── bareos.env              ← Bareos shared passwords (mode 600)
@@ -917,14 +924,235 @@ All three statuses should report successful connections.
 
 [↑ Back to Table of Contents](#table-of-contents)
 
-## 12. Lab 6-1: Full Deployment Walkthrough
+## 12. Deploying the Bareos WebUI
+
+The Bareos WebUI is a PHP-based web application that provides a graphical interface for job monitoring, restore operations, and day-to-day Bareos management. It is **part of the standard deployment** in this course — not an optional extra. It connects to the Director's console API on port 9101 using a dedicated `Console` resource, exactly like `bconsole`, exposed over HTTP instead of a terminal.
+
+```
+Browser ──→ bareos-webui container (Apache + PHP-FPM, port 9100)
+                    │
+                    └──→ bareos-director:9101  (console API)
+                                │
+                                └──→ bareos-db:3306 (catalog)
+```
+
+The WebUI is **stateless** — it translates web requests into bconsole API calls. All persistent state lives in the Director and Catalog. The container image `docker.io/bareos/bareos-webui:24` bundles Apache and PHP-FPM; there is no separate web server to install or configure on the host.
+
+> **Why learn bconsole first?** `bconsole` works in any environment, reveals underlying concepts directly, and is essential for scripting and automation. Once you are comfortable with it, the WebUI's features are immediately intuitive.
+
+### Step 1 — Create the WebUI Console Resource
+
+The WebUI authenticates to the Director using a dedicated `Console` resource. Add two config files to the Director's config volume:
+
+```bash
+# Get the Director config volume path
+DIR_VOL=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman volume inspect bareos-config --format "{{.Mountpoint}}")
+
+# Create the console resource directory if not already present
+sudo mkdir -p "${DIR_VOL}/bareos-dir.d/console"
+sudo mkdir -p "${DIR_VOL}/bareos-dir.d/profile"
+
+# Generate a strong password for the WebUI
+WEBUI_PASSWORD=$(openssl rand -base64 24)
+echo "WebUI password: ${WEBUI_PASSWORD}"
+echo "Save this in your password manager before continuing."
+
+# Write the Console resource
+sudo tee "${DIR_VOL}/bareos-dir.d/console/webui-admin.conf" > /dev/null <<EOF
+#
+# Console resource that the WebUI uses to authenticate to the Director.
+# This is equivalent to a bconsole connection with the webui-admin profile.
+#
+Console {
+  Name     = "webui-admin"
+  Password = "${WEBUI_PASSWORD}"
+  Profile  = "webui-admin"
+  # TLS-PSK is not available between WebUI and Director — use plain console.
+  TLS Enable = No
+}
+EOF
+
+# Check if the webui-admin profile already ships with Bareos
+if [ ! -f "${DIR_VOL}/bareos-dir.d/profile/webui-admin.conf" ]; then
+  sudo tee "${DIR_VOL}/bareos-dir.d/profile/webui-admin.conf" > /dev/null <<'EOF'
+#
+# The webui-admin profile is shipped with Bareos 24 inside the image.
+# This file is only needed if your Director config volume does not
+# already contain it (i.e., on a fresh volume without the default configs).
+#
+Profile {
+  Name            = "webui-admin"
+  Command ACL     = !.bvfs_clear_cache, !.exit, !.sql, !configure, !create,
+                    !delete, !purge, !sqlquery, !umount, !unmount, *all*
+  Job ACL         = *all*
+  Schedule ACL    = *all*
+  Catalog ACL     = *all*
+  Pool ACL        = *all*
+  Storage ACL     = *all*
+  Client ACL      = *all*
+  FileSet ACL     = *all*
+  Where ACL       = *all*
+  Plugin Options ACL = *all*
+}
+EOF
+fi
+
+# Reload the Director to pick up the new Console resource
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman exec bareos-director bconsole <<< "reload"
+```
+
+### Step 2 — Create the WebUI Configuration Volume
+
+The WebUI container reads two INI files from `/etc/bareos-webui/` inside the container. Create a named volume and populate it:
+
+```bash
+# Create the volume
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman volume create bareos-webui-config
+
+WEBUI_VOL=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman volume inspect bareos-webui-config --format "{{.Mountpoint}}")
+
+# directors.ini — tells the WebUI which Director to connect to
+sudo tee "${WEBUI_VOL}/directors.ini" > /dev/null <<EOF
+; /etc/bareos-webui/directors.ini
+;
+; Tells the WebUI which Bareos Director(s) to connect to.
+; The section name ([local]) is the label shown in the WebUI login form.
+
+[local]
+enabled   = "yes"
+diraddress = "bareos-director"
+dirport    = 9101
+tls_verify_peer = false
+server_can_do_tls = false
+server_requires_tls = false
+client_can_do_tls = false
+client_requires_tls = false
+EOF
+
+# configuration.ini — application-level settings
+sudo tee "${WEBUI_VOL}/configuration.ini" > /dev/null <<'EOF'
+; /etc/bareos-webui/configuration.ini
+;
+; Application-level settings for Bareos WebUI.
+; The session timeout (in seconds) controls how long a login stays valid.
+
+[session]
+timeout = 3600
+
+[tables]
+default_items_per_page = 25
+
+[autochanger]
+alias[] =
+
+[restore]
+filebrowser_limit = 1000000
+EOF
+
+# Fix ownership so the container's Apache process can read the files
+sudo chown -R 1001:1001 "${WEBUI_VOL}"
+sudo chmod 640 "${WEBUI_VOL}/directors.ini"
+sudo chmod 640 "${WEBUI_VOL}/configuration.ini"
+```
+
+> **Note:** The application settings file must be named `configuration.ini` (not `bareos.ini`). Using the wrong filename causes the WebUI to silently fall back to all defaults.
+
+### Step 3 — Write the Quadlet File
+
+```bash
+sudo -u bareos tee /home/bareos/.config/containers/systemd/bareos-webui.container > /dev/null <<'EOF'
+# bareos-webui.container — Bareos WebUI (rootless Podman Quadlet)
+#
+# Provides the web-based graphical interface for Bareos.
+# Communicates with the Director on the internal bareos network.
+
+[Unit]
+Description=Bareos WebUI
+Documentation=https://docs.bareos.org/IntroductionAndTutorial/BareosWebui.html
+# The WebUI is useless without the Director — hard-depend on it.
+After=bareos-director.service
+Requires=bareos-director.service
+
+[Container]
+Image=docker.io/bareos/bareos-webui:24
+ContainerName=bareos-webui
+
+# Join the same Podman network as the Director so the WebUI can reach it
+# by container name (bareos-director:9101).
+Network=bareos.network
+
+# Mount the config volume at the path the WebUI image expects.
+Volume=bareos-webui-config:/etc/bareos-webui:Z
+
+# Expose the WebUI on localhost only — put nginx in front for HTTPS.
+PublishPort=127.0.0.1:9100:80
+
+Label=io.containers.autoupdate=registry
+Label=app=bareos
+Label=component=webui
+
+[Service]
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=default.target
+EOF
+```
+
+### Step 4 — Start the WebUI and Verify
+
+```bash
+# Pull the image first
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman pull docker.io/bareos/bareos-webui:24
+
+# Reload Quadlet generator to pick up the new unit file
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  systemctl --user daemon-reload
+
+# Enable and start
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  systemctl --user enable --now bareos-webui
+
+# Verify the container is running
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman ps --filter name=bareos-webui
+
+# Test the HTTP endpoint
+curl -sI http://localhost:9100/bareos-webui/
+# Expected: HTTP/1.1 200 OK  or  302 Found (redirect to /bareos-webui/auth/login)
+
+# If not responding, check logs
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  journalctl --user -u bareos-webui -n 30 --no-pager
+```
+
+Open `http://localhost:9100/bareos-webui` in a browser on the RHEL 10 host. Log in with:
+
+- **Username:** `webui-admin`
+- **Password:** the value you saved from Step 1
+
+You should see the Bareos WebUI dashboard. If your Director has no jobs yet, the job list will be empty — that is normal at this stage. You will run your first backup in Chapter 7.
+
+**SELinux note:** The WebUI container makes outbound TCP connections to the Director on port 9101. Because both containers share the same rootless Podman network on the same host, SELinux permits this under the default `container_t` policy — no additional booleans are required.
+
+---
+
+[↑ Back to Table of Contents](#table-of-contents)
+
+## 13. Lab 6-1: Full Deployment Walkthrough
 
 This lab consolidates all steps into a sequential deployment script. Use this when deploying on a fresh system.
 
 ```bash
 #!/bin/bash
 # lab-06-deploy-bareos.sh
-# Full Bareos-in-Podman deployment script
+# Full Bareos-in-Podman deployment script (including WebUI)
 # Run as root on a prepared RHEL 10 host (see Chapter 3)
 
 set -euo pipefail
@@ -944,6 +1172,7 @@ echo "Pulling container images..."
 bareos_run podman pull docker.io/bareos/bareos-director:24
 bareos_run podman pull docker.io/bareos/bareos-storage:24
 bareos_run podman pull docker.io/library/mariadb:10.11
+bareos_run podman pull docker.io/bareos/bareos-webui:24
 
 # Step 2: Reload Quadlet units
 echo "Loading Quadlet definitions..."
@@ -990,27 +1219,40 @@ echo "Starting Director..."
 bareos_run systemctl --user start bareos-director.service
 sleep 10
 
-# Step 7: Enable all services
-bareos_run systemctl --user enable bareos-db.service bareos-storage.service bareos-director.service
+# Step 7: Start WebUI
+echo "Starting Bareos WebUI..."
+bareos_run systemctl --user start bareos-webui.service
+sleep 5
 
-# Step 8: Verify
+# Step 8: Enable all services
+bareos_run systemctl --user enable \
+  bareos-db.service bareos-storage.service \
+  bareos-director.service bareos-webui.service
+
+# Step 9: Verify
 echo ""
 echo "=== Verifying deployment ==="
 bareos_run podman ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
 echo ""
 echo "=== Testing bconsole connection ==="
-echo "status director" | bconsole | head -5
+sudo -u bareos XDG_RUNTIME_DIR="${BAREOS_XDG}" bconsole <<< "status director" | head -5
+
+echo ""
+echo "=== Testing WebUI endpoint ==="
+curl -sI http://localhost:9100/bareos-webui/ | head -3
 
 echo ""
 echo "=== Deployment complete! ==="
+echo "WebUI is available at: http://localhost:9100/bareos-webui"
+echo "Login: webui-admin / <password from Section 12, Step 1>"
 ```
 
 ---
 
 [↑ Back to Table of Contents](#table-of-contents)
 
-## 13. Lab 6-2: Verifying Inter-Container Connectivity
+## 14. Lab 6-2: Verifying Inter-Container Connectivity
 
 ```bash
 # Test 1: Director can reach the Storage Daemon
@@ -1026,7 +1268,8 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 # Expected: Connection to bareos-db 3306 port [tcp] succeeded!
 
 # Test 3: Director can reach the File Daemon on the host
-echo "status client" | bconsole | grep -E "FD|File Daemon|Connected|Version"
+echo "status client" | sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole \
+  | grep -E "FD|File Daemon|Connected|Version"
 
 # Test 4: Storage Daemon can write to the volume path
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
@@ -1041,25 +1284,41 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   mysql -h bareos-db -u bareos -p"CHANGEME_BAREOS_DB_PASSWORD" \
   -e "SELECT COUNT(*) FROM Job;" bareos 2>/dev/null
 # Expected: A numeric result (0 initially, before any jobs run)
+
+# Test 6: WebUI can reach the Director
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman exec bareos-webui \
+  nc -zv bareos-director 9101
+# Expected: Connection to bareos-director 9101 port [tcp] succeeded!
+
+# Test 7: WebUI HTTP endpoint is responding
+curl -sI http://localhost:9100/bareos-webui/ | head -3
+# Expected: HTTP/1.1 200 OK  or  HTTP/1.1 302 Found
+
+# Test 8: Verify all five containers are running
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+# Expected: bareos-db, bareos-storage, bareos-director, bareos-webui all Up
 ```
 
 ---
 
 [↑ Back to Table of Contents](#table-of-contents)
 
-## 14. Summary
+## 15. Summary
 
 In this chapter you deployed the complete Bareos stack as rootless Podman containers:
 
-- **Architecture**: Director + Storage Daemon + MariaDB in containers, File Daemon as a host RPM service. All containers on a dedicated Quadlet-managed bridge network.
+- **Architecture**: Director + Storage Daemon + MariaDB + WebUI in containers, File Daemon as a host RPM service. All containers on a dedicated Quadlet-managed bridge network.
 - **Secrets management**: Passwords stored in mode-600 environment files, never in Quadlet unit files. All placeholder values must be replaced with generated random passwords.
 - **MariaDB catalog**: Dedicated named volume for data persistence; health check ensures Director starts only when DB is ready.
 - **Storage Daemon**: Bind-mounted to `/srv/bareos-storage/volumes` on the dedicated backup disk, using `:z` SELinux label for shared access.
 - **Director**: Reads `/etc/bareos/bareos-dir.d/` as a read-only bind mount. Connects to SD and DB by container name (DNS-resolved within the Quadlet network).
 - **File Daemon**: Installed via RPM, configured to authorize the containerized Director.
 - **Catalog initialization**: Run `create_bareos_database` and `grant_bareos_privileges` scripts in a temporary Director container before the Director starts.
+- **WebUI**: Deployed as `bareos-webui` container (port 9100), authenticated to the Director via a dedicated `Console` resource with the `webui-admin` profile. Configuration in the `bareos-webui-config` named volume.
 - **All services enabled**: `systemctl --user enable` ensures all containers start at boot via lingering.
-- **bconsole**: Installed via RPM, connects to the Director on port 9101 for all operator interactions.
+- **bconsole**: Installed via RPM, connects to the Director on port 9101 — essential for scripting and diagnostics.
 
 ---
 

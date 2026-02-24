@@ -825,50 +825,87 @@ echo "status director" | bconsole > /dev/null && \
 
 ## 12. Lab 7-2: Running and Monitoring the Job
 
+Each step below shows both the `bconsole` command and the equivalent action in the **Bareos WebUI** (`http://localhost:9100/bareos-webui`). Use whichever you prefer — both achieve the same result.
+
 ```bash
 # Step 1: Reload the Director to pick up new config
-echo "reload" | bconsole
+# bconsole:
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< "reload"
+```
 
+> **WebUI equivalent — Step 1:** Navigate to **Director → Reload** (top-right menu) or simply make any configuration change take effect — the WebUI triggers a reload automatically when you use its configuration forms.
+
+```bash
 # Step 2: Verify the client is reachable
-echo "status client=bareos-fd" | bconsole
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< "status client=bareos-fd"
+```
 
+> **WebUI equivalent — Step 2:** Go to **Clients** in the left sidebar. The client `bareos-fd` should show status **Online**. Click it to see connection details.
+
+```bash
 # Step 3: Label a Volume manually (optional - LabelMedia=yes handles this automatically)
 # bconsole:
 # *label volume=Full-0001 pool=Full storage=File mediatype=File
+```
 
+> **WebUI equivalent — Step 3:** Go to **Storage → Volumes → Label Volume**. Select the pool, storage, and enter the volume name.
+
+```bash
 # Step 4: Run the first Full backup manually
-bconsole <<'EOF'
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'EOF'
 run job=BackupLocalHost level=Full yes
 wait
 messages
 quit
 EOF
+```
 
+> **WebUI equivalent — Step 4:** Go to **Jobs → Run Job**. Select job `BackupLocalHost`, set Level to `Full`, and click **Run**. Watch the job appear in the **Jobs → Running** list.
+
+```bash
 # Step 5: Check the job result
-echo "list jobs" | bconsole
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< "list jobs"
+```
 
+> **WebUI equivalent — Step 5:** Go to **Jobs → All Jobs**. You will see the completed job with its status, runtime, files backed up, and bytes written. Click the job row to see the full log.
+
+```bash
 # Step 6: Verify files were cataloged
-echo "list files jobid=1" | bconsole | head -20
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< "list files jobid=1" | head -20
+```
 
+> **WebUI equivalent — Step 6:** Open the job details page (from **Jobs → All Jobs**, click the Job ID). The **Files** tab lists all cataloged files.
+
+```bash
 # Step 7: Check volume usage
-echo "list volumes" | bconsole
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< "list volumes"
+```
 
+> **WebUI equivalent — Step 7:** Go to **Storage → Volumes**. Each volume shows its pool, status, number of jobs written, and bytes used.
+
+```bash
 # Step 8: Run an Incremental (make a change first)
 echo "test incremental change" >> /etc/bareos-test-change.txt
-bconsole <<'EOF'
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'EOF'
 run job=BackupLocalHost level=Incremental yes
 wait
 messages
 quit
 EOF
+```
 
+> **WebUI equivalent — Step 8:** Same as Step 4 — **Jobs → Run Job**, but set Level to `Incremental`. After it finishes, notice the Files and Bytes counts are much smaller than the Full.
+
+```bash
 # Step 9: Verify only changed files were in the incremental
-echo "list files jobid=2" | bconsole | wc -l
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< "list files jobid=2" | wc -l
 # Expected: only a handful of files (just the ones that changed)
 
 # Cleanup test file
 rm -f /etc/bareos-test-change.txt
 ```
+
+> **WebUI equivalent — Step 9:** Open job 2's detail page. The Files tab shows only the changed file — compare the count to job 1's Full backup.
 
 ---
 
@@ -883,10 +920,11 @@ In this chapter you created and ran your first complete Bareos backup configurat
 - **Schedule**: Weekly Full on Sunday, Incremental Mon-Sat. Schedules can override job-level `Level` on a per-run basis.
 - **JobDefs**: DRY template for shared job settings. Multiple jobs inherit from one `JobDefs` to reduce repetition.
 - **BackupCatalog job**: Critical — always configure this. It dumps MariaDB with `make_catalog_backup.pl` and backs the dump to a Volume. This is your recovery path if you lose the catalog.
-- **Volume labeling**: `LabelMedia = yes` in the Storage Device enables automatic labeling. Manual labeling is done with `label` in bconsole.
-- **Running jobs**: `run job=Name level=Full yes` in bconsole runs a job immediately. `messages` shows the result. `list jobs` shows history.
+- **Volume labeling**: `LabelMedia = yes` in the Storage Device enables automatic labeling. Manual labeling is done with `label` in bconsole or via **Storage → Volumes → Label Volume** in the WebUI.
+- **Running jobs**: `run job=Name level=Full yes` in bconsole, or **Jobs → Run Job** in the WebUI. `messages` / the job details page shows the result. `list jobs` / **Jobs → All Jobs** shows history.
 - **Reading job reports**: `FD Files/Bytes Written` vs `SD Files/Bytes Written` reveals compression effectiveness. `Termination: Backup OK` is the only acceptable outcome.
 - **Accurate mode**: Enables precise change detection using a full file index comparison instead of mtime-only. Recommended for production.
+- **WebUI**: Every bconsole operation in this chapter has an equivalent in the WebUI at `http://localhost:9100/bareos-webui`. Use the WebUI for day-to-day monitoring; use bconsole for scripting and diagnostics.
 
 ---
 
