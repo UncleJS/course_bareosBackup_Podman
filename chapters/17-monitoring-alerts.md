@@ -28,12 +28,14 @@
   - [Useful One-Liners for Scripts](#useful-one-liners-for-scripts)
 - [6. Bareos WebUI: Deploying as a Quadlet Container](#6-bareos-webui-deploying-as-a-quadlet-container)
   - [Architecture](#architecture)
-  - [Creating the WebUI Director User](#creating-the-webui-director-user)
-  - [Quadlet File for bareos-webui](#quadlet-file-for-bareos-webui)
-  - [WebUI Configuration File](#webui-configuration-file)
-  - [Starting the WebUI Service](#starting-the-webui-service)
-  - [Accessing the WebUI](#accessing-the-webui)
-  - [Reverse Proxy with nginx for Remote Access](#reverse-proxy-with-nginx-for-remote-access)
+  - [Step 1 — Create the WebUI Console User in the Director](#step-1-create-the-webui-console-user-in-the-director)
+  - [Step 2 — Create the WebUI Configuration Volume](#step-2-create-the-webui-configuration-volume)
+  - [Step 3 — Write the Quadlet Unit File](#step-3-write-the-quadlet-unit-file)
+  - [Step 4 — Start the WebUI Service](#step-4-start-the-webui-service)
+  - [Step 5 — Verify Access](#step-5-verify-access)
+  - [Step 6 — SELinux Consideration](#step-6-selinux-consideration)
+  - [Step 7 — Nginx Reverse Proxy for HTTPS Remote Access](#step-7-nginx-reverse-proxy-for-https-remote-access)
+  - [Step 8 — Keeping the Bvfs Cache Fresh (Restore Performance)](#step-8-keeping-the-bvfs-cache-fresh-restore-performance)
 - [7. Parsing Bareos Job Logs for Key Metrics](#7-parsing-bareos-job-logs-for-key-metrics)
   - [Log Location](#log-location)
   - [Key Metrics to Extract](#key-metrics-to-extract)
@@ -76,11 +78,17 @@
   - [Step 4: Reload and Test](#step-4-reload-and-test)
   - [Step 5: Verify Email Was Sent](#step-5-verify-email-was-sent)
 - [17. Lab 17-2: Deploy bareos-webui as a Quadlet Container](#17-lab-17-2-deploy-bareos-webui-as-a-quadlet-container)
-  - [Step 1: Create the WebUI Configuration Volume](#step-1-create-the-webui-configuration-volume)
-  - [Step 2: Write Configuration Files](#step-2-write-configuration-files)
-  - [Step 3: Add WebUI User to Director](#step-3-add-webui-user-to-director)
-  - [Step 4: Write and Deploy the Quadlet File](#step-4-write-and-deploy-the-quadlet-file)
-  - [Step 5: Verify Access](#step-5-verify-access)
+  - [Step 1: Switch to the bareos User](#step-1-switch-to-the-bareos-user)
+  - [Step 2: Create the Configuration Volume](#step-2-create-the-configuration-volume)
+  - [Step 3: Write `directors.ini`](#step-3-write-directorsini)
+  - [Step 4: Write `configuration.ini`](#step-4-write-configurationini)
+  - [Step 5: Create the Console User in the Director Config](#step-5-create-the-console-user-in-the-director-config)
+  - [Step 6: Write the Quadlet Unit File](#step-6-write-the-quadlet-unit-file)
+  - [Step 7: Pull the Image and Start the Service](#step-7-pull-the-image-and-start-the-service)
+  - [Step 8: Verify the WebUI is Running](#step-8-verify-the-webui-is-running)
+  - [Step 9: Log In via Browser](#step-9-log-in-via-browser)
+  - [Step 10: Add Bvfs Cache Updates for Fast Restore Browsing](#step-10-add-bvfs-cache-updates-for-fast-restore-browsing)
+  - [Troubleshooting Lab 17-2](#troubleshooting-lab-17-2)
 - [18. Lab 17-3: Deploy bareos-exporter with Prometheus and Grafana](#18-lab-17-3-deploy-bareos-exporter-with-prometheus-and-grafana)
   - [Step 1: Create Required Volumes](#step-1-create-required-volumes)
   - [Step 2: Write Prometheus Configuration](#step-2-write-prometheus-configuration)
@@ -657,219 +665,345 @@ XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
 
 ## 6. Bareos WebUI: Deploying as a Quadlet Container
 
-Bareos WebUI is a PHP-based web application that provides a graphical interface for job monitoring, restore operations, and configuration review. It communicates with the Bareos Director's Director API (BSOCK on port 9101) using a dedicated WebUI user.
+Bareos WebUI is a PHP-based web application that provides a graphical interface for job monitoring, restore operations, and Bareos management. It communicates with the Bareos Director's console API on port 9101 using a dedicated `Console` resource — the same mechanism as `bconsole`, exposed over HTTP instead of a terminal.
 
 ### Architecture
 
 ```
-Browser → nginx → bareos-webui (PHP/Apache) → Director :9101
-                                               ↓
-                                          Catalog (MariaDB)
+Browser ──→ bareos-webui container (Apache + PHP-FPM, port 80)
+                 │  port 9101
+                 ▼
+          Bareos Director container
+                 │
+                 ▼
+          Catalog (MariaDB container)
 ```
 
-The WebUI itself is stateless — it simply translates web requests to bconsole API calls. All state lives in the Director/catalog.
+The WebUI itself is **stateless** — it translates web requests into bconsole API calls. All persistent state lives in the Director and Catalog. The container image is `docker.io/bareos/bareos-webui:24`, which bundles Apache and PHP-FPM. There is no separate web server to install or configure on the host.
 
-### Creating the WebUI Director User
+### Step 1 — Create the WebUI Console User in the Director
 
-First, create a Console resource in the Director configuration that the WebUI will authenticate as:
+The WebUI authenticates to the Director using a `Console` resource. Create two files inside the Director's config volume:
 
 ```hcl
-# /etc/bareos/bareos-dir.d/console/webui-admin.conf
+# bareos-dir.d/console/webui-admin.conf
+# ─────────────────────────────────────────────────────────────────
+# Console resource that the WebUI uses to log in to the Director.
+# The Name and Password here must match what you put in directors.ini.
+# ─────────────────────────────────────────────────────────────────
 
 Console {
   Name     = "admin"
   Password = "WebUI_Admin_Password_Change_Me"
-  # This password is also set in the WebUI's configuration file.
-
   Profile  = "webui-admin"
-  # Profiles define what commands the console can run.
-  # "webui-admin" is a built-in profile that ships with Bareos.
+  # TLS-PSK is not available between WebUI and Director.
+  # Disable TLS here; if you need TLS use certificate-based TLS (ch15).
+  TLS Enable = no
 }
 ```
 
 ```hcl
-# /etc/bareos/bareos-dir.d/profile/webui-admin.conf
-# This file is usually included with Bareos — verify it exists.
+# bareos-dir.d/profile/webui-admin.conf
+# ─────────────────────────────────────────────────────────────────
+# The webui-admin profile is shipped with Bareos. If the file does
+# not already exist in your config volume, create it as shown here.
+# ─────────────────────────────────────────────────────────────────
 
 Profile {
   Name = "webui-admin"
-  # Grants access to the commands needed by WebUI.
-  Command ACL = !.bvfs_clear_cache, !.exit, !.sql, !configure, !create,
-                !delete, !purge, !prune, !sqlquery, !umount, !unmount,
-                *all*
-  # Deny dangerous commands from the WebUI, allow everything else.
 
-  Job ACL     = *all*
-  Client ACL  = *all*
-  Storage ACL = *all*
-  Schedule ACL = *all*
-  Pool ACL    = *all*
-  FileSet ACL = *all*
-  Catalog ACL = *all*
-  Where ACL   = *all*
+  # Deny a small set of dangerous/internal commands; allow all others.
+  # CommandACL entries are additive — list denials first, then *all*.
+  Command ACL = !.bvfs_clear_cache, !.exit, !.sql, !configure, !create,
+                !delete, !purge, !sqlquery, !umount, !unmount, *all*
+
+  Job ACL            = *all*
+  Schedule ACL       = *all*
+  Catalog ACL        = *all*
+  Pool ACL           = *all*
+  Storage ACL        = *all*
+  Client ACL         = *all*
+  FileSet ACL        = *all*
+  Where ACL          = *all*
   Plugin Options ACL = *all*
+  # Plugin Options ACL is required for plugin restore in Bareos >= 22.
 }
 ```
 
-After adding these files, reload the Director:
+Reload the Director to activate the new Console:
 
 ```bash
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
-  bconsole <<< "reload"
+export XDG_RUNTIME_DIR=/run/user/1001
+
+podman exec bareos-dir bconsole <<< "reload"
+# Expected output: "reloaded"
 ```
 
-### Quadlet File for bareos-webui
+### Step 2 — Create the WebUI Configuration Volume
+
+The WebUI container reads two INI files from `/etc/bareos-webui/` inside the container. Mount a named volume there and populate it:
+
+```bash
+export XDG_RUNTIME_DIR=/run/user/1001
+
+# Create the named volume
+podman volume create bareos-webui-config
+
+# Convenience variable for the volume's data directory on the host
+WEBUI_VOL="$HOME/.local/share/containers/storage/volumes/bareos-webui-config/_data"
+```
+
+#### `directors.ini` — Director connection settings
+
+```bash
+cat > "${WEBUI_VOL}/directors.ini" << 'EOF'
+; /etc/bareos-webui/directors.ini
+; ─────────────────────────────────────────────────────────────────
+; Tells the WebUI which Bareos Director(s) to connect to.
+; You can define multiple [section] blocks for multiple Directors.
+; ─────────────────────────────────────────────────────────────────
+
+[bareos-dir]
+; Must match the Name directive in the Console resource above.
+enabled  = "yes"
+
+; Hostname or IP of the Director. Inside a shared Podman network,
+; use the container name directly.
+diraddress = "bareos-dir"
+
+; Director console port (default 9101).
+dirport = 9101
+
+; Set to the catalog name defined in bareos-dir.d/catalog/
+catalog = "MyCatalog"
+
+; TLS — set to false for plain TCP between containers on the same host.
+; For external access with certificates see Chapter 15.
+tls_verify_peer   = false
+server_can_do_tls = false
+server_requires_tls = false
+client_can_do_tls = false
+client_requires_tls = false
+EOF
+```
+
+#### `configuration.ini` — WebUI application settings
+
+```bash
+cat > "${WEBUI_VOL}/configuration.ini" << 'EOF'
+; /etc/bareos-webui/configuration.ini
+; ─────────────────────────────────────────────────────────────────
+; Application-level settings for Bareos WebUI.
+; All values shown are the defaults — uncomment and change as needed.
+; ─────────────────────────────────────────────────────────────────
+
+[session]
+; Session inactivity timeout in seconds.
+timeout = 3600
+
+[dashboard]
+; Dashboard auto-refresh interval in milliseconds.
+autorefresh_interval = 60000
+
+[tables]
+; Available row counts for the pagination dropdown.
+pagination_values = 10,25,50,100
+; Default rows per page.
+pagination_default_value = 25
+; Restore table state across page reloads.
+save_previous_state = false
+
+[restore]
+; Timeout for loading the restore file tree (milliseconds).
+; Increase this if you have large jobs with millions of files.
+filetree_refresh_timeout = 120000
+; Merge all client filesets into one tree by default.
+merge_jobs = true
+merge_filesets = true
+
+[theme]
+; Available themes: default, sunflower
+name = sunflower
+EOF
+```
+
+> **Note:** The application settings file is named `configuration.ini`, not `bareos.ini`. Using the wrong filename means the WebUI silently falls back to all defaults.
+
+### Step 3 — Write the Quadlet Unit File
 
 ```ini
 # /home/bareos/.config/containers/systemd/bareos-webui.container
 # ─────────────────────────────────────────────────────────────────
-# Bareos WebUI container (Quadlet / systemd user service)
-# Bareos 24 · RHEL 10 · Rootless Podman
+# Bareos WebUI — rootless Podman Quadlet
+# Bareos 24 · RHEL 10
 # ─────────────────────────────────────────────────────────────────
 
 [Unit]
 Description=Bareos WebUI
-Documentation=https://docs.bareos.org
+Documentation=https://docs.bareos.org/IntroductionAndTutorial/BareosWebui.html
 After=network-online.target bareos-dir.service
 Requires=bareos-dir.service
-# WebUI depends on the Director being up.
+# The WebUI is useless without the Director — hard-depend on it.
 
 [Container]
 Image=docker.io/bareos/bareos-webui:24
 ContainerName=bareos-webui
 
-# Connect to the same Podman network as the Director so it can reach bareos-dir.
+# ── Networking ────────────────────────────────────────────────────
+# Join the same Podman network as bareos-dir so the WebUI can reach
+# the Director by its container name "bareos-dir".
 Network=bareos.network
 
-# ── Volume Mounts ────────────────────────────────────────────────
-
-# WebUI configuration volume (contains directors.ini and bareos.ini)
+# ── Volume Mounts ─────────────────────────────────────────────────
+# Mount the config volume at the path the WebUI image expects.
+# :Z  — apply a private SELinux label so the container can read/write.
 Volume=bareos-webui-config:/etc/bareos-webui:Z
-# Named volume; data path:
-# ~/.local/share/containers/storage/volumes/bareos-webui-config/_data/
-
-# ── Environment ──────────────────────────────────────────────────
-
-# Pass the Director connection details via environment variables.
-# The WebUI image reads these to build its directors.ini automatically.
-Environment=BAREOS_DIRECTOR_HOST=bareos-dir
-Environment=BAREOS_DIRECTOR_PORT=9101
-Environment=BAREOS_WEBUI_USER=admin
-# Password comes from the secrets file (mode 600)
-EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 
 # ── Port Publishing ───────────────────────────────────────────────
-
-# Bind only to localhost — put a reverse proxy (nginx) in front for TLS.
-# Direct exposure of HTTP to the network is a security risk.
+# Bind to loopback only. For remote access, put nginx in front (see below).
 PublishPort=127.0.0.1:9100:80
 
-# ── Security ─────────────────────────────────────────────────────
-
-# Drop all Linux capabilities the web server doesn't need.
-PodmanArgs=--cap-drop=ALL --cap-add=CHOWN --cap-add=SETUID --cap-add=SETGID --cap-add=NET_BIND_SERVICE
-
 [Service]
-Restart=always
+Restart=on-failure
 RestartSec=10
+# Required for rootless systemd --user services.
 Environment=XDG_RUNTIME_DIR=/run/user/1001
 
 [Install]
 WantedBy=default.target
 ```
 
-### WebUI Configuration File
-
-The WebUI reads its Director connection settings from `/etc/bareos-webui/directors.ini`:
-
-```ini
-# ~/.local/share/containers/storage/volumes/bareos-webui-config/_data/directors.ini
-# ─────────────────────────────────────────────────────────────────
-# Bareos WebUI Director Configuration
-# ─────────────────────────────────────────────────────────────────
-
-[director1]
-enabled           = "yes"
-diraddress        = "bareos-dir"
-# Container hostname within the bareos.network Podman network.
-
-dirport           = 9101
-# Director's console API port.
-
-tls_verify_peer   = false
-# For internal container-to-container communication, TLS peer
-# verification can be relaxed. In production with external access,
-# set up proper TLS certificates and enable this.
-
-catalog           = "MyCatalog"
-# The catalog name as defined in bareos-dir.d/catalog/
-
-pam_console_name  = ""
-pam_console_password = ""
-# Leave empty if not using PAM authentication.
-```
-
-```ini
-# ~/.local/share/containers/storage/volumes/bareos-webui-config/_data/bareos.ini
-# ─────────────────────────────────────────────────────────────────
-# WebUI application settings
-# ─────────────────────────────────────────────────────────────────
-
-[session]
-# Session timeout in seconds (900 = 15 minutes)
-timeout = 900
-
-[tables]
-# Number of rows per page in job/volume/client tables
-pagination = 25
-
-[theme]
-name = "bareos"
-# Available themes: bareos, default
-
-[restore]
-filetree_refresh_timeout = 120
-# Timeout for file tree refresh during restore wizard (seconds).
-
-[experimental]
-maintabs = "off"
-```
-
-### Starting the WebUI Service
+### Step 4 — Start the WebUI Service
 
 ```bash
-XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload
-XDG_RUNTIME_DIR=/run/user/1001 systemctl --user enable --now bareos-webui
-XDG_RUNTIME_DIR=/run/user/1001 systemctl --user status bareos-webui
+export XDG_RUNTIME_DIR=/run/user/1001
+
+# Reload systemd so it picks up the new Quadlet file
+systemctl --user daemon-reload
+
+# Enable (auto-start at login/boot) and start immediately
+systemctl --user enable --now bareos-webui
+
+# Verify it is running
+systemctl --user status bareos-webui
+podman ps --filter name=bareos-webui
 ```
 
-### Accessing the WebUI
+### Step 5 — Verify Access
 
-Navigate to `http://localhost:9100` in a browser on the RHEL 10 host. Log in with:
-- Username: `admin`
-- Password: the value of `BAREOS_WEBUI_PASSWORD` from `bareos.env`
+```bash
+# Test HTTP response from the loopback address
+curl -sI http://localhost:9100/ | head -5
+# Expected: HTTP/1.1 200 OK  or  302 Found (redirect to /bareos-webui/auth/login)
 
-### Reverse Proxy with nginx for Remote Access
+# Tail the container log for startup errors
+journalctl --user -u bareos-webui -n 50 --no-pager
+```
 
-For access from other machines with HTTPS:
+Open `http://localhost:9100/bareos-webui` in a browser on the RHEL 10 host. Log in with:
+- **Username:** `admin` (the `Name` in the Console resource)
+- **Password:** the password set in `bareos-dir.d/console/webui-admin.conf`
+
+### Step 6 — SELinux Consideration
+
+The WebUI container makes outbound TCP connections to the Director on port 9101. Because the WebUI runs in a container on the **same host** as the Director (within the same Podman network), SELinux does not block this — container-to-container traffic on the same host via a Podman network is permitted under the default `container_t` policy.
+
+If you ever run the WebUI on a **separate host** and install it as an RPM (not a container), you must allow Apache to make outbound network connections:
+
+```bash
+# Only needed for RPM-based installs on a separate host:
+sudo setsebool -P httpd_can_network_connect on
+```
+
+For the container deployment used in this course, no SELinux booleans need to be changed.
+
+### Step 7 — Nginx Reverse Proxy for HTTPS Remote Access
+
+To access the WebUI from another machine over HTTPS, place nginx in front. Install nginx on the RHEL 10 host (not in a container, so it can bind to port 443):
+
+```bash
+sudo dnf install -y nginx
+```
 
 ```nginx
 # /etc/nginx/conf.d/bareos-webui.conf
+
 server {
-    listen 443 ssl;
+    listen      443 ssl http2;
     server_name bareos.example.com;
 
-    ssl_certificate     /etc/pki/tls/certs/bareos.crt;
-    ssl_certificate_key /etc/pki/tls/private/bareos.key;
+    ssl_certificate     /etc/pki/tls/certs/bareos-webui.crt;
+    ssl_certificate_key /etc/pki/tls/private/bareos-webui.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
 
     location / {
         proxy_pass         http://127.0.0.1:9100;
-        proxy_set_header   Host $host;
-        proxy_set_header   X-Real-IP $remote_addr;
-        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto $scheme;
+        # Increase timeout for large restore file-tree loads
+        proxy_read_timeout 180s;
     }
 }
+
+# Redirect plain HTTP to HTTPS
+server {
+    listen      80;
+    server_name bareos.example.com;
+    return 301  https://$host$request_uri;
+}
+```
+
+```bash
+sudo nginx -t && sudo systemctl enable --now nginx
+
+# SELinux: allow nginx to proxy to localhost:9100
+sudo setsebool -P httpd_can_network_connect on
+```
+
+### Step 8 — Keeping the Bvfs Cache Fresh (Restore Performance)
+
+The WebUI's restore file-tree browser depends on the **Bvfs cache** in the Catalog. For large jobs with many files, stale or missing cache entries cause slow or timed-out file-tree loads. Add a `RunScript` to your most important backup jobs to update the cache after each run:
+
+```hcl
+# Add this RunScript block to any Job resource where you want
+# fast restore browsing in the WebUI.
+
+Job {
+  Name    = "backup-appserver"
+  # ... other directives ...
+
+  Run Script {
+    # Update the Bvfs cache for this specific job after it completes.
+    # %i expands to the JobId of the just-finished job.
+    Console     = ".bvfs_update jobid=%i"
+    Runs When   = After
+    Runs On Client = No
+  }
+}
+```
+
+For the catalog backup job, update the entire cache (all jobs not yet cached):
+
+```hcl
+Job {
+  Name = "BackupCatalog"
+  # ... other directives ...
+
+  Run Script {
+    # No jobid argument = update cache for all uncached jobs.
+    Console     = ".bvfs_update"
+    Runs When   = After
+    Runs On Client = No
+  }
+}
+```
+
+Reload the Director after adding these blocks:
+
+```bash
+podman exec bareos-dir bconsole <<< "reload"
 ```
 
 ---
@@ -2094,78 +2228,158 @@ podman exec bareos-dir cat /var/log/bareos/msmtp.log | tail -10
 
 ## 17. Lab 17-2: Deploy bareos-webui as a Quadlet Container
 
-This lab deploys the Bareos WebUI and verifies it can connect to the Director.
+**Objective:** Deploy the Bareos WebUI container, connect it to your running Director, and confirm you can log in and see job history.
 
-### Step 1: Create the WebUI Configuration Volume
+**Prerequisites:** A running Bareos stack from Chapter 6/7 (Director, Storage Daemon, File Daemon, at least one completed backup job).
+
+---
+
+### Step 1: Switch to the bareos User
+
+All Podman and systemd commands run as the `bareos` user (UID 1001):
 
 ```bash
+sudo -u bareos bash -l
 export XDG_RUNTIME_DIR=/run/user/1001
+```
 
-# Create the named volume for WebUI configuration
+---
+
+### Step 2: Create the Configuration Volume
+
+```bash
+# Create a named volume for the WebUI INI files
 podman volume create bareos-webui-config
 
-# Get the data path
-WEBUI_CONFIG="$HOME/.local/share/containers/storage/volumes/bareos-webui-config/_data"
+# Set a variable pointing to the volume's data directory
+WEBUI_VOL="$HOME/.local/share/containers/storage/volumes/bareos-webui-config/_data"
+echo "WebUI config path: ${WEBUI_VOL}"
 ```
 
-### Step 2: Write Configuration Files
+---
+
+### Step 3: Write `directors.ini`
 
 ```bash
-# Write directors.ini
-cat > "${WEBUI_CONFIG}/directors.ini" << 'DIRINI'
-[director1]
-enabled           = "yes"
-diraddress        = "bareos-dir"
-dirport           = 9101
-tls_verify_peer   = false
-catalog           = "MyCatalog"
-pam_console_name  = ""
-pam_console_password = ""
-DIRINI
+cat > "${WEBUI_VOL}/directors.ini" << 'EOF'
+; Bareos WebUI — Director connection settings
+; /etc/bareos-webui/directors.ini (inside the container)
 
-# Write bareos.ini
-cat > "${WEBUI_CONFIG}/bareos.ini" << 'BARINI'
+[bareos-dir]
+enabled             = "yes"
+diraddress          = "bareos-dir"
+dirport             = 9101
+catalog             = "MyCatalog"
+tls_verify_peer     = false
+server_can_do_tls   = false
+server_requires_tls = false
+client_can_do_tls   = false
+client_requires_tls = false
+EOF
+
+echo "directors.ini written."
+```
+
+---
+
+### Step 4: Write `configuration.ini`
+
+```bash
+cat > "${WEBUI_VOL}/configuration.ini" << 'EOF'
+; Bareos WebUI — application settings
+; /etc/bareos-webui/configuration.ini (inside the container)
+
 [session]
-timeout = 900
+timeout = 3600
+
+[dashboard]
+autorefresh_interval = 60000
 
 [tables]
-pagination = 25
-
-[theme]
-name = "bareos"
+pagination_values = 10,25,50,100
+pagination_default_value = 25
 
 [restore]
-filetree_refresh_timeout = 120
+filetree_refresh_timeout = 120000
+merge_jobs = true
+merge_filesets = true
 
-[experimental]
-maintabs = "off"
-BARINI
+[theme]
+name = sunflower
+EOF
+
+echo "configuration.ini written."
 ```
 
-### Step 3: Add WebUI User to Director
+---
+
+### Step 5: Create the Console User in the Director Config
+
+The WebUI authenticates to the Director using a Console resource. Write this into the Director's config volume:
 
 ```bash
-BAREOS_CONFIG="$HOME/.local/share/containers/storage/volumes/bareos-director-config/_data"
+# Path to the Director's config volume data directory
+DIR_VOL="$HOME/.local/share/containers/storage/volumes/bareos-director-config/_data"
 
-# Write console (WebUI user) configuration
-cat > "${BAREOS_CONFIG}/bareos-dir.d/console/webui-admin.conf" << 'CONSCONF'
+# Create the console sub-directory if it doesn't exist
+mkdir -p "${DIR_VOL}/bareos-dir.d/console"
+
+# Write the Console resource
+cat > "${DIR_VOL}/bareos-dir.d/console/webui-admin.conf" << 'EOF'
 Console {
   Name     = "admin"
-  Password = "Change_This_Password_Now"
+  Password = "WebUI_Str0ng_P@ssword"
   Profile  = "webui-admin"
+  TLS Enable = no
 }
-CONSCONF
-
-# Reload Director to pick up new console user
-podman exec bareos-dir bconsole <<< "reload"
+EOF
+echo "Console resource written."
 ```
 
-### Step 4: Write and Deploy the Quadlet File
+Check whether the `webui-admin` profile already exists (it ships with Bareos):
 
 ```bash
-cat > /home/bareos/.config/containers/systemd/bareos-webui.container << 'QUADLET'
+ls "${DIR_VOL}/bareos-dir.d/profile/" | grep webui
+```
+
+If the file is **missing**, create it:
+
+```bash
+cat > "${DIR_VOL}/bareos-dir.d/profile/webui-admin.conf" << 'EOF'
+Profile {
+  Name = "webui-admin"
+  Command ACL = !.bvfs_clear_cache, !.exit, !.sql, !configure, !create,
+                !delete, !purge, !sqlquery, !umount, !unmount, *all*
+  Job ACL            = *all*
+  Schedule ACL       = *all*
+  Catalog ACL        = *all*
+  Pool ACL           = *all*
+  Storage ACL        = *all*
+  Client ACL         = *all*
+  FileSet ACL        = *all*
+  Where ACL          = *all*
+  Plugin Options ACL = *all*
+}
+EOF
+echo "Profile resource written."
+```
+
+Reload the Director to activate the new Console:
+
+```bash
+podman exec bareos-dir bconsole <<< "reload"
+# Expected: "reloaded"
+```
+
+---
+
+### Step 6: Write the Quadlet Unit File
+
+```bash
+cat > "$HOME/.config/containers/systemd/bareos-webui.container" << 'EOF'
 [Unit]
 Description=Bareos WebUI
+Documentation=https://docs.bareos.org/IntroductionAndTutorial/BareosWebui.html
 After=network-online.target bareos-dir.service
 Requires=bareos-dir.service
 
@@ -2174,42 +2388,107 @@ Image=docker.io/bareos/bareos-webui:24
 ContainerName=bareos-webui
 Network=bareos.network
 Volume=bareos-webui-config:/etc/bareos-webui:Z
-Environment=BAREOS_DIRECTOR_HOST=bareos-dir
-Environment=BAREOS_DIRECTOR_PORT=9101
-Environment=BAREOS_WEBUI_USER=admin
-Environment=BAREOS_WEBUI_PASSWORD=Change_This_Password_Now
 PublishPort=127.0.0.1:9100:80
 
 [Service]
-Restart=always
+Restart=on-failure
 RestartSec=10
 Environment=XDG_RUNTIME_DIR=/run/user/1001
 
 [Install]
 WantedBy=default.target
-QUADLET
+EOF
 
-# Start the WebUI
-systemctl --user daemon-reload
-systemctl --user enable --now bareos-webui
-systemctl --user status bareos-webui
+echo "Quadlet file written."
 ```
 
-### Step 5: Verify Access
+---
+
+### Step 7: Pull the Image and Start the Service
 
 ```bash
-# Check the container is running
-podman ps | grep bareos-webui
+# Pre-pull the image to avoid a slow first start
+podman pull docker.io/bareos/bareos-webui:24
 
-# Test HTTP access
-curl -s -o /dev/null -w "%{http_code}" http://localhost:9100/
-# Expected: 200 or 302 (redirect to login)
+# Reload systemd to generate the unit from the Quadlet file
+systemctl --user daemon-reload
 
-# Check logs
-journalctl --user -u bareos-webui -n 30
+# Verify systemd sees the new unit
+systemctl --user list-unit-files | grep bareos-webui
+
+# Enable (auto-start) and start immediately
+systemctl --user enable --now bareos-webui
+
+# Check status
+systemctl --user status bareos-webui --no-pager
 ```
 
-Open `http://localhost:9100` in a browser on the RHEL 10 host. Log in with username `admin` and the password you set. You should see the Bareos WebUI dashboard showing recent jobs.
+---
+
+### Step 8: Verify the WebUI is Running
+
+```bash
+# Confirm the container is up
+podman ps --filter name=bareos-webui --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+
+# Check for startup errors in the container log
+journalctl --user -u bareos-webui -n 40 --no-pager
+
+# Test the HTTP endpoint
+curl -sI http://localhost:9100/ | head -3
+# Expected: HTTP/1.1 200 OK  or  302 Found
+```
+
+---
+
+### Step 9: Log In via Browser
+
+Open a browser on the RHEL 10 host and navigate to:
+
+```
+http://localhost:9100/bareos-webui
+```
+
+Log in with:
+- **Username:** `admin`
+- **Password:** `WebUI_Str0ng_P@ssword` (the value you set in Step 5)
+
+You should see the Bareos WebUI dashboard listing recent jobs. If the Director connection fails, the login page will show an error — see Troubleshooting below.
+
+---
+
+### Step 10: Add Bvfs Cache Updates for Fast Restore Browsing
+
+The restore file-tree browser in the WebUI relies on the Bvfs cache. Add a `RunScript` to your backup jobs so the cache is updated after each run:
+
+```bash
+# Edit your main backup job to add the Bvfs update script
+DIR_VOL="$HOME/.local/share/containers/storage/volumes/bareos-director-config/_data"
+
+# Open the job file in an editor, or append the RunScript block:
+# Add inside the Job { } resource:
+#
+#   Run Script {
+#     Console        = ".bvfs_update jobid=%i"
+#     Runs When      = After
+#     Runs On Client = No
+#   }
+#
+# Then reload:
+podman exec bareos-dir bconsole <<< "reload"
+```
+
+---
+
+### Troubleshooting Lab 17-2
+
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| Container exits immediately | Bad volume mount or image pull failure | `journalctl --user -u bareos-webui -n 30` |
+| Login error "Could not connect to director" | Wrong `diraddress` in `directors.ini`, Director not running, or wrong port | Verify `podman ps | grep bareos-dir`; check `diraddress = "bareos-dir"` matches the container name |
+| Login error "Authentication failed" | Password mismatch between `directors.ini` (implicit — via Console resource) and Director Console | Verify password in `webui-admin.conf` matches what you type at login |
+| `403 Forbidden` on the WebUI URL | Apache config inside container not serving at `/bareos-webui` | Try `http://localhost:9100/` (without path) — the container may serve at root |
+| File tree empty on restore | Bvfs cache not populated | Run `.bvfs_update` in bconsole or add the RunScript from Step 10 |
 
 ---
 

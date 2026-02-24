@@ -384,23 +384,42 @@ We use `bconsole` extensively throughout this course. It is the primary operatio
 
 ### Bareos WebUI
 
-The WebUI is a PHP-based web application that provides a graphical interface. It connects to the Director using a dedicated Console resource.
+The WebUI is a PHP-based web application that provides a graphical interface for job monitoring, restore operations, and day-to-day Bareos management. It connects to the Director's console API (port 9101) using a dedicated `Console` resource — exactly the same mechanism as `bconsole`, just over HTTP instead of a terminal.
 
-```bash
-# Install the WebUI (optional)
-sudo dnf install bareos-webui
-
-# It runs as an Apache/PHP application on port 80/443
+```
+Browser → bareos-webui (PHP/Apache inside container)
+                ↓  port 9101
+          Bareos Director
+                ↓
+          Catalog (MariaDB)
 ```
 
-Features:
-- Dashboard with recent job status
-- Job run history and statistics
-- File browser for restore selection (drag-and-drop file selection)
-- Volume and Pool management
-- Client management
+**Features:**
+- Dashboard with live and historical job status
+- Job run history, statistics, and log viewer
+- Interactive file-tree browser for restore selection
+- Volume, Pool, and Storage management
+- Client and Schedule enable/disable
+- Multi-Director support (connect to several Directors from one UI)
 
-> **Note:** This course focuses on `bconsole` because it works in any environment (no web browser or HTTP port required), teaches you the underlying concepts directly, and is necessary for automation and scripting. Once you master `bconsole`, the WebUI's features are self-explanatory.
+**Deployment model in this course:**
+
+In keeping with the Podman-first approach of this course, the WebUI is deployed as a **rootless Podman container** managed by a Quadlet unit — not installed as an RPM with Apache on the host. The container image is:
+
+```
+docker.io/bareos/bareos-webui:24
+```
+
+It embeds Apache + PHP-FPM and exposes port 80 inside the container, which is mapped to `127.0.0.1:9100` on the host. An optional nginx reverse proxy in front adds HTTPS for remote access.
+
+The WebUI requires:
+1. A `Console` resource in the Director config with a dedicated password and the `webui-admin` profile.
+2. A `directors.ini` configuration file inside the container that tells the WebUI how to reach the Director.
+3. SELinux: no additional booleans needed because the WebUI runs inside a container that already has network access to the Director container via a shared Podman network.
+
+> **Full installation walkthrough:** See [Chapter 17 — Monitoring and Alerting](17-monitoring-alerts.md), Section 6 and Lab 17-2 for the complete step-by-step Quadlet deployment with all configuration files.
+
+> **Note:** This course teaches `bconsole` first because it works in any environment, reveals the underlying concepts directly, and is essential for scripting and automation. Once you are comfortable with `bconsole`, the WebUI's features are immediately intuitive.
 
 ---
 
