@@ -1642,3 +1642,5 @@ With this knowledge, you have a complete mental model of how rootless Podman wor
 ---
 
 [↑ Back to Table of Contents](#table-of-contents)
+
+© 2026 Jaco Steyn — Licensed under CC BY-SA 4.0

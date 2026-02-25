@@ -598,3 +598,5 @@ podman pull docker.io/library/mariadb:10.11
 ---
 
 [Back to Table of Contents](#table-of-contents)
+
+© 2026 Jaco Steyn — Licensed under CC BY-SA 4.0

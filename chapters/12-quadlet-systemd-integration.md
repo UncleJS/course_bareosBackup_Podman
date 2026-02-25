@@ -1765,3 +1765,5 @@ In the next chapter, we will go deeper into the rootless Podman security model �
 ---
 
 [↑ Back to Table of Contents](#table-of-contents)
+
+© 2026 Jaco Steyn — Licensed under CC BY-SA 4.0

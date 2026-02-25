@@ -846,3 +846,5 @@ In this chapter you learned the full spectrum of Podman volume backup strategies
 ---
 
 [↑ Back to Table of Contents](#table-of-contents)
+
+© 2026 Jaco Steyn — Licensed under CC BY-SA 4.0

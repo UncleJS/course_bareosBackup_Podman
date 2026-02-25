@@ -2305,3 +2305,5 @@ The three labs give you a repeatable measurement framework. Run Lab 19-1 first, 
 ---
 
 [↑ Back to Table of Contents](#table-of-contents)
+
+© 2026 Jaco Steyn — Licensed under CC BY-SA 4.0

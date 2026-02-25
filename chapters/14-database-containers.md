@@ -1688,3 +1688,5 @@ Key takeaways:
 - Keep bootstrap files and catalog dumps in a location separate from your main Bareos storage
 
 [↑ Back to Table of Contents](#table-of-contents)
+
+© 2026 Jaco Steyn — Licensed under CC BY-SA 4.0

@@ -1941,3 +1941,5 @@ The most important thing you can do right now is run Lab 18-1 and Lab 18-2. Do n
 ---
 
 [↑ Back to Table of Contents](#table-of-contents)
+
+© 2026 Jaco Steyn — Licensed under CC BY-SA 4.0

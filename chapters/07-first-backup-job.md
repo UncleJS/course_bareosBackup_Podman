@@ -933,3 +933,5 @@ In this chapter you created and ran your first complete Bareos backup configurat
 ---
 
 [↑ Back to Table of Contents](#table-of-contents)
+
+© 2026 Jaco Steyn — Licensed under CC BY-SA 4.0

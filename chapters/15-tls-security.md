@@ -1911,3 +1911,5 @@ In rootless Podman on RHEL 10, certificates are distributed via bind-mounts in Q
 Certificate rotation is a planned, non-disruptive operation: generate a new key and certificate, replace the files on the host, restart the affected container. No changes to other daemons are required as long as the same CA signs the new certificate.
 
 [↑ Back to Table of Contents](#table-of-contents)
+
+© 2026 Jaco Steyn — Licensed under CC BY-SA 4.0
