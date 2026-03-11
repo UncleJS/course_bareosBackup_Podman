@@ -1,0 +1,37 @@
+.env
+.env.example
+.env.*
+*.env
+*.env.*
+
+# Local credentials and secrets
+secrets/
+credentials/
+*.secret
+*.secrets
+*.token
+*.key
+*.pem
+*.p12
+*.jks
+*.kdbx
+
+# Config files that commonly contain usernames, passwords, or service credentials
+config/*credential*
+config/*secret*
+config/*password*
+config/*passwd*
+config/*auth*
+config/*.env
+config/*.ini
+config/*.yaml
+config/*.yml
+config/*.json
+config/*.toml
+config/*.conf
+
+# Bareos course lab artifacts
+bareos.env
+db.env
+webui.ini
+*.cnf
