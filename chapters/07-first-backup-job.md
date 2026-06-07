@@ -58,7 +58,7 @@ The `Job` resource glues all these pieces together. Each component can be shared
 
 ### Job Types
 
-Bareos supports four Job types:
+Bareos supports six Job types:
 
 | Type | Purpose |
 |---|---|
@@ -185,6 +185,8 @@ Options {
 
 ### Complete FileSet for RHEL 10
 
+> **Recall the `/hostfs` convention (Chapter 6):** the File Daemon runs as the `bareos-fd` container with the host filesystem bind-mounted read-only at `/hostfs`. So every `File =` path that targets the *host* must carry the `/hostfs/` prefix — `File = /hostfs/home` backs up `/home` on the RHEL 10 host. The one exception is `/var/lib/bareos`, which the FD mounts directly via the shared `bareos-working` volume, so it is referenced as-is (no prefix).
+
 ```bareos
 FileSet {
   Name = "RHEL10-Standard"
@@ -205,40 +207,40 @@ FileSet {
       Exclude = yes
     }
 
-    # Core data directories
-    File = /home
-    File = /etc
-    File = /var/www
-    File = /var/lib/bareos       # Bareos working data (bootstrap files)
-    File = /opt                  # Locally installed applications
-    File = /srv                  # Service data (NOT the backup volumes themselves)
-    File = /root                 # Root user's home
+    # Core data directories (host paths via the /hostfs mount)
+    File = /hostfs/home
+    File = /hostfs/etc
+    File = /hostfs/var/www
+    File = /var/lib/bareos       # Bareos working data (shared bareos-working volume — no /hostfs)
+    File = /hostfs/opt           # Locally installed applications
+    File = /hostfs/srv           # Service data (NOT the backup volumes themselves)
+    File = /hostfs/root          # Root user's home
   }
 
   Exclude {
     # Virtual/kernel filesystems — never back these up
-    File = /proc
-    File = /sys
-    File = /dev
-    File = /run
-    File = /tmp
-    File = /var/tmp
-    File = /lost+found
+    File = /hostfs/proc
+    File = /hostfs/sys
+    File = /hostfs/dev
+    File = /hostfs/run
+    File = /hostfs/tmp
+    File = /hostfs/var/tmp
+    File = /hostfs/lost+found
 
     # Swap
-    File = /swap.img
-    File = /var/lib/swap
+    File = /hostfs/swap.img
+    File = /hostfs/var/lib/swap
 
     # Package caches — can be regenerated
-    File = /var/cache/dnf
-    File = /var/cache/yum
+    File = /hostfs/var/cache/dnf
+    File = /hostfs/var/cache/yum
 
     # Container overlay storage — ephemeral, re-pull images instead
-    File = /var/lib/containers/storage/overlay
-    File = /home/bareos/.local/share/containers/storage/overlay
+    File = /hostfs/var/lib/containers/storage/overlay
+    File = /hostfs/home/bareos/.local/share/containers/storage/overlay
 
     # The backup storage itself (never back up your backups to themselves)
-    File = /srv/bareos-storage/volumes
+    File = /hostfs/srv/bareos-storage/volumes
   }
 }
 ```
@@ -307,13 +309,15 @@ Schedule {
   # Monthly Full on the 1st Sunday of the month → Monthly pool
   Run = Level=Full Pool=Monthly 1st sun at 22:00
 
-  # Weekly Full every other Sunday → Weekly pool
-  Run = Level=Full Pool=Weekly sun at 23:00
+  # Weekly Full every Sunday (except the 1st, which the Monthly run covers) → Weekly pool
+  Run = Level=Full Pool=Weekly 2nd-5th sun at 23:00
 
   # Daily Incremental Mon-Sat → Daily pool
   Run = Level=Incremental Pool=Daily mon-sat at 23:00
 }
 ```
+
+The `Daily`, `Weekly`, and `Monthly` pools referenced here are defined in Chapter 16, where the full Grandfather-Father-Son retention scheme is built out.
 
 ---
 
@@ -407,7 +411,35 @@ Bootstrap files enable **disaster recovery without the catalog**: if you lose th
 
 The BackupCatalog job dumps the MariaDB catalog to a file and backs it up to a Volume. It should run every day, after all regular backups complete.
 
+Because the catalog lives in the `bareos-db` container (not in a local socket), we dump it *over the network* with a small script that runs **inside the Director container**. The Director already has the MariaDB credentials available as environment variables (it loads `db.env` via `EnvironmentFile=`, set up in Chapter 6), and Chapter 6 bind-mounts the host directory `/etc/bareos/scripts` read-only into the Director container at the same path. We put two scripts there: one to create the dump before the job, one to clean it up after.
+
 ```bash
+# Dump script — runs INSIDE the bareos-director container (RunsOnClient = no)
+sudo tee /etc/bareos/scripts/dump-catalog.sh > /dev/null <<'EOF'
+#!/bin/sh
+# Dump the Bareos catalog from the bareos-db container over the network.
+# MARIADB_* come from the Director container's EnvironmentFile=db.env.
+set -eu
+mkdir -p /var/lib/bareos/catalog-dump
+mariadb-dump \
+  --host=bareos-db \
+  --user="${MARIADB_USER}" \
+  --password="${MARIADB_PASSWORD}" \
+  --single-transaction \
+  "${MARIADB_DATABASE}" \
+  | gzip > /var/lib/bareos/catalog-dump/bareos-catalog.sql.gz
+EOF
+sudo chmod 0755 /etc/bareos/scripts/dump-catalog.sh
+
+# Cleanup script — removes the dump after the job has captured it
+sudo tee /etc/bareos/scripts/delete-catalog-dump.sh > /dev/null <<'EOF'
+#!/bin/sh
+set -eu
+rm -f /var/lib/bareos/catalog-dump/bareos-catalog.sql.gz
+EOF
+sudo chmod 0755 /etc/bareos/scripts/delete-catalog-dump.sh
+
+# The BackupCatalog job
 sudo -u bareos tee /etc/bareos/bareos-dir.d/job/BackupCatalog.conf > /dev/null <<'EOF'
 Job {
   Name = "BackupCatalog"
@@ -419,29 +451,40 @@ Job {
   # Use a dedicated catalog pool with longer retention
   Pool = Full
 
-  # The catalog client is the Director host itself
+  # The File Daemon that reads the dump file
   Client = bareos-fd
 
-  # Special FileSet that only includes the catalog dump
+  # Special FileSet that only includes the catalog dump directory
   FileSet = "Catalog"
 
-  # Run daily at 00:30, 30 minutes after the regular backup window
+  # Run daily, after the regular backup window
   Schedule = "WeeklyCycleAfterBackup"
 
-  # Use a RunBeforeJob script to create the dump
-  # This script is provided by Bareos and dumps all catalogs to /var/lib/bareos/
-  RunBeforeJob = "/usr/lib/bareos/scripts/make_catalog_backup.pl MyCatalog"
+  # Create the dump before the job. RunsOnClient = no means the command runs
+  # in the Director container (which has the DB credentials), not on the FD.
+  RunScript {
+    RunsWhen        = Before
+    RunsOnClient    = no
+    FailJobOnError  = yes
+    Command         = "/etc/bareos/scripts/dump-catalog.sh"
+  }
 
-  # Prune old catalog records after backing up
-  RunAfterJob = "/usr/lib/bareos/scripts/delete_catalog_backup"
+  # Remove the dump after the job, whether it succeeded or failed.
+  RunScript {
+    RunsWhen        = After
+    RunsOnClient    = no
+    RunsOnSuccess   = yes
+    RunsOnFailure   = yes
+    Command         = "/etc/bareos/scripts/delete-catalog-dump.sh"
+  }
 
-  Write Bootstrap = "/var/lib/bareos/%n.bsr"
+  Write Bootstrap = "/var/lib/bareos/bareos-catalog.bsr"
 
-  Priority = 11     # Run slightly after regular backup jobs (lower number = higher priority)
+  Priority = 11     # Run slightly after regular backup jobs (higher number = lower priority)
 }
 EOF
 
-# Schedule for catalog backup (30 minutes after main backup window)
+# Schedule for catalog backup (after main backup window)
 sudo -u bareos tee /etc/bareos/bareos-dir.d/schedule/WeeklyCycleAfterBackup.conf > /dev/null <<'EOF'
 Schedule {
   Name = "WeeklyCycleAfterBackup"
@@ -457,14 +500,15 @@ FileSet {
     Options {
       Signature = SHA256
     }
-    # Bareos catalog backup script writes dumps here
-    File = "/var/lib/bareos/bareos.sql"
+    # The dump lands on the shared bareos-working volume, which the FD also
+    # mounts at /var/lib/bareos — so it is referenced as-is, with no /hostfs prefix.
+    File = /var/lib/bareos/catalog-dump
   }
 }
 EOF
 ```
 
-> **Critical**: The `make_catalog_backup.pl` script runs on the File Daemon host (the Director host in our setup). It uses `mysqldump` / `mariadb-dump` to create a plain-SQL dump of the entire catalog. This dump is then backed up by the regular backup engine to a Volume. If you ever need to recover the catalog, you restore this dump and import it into a fresh MariaDB instance.
+> **Critical**: The dump runs **inside the Director container** (`RunsOnClient = no` directs the command to the Director, *not* to the File Daemon). It connects to the `bareos-db` container over the network with `mariadb-dump` and writes a gzipped SQL dump onto the shared `bareos-working` volume. The `bareos-fd` container, which mounts that same volume at `/var/lib/bareos`, then backs the dump up to a Volume. If you ever need to recover the catalog, you restore this dump and import it into a fresh MariaDB instance. (On a traditional RPM install the equivalent stock scripts are `make_catalog_backup.pl` and `delete_catalog_backup`; we do not use them here because there is no local DB socket — the catalog lives in a separate container. We also omit `--events/--routines/--triggers`: the Bareos catalog has none, and the `bareos` DB user lacks the privileges to dump them.)
 
 ---
 
@@ -489,7 +533,7 @@ For environments where you want to explicitly control Volume names:
 
 ```
 # In bconsole:
-*label volume=Full-0001 pool=Full storage=File mediatype=File
+*label volume=Full-0001 pool=Full storage=File
 ```
 
 This creates and labels a new Volume named `Full-0001` in the `Full` pool.
@@ -549,8 +593,8 @@ JobName:  BackupLocalHost
 Level:    Full
 Client:   bareos-fd
 FileSet:  RHEL10-Standard
-Pool:     Full (From Job FullPool override)
-Storage:  File (From Job resource)
+Pool:     Full (From JobDef FullPool override)
+Storage:  File (From JobDef setting)
 When:     2026-02-24 23:00:00
 Priority: 10
 OK to run? (yes/mod/no):
@@ -670,13 +714,15 @@ Schedule {
   Run = Level=Incremental on mon-sat at 23:00
 }
 
-# Show all jobs scheduled to run in the next 24 hours
-*list nextjobs
-+----------+---------------------+-------------+-------+-------+
-| JobId    | Scheduled Time      | Name        | Level | Client|
-+----------+---------------------+-------------+-------+-------+
-| 0        | 2026-02-25 23:00:00 | BackupLocalHost | Full  | bareos-fd |
-+----------+---------------------+-------------+-------+-------+
+# Show the upcoming scheduled runs
+*status scheduler
+Scheduler Jobs:
+
+Schedule         Type       Level         Next Run
+================================================================
+WeeklyBackup     Backup     Full          Sun 25-Feb-2026 23:00
+WeeklyBackup     Backup     Incremental   Mon 26-Feb-2026 23:00
+================================================================
 ```
 
 ### Preventing Overlapping Jobs
@@ -687,12 +733,15 @@ If a previous job is still running when the next one is scheduled:
 Job {
   Name = "BackupLocalHost"
   ...
-  # If a previous instance is running, wait up to 24 hours
-  # before starting the new instance
-  Maximum Start Delay = 24 hours
+  # Do not start a second instance while one is already running.
+  # Bareos refuses the duplicate instead of running both concurrently.
+  Allow Duplicate Jobs = no
 
-  # Allow only one simultaneous instance of this job
-  Allow Mixed Priority = no
+  # Cancel a scheduled run if it cannot start within 2 hours of its
+  # scheduled time (e.g. the previous run is still occupying the resource).
+  # Note: Maximum Start Delay does NOT serialize duplicates — it bounds how
+  # long a queued job may wait past its scheduled time before being canceled.
+  Maximum Start Delay = 2 hours
 }
 ```
 
@@ -720,23 +769,23 @@ FileSet {
       Wild = "*/tmp/*"
       Exclude = yes
     }
-    File = /home
-    File = /etc
-    File = /root
-    File = /opt
-    File = /var/lib/bareos
+    File = /hostfs/home
+    File = /hostfs/etc
+    File = /hostfs/root
+    File = /hostfs/opt
+    File = /var/lib/bareos       # shared bareos-working volume — no /hostfs prefix
   }
   Exclude {
-    File = /proc
-    File = /sys
-    File = /dev
-    File = /run
-    File = /tmp
-    File = /var/tmp
-    File = /var/cache/dnf
-    File = /var/lib/containers/storage/overlay
-    File = /home/bareos/.local/share/containers/storage/overlay
-    File = /srv/bareos-storage/volumes
+    File = /hostfs/proc
+    File = /hostfs/sys
+    File = /hostfs/dev
+    File = /hostfs/run
+    File = /hostfs/tmp
+    File = /hostfs/var/tmp
+    File = /hostfs/var/cache/dnf
+    File = /hostfs/var/lib/containers/storage/overlay
+    File = /hostfs/home/bareos/.local/share/containers/storage/overlay
+    File = /hostfs/srv/bareos-storage/volumes
   }
 }
 FEOF
@@ -777,29 +826,61 @@ Job {
 }
 JEOF
 
+# Catalog dump + cleanup scripts (run inside the bareos-director container)
+sudo tee /etc/bareos/scripts/dump-catalog.sh > /dev/null <<'DEOF'
+#!/bin/sh
+set -eu
+mkdir -p /var/lib/bareos/catalog-dump
+mariadb-dump \
+  --host=bareos-db \
+  --user="${MARIADB_USER}" \
+  --password="${MARIADB_PASSWORD}" \
+  --single-transaction \
+  "${MARIADB_DATABASE}" \
+  | gzip > /var/lib/bareos/catalog-dump/bareos-catalog.sql.gz
+DEOF
+sudo tee /etc/bareos/scripts/delete-catalog-dump.sh > /dev/null <<'DDEOF'
+#!/bin/sh
+set -eu
+rm -f /var/lib/bareos/catalog-dump/bareos-catalog.sql.gz
+DDEOF
+sudo chmod 0755 /etc/bareos/scripts/dump-catalog.sh /etc/bareos/scripts/delete-catalog-dump.sh
+
 # Create the catalog backup job
 sudo -u bareos tee /etc/bareos/bareos-dir.d/job/BackupCatalog.conf > /dev/null <<'CEOF'
 Job {
   Name = "BackupCatalog"
   JobDefs = "StandardBackup"
   Level = Full
+  Pool = Full
   Client = bareos-fd
   FileSet = "Catalog"
   Schedule = "WeeklyCycleAfterBackup"
-  RunBeforeJob = "/usr/lib/bareos/scripts/make_catalog_backup.pl MyCatalog"
-  RunAfterJob  = "/usr/lib/bareos/scripts/delete_catalog_backup"
-  Write Bootstrap = "/var/lib/bareos/%n.bsr"
+  RunScript {
+    RunsWhen       = Before
+    RunsOnClient   = no
+    FailJobOnError = yes
+    Command        = "/etc/bareos/scripts/dump-catalog.sh"
+  }
+  RunScript {
+    RunsWhen      = After
+    RunsOnClient  = no
+    RunsOnSuccess = yes
+    RunsOnFailure = yes
+    Command       = "/etc/bareos/scripts/delete-catalog-dump.sh"
+  }
+  Write Bootstrap = "/var/lib/bareos/bareos-catalog.bsr"
   Priority = 11
 }
 CEOF
 
-# Catalog FileSet
+# Catalog FileSet (dump lives on the shared bareos-working volume — no /hostfs prefix)
 sudo -u bareos tee /etc/bareos/bareos-dir.d/fileset/Catalog.conf > /dev/null <<'CFEOF'
 FileSet {
   Name = "Catalog"
   Include {
     Options { Signature = SHA256 }
-    File = "/var/lib/bareos/bareos.sql"
+    File = /var/lib/bareos/catalog-dump
   }
 }
 CFEOF
@@ -817,9 +898,8 @@ echo "Configuration files created. Validating..."
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman exec bareos-director \
   bareos-dir -t -c /etc/bareos
-echo "Validation complete. Reload the Director..."
-echo "status director" | bconsole > /dev/null && \
-  echo "reload" | bconsole
+echo "Validation complete. Reloading the Director..."
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< "reload"
 ```
 
 ---
@@ -846,9 +926,10 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< "status client=bareos
 > **WebUI equivalent — Step 2:** Go to **Clients** in the left sidebar. The client `bareos-fd` should show status **Online**. Click it to see connection details.
 
 ```bash
-# Step 3: Label a Volume manually (optional - LabelMedia=yes handles this automatically)
-# bconsole:
-# *label volume=Full-0001 pool=Full storage=File mediatype=File
+# Step 3: Label a Volume manually (optional — LabelMedia=yes labels new
+# Volumes automatically on first write, so you can skip this step entirely).
+# Run it only if you want explicitly named Volumes:
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< "label volume=Full-0001 pool=Full storage=File"
 ```
 
 > **WebUI equivalent — Step 3:** Go to **Storage → Volumes → Label Volume**. Select the pool, storage, and enter the volume name.
@@ -922,7 +1003,7 @@ In this chapter you created and ran your first complete Bareos backup configurat
 - **FileSet**: Defined exactly what to include (`/home`, `/etc`, etc.) and what to exclude (`/proc`, `/sys`, container overlay layers, the backup storage itself). Options control checksum type (SHA256), compression (ZSTD), ACL/xattr preservation, and filesystem boundary control.
 - **Schedule**: Weekly Full on Sunday, Incremental Mon-Sat. Schedules can override job-level `Level` on a per-run basis.
 - **JobDefs**: DRY template for shared job settings. Multiple jobs inherit from one `JobDefs` to reduce repetition.
-- **BackupCatalog job**: Critical — always configure this. It dumps MariaDB with `make_catalog_backup.pl` and backs the dump to a Volume. This is your recovery path if you lose the catalog.
+- **BackupCatalog job**: Critical — always configure this. A `RunScript` with `RunsOnClient = no` dumps the MariaDB catalog from inside the Director container (over the network to `bareos-db`) onto the shared `bareos-working` volume, and the File Daemon backs that dump up to a Volume. This is your recovery path if you lose the catalog.
 - **Volume labeling**: `LabelMedia = yes` in the Storage Device enables automatic labeling. Manual labeling is done with `label` in bconsole or via **Storage → Volumes → Label Volume** in the WebUI.
 - **Running jobs**: `run job=Name level=Full yes` in bconsole, or **Jobs → Run Job** in the WebUI. `messages` / the job details page shows the result. `list jobs` / **Jobs → All Jobs** shows history.
 - **Reading job reports**: `FD Files/Bytes Written` vs `SD Files/Bytes Written` reveals compression effectiveness. `Termination: Backup OK` is the only acceptable outcome.

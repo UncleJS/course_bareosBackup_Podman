@@ -122,7 +122,7 @@ A Purged volume is safe to recycle, but Bareos will not actually overwrite it un
 
 A Volume in the **Purged** state and with `Recycle = yes` set on its Pool becomes a candidate for reuse. When the Director needs a new volume and finds no empty labeled volumes available, it looks for the oldest Purged volume in the pool and recycles it — resetting its catalog record and overwriting it from the start. This is analogous to taping over an old VHS cassette.
 
-The `Recycle Pool` directive lets you redirect purged volumes to a different pool (for example, a "scratch" pool) rather than recycling them in place. This is useful when you want to manually audit volumes before they are reused.
+The `Recycle Pool` directive sets the pool a volume is *moved to* when it is recycled — typically `Scratch`. A Scratch volume is then available to any pool that needs a fresh volume, so this is the mechanism for sharing recycled volumes across pools rather than pinning them to one tier. (It does not hold volumes for manual approval; recycling still proceeds automatically.)
 
 ```
 Phase 1: Creation → Volume = "Append", Job = "T", all catalog records present
@@ -229,7 +229,7 @@ at 2:30
 # Full backup on the first Sunday of January, April, July, October (quarterly)
 Run = Level=Full Pool=Quarterly Jan Apr Jul Oct First Sun at 01:00
 
-# Monthly full on the last day of each month
+# Monthly full on the last Sunday of each month
 Run = Level=Full Pool=Monthly Last Sun at 01:00
 
 # Weekly differential every Saturday except the first Saturday
@@ -376,9 +376,12 @@ Pool {
 
   Maximum Volumes = 14
   # Maximum number of volumes allowed in this pool.
-  # When this limit is reached, Bareos will recycle the oldest eligible volume
-  # rather than creating a new one. Set to a value that covers your retention
-  # window: for a 7-day Daily pool, 14 gives 2x headroom.
+  # When this limit is reached, Bareos will reuse a recyclable volume
+  # (one that is Purged and past Volume Retention) rather than creating a
+  # new one. If the limit is reached and NO volume is recyclable, the job
+  # waits (or errors) — Bareos never overwrites a still-retained volume.
+  # Set to a value that covers your retention window with headroom:
+  # for a 7-day Daily pool, 14 gives 2x headroom.
 
   # ──────────────────────────────────────────────────────────────
   # Per-Volume Limits (when to close a volume and open a new one)
@@ -426,17 +429,18 @@ Pool {
   # volumes just sit there until a human manually deletes them.
 
   Recycle Pool = Scratch
-  # Optional: when a volume is purged, move it to the "Scratch" pool
-  # instead of recycling it in place. The Scratch pool acts as a holding
-  # area. Useful in large environments where you want human oversight
-  # before volumes are overwritten.
+  # Optional: the pool a volume is MOVED TO when it is recycled.
+  # Sending recycled volumes to "Scratch" makes them available to any
+  # pool that needs a fresh volume, rather than keeping them pinned to
+  # this pool. Recycling still happens automatically — this directive
+  # only chooses the destination pool.
 
   # ──────────────────────────────────────────────────────────────
   # Storage Assignment
   # ──────────────────────────────────────────────────────────────
 
-  Storage = FileStorage-Daily
-  # Which Storage Daemon device this pool writes to by default.
+  Storage = File
+  # Which Director Storage resource this pool writes to by default.
   # Can be overridden in the Job or Schedule Run directive.
 }
 ```
@@ -488,14 +492,14 @@ Pool {
   Name                = "Daily"
   Pool Type           = Backup
   Label Format        = "Daily-${Year}-${Month:p/2/0/r}-${Day:p/2/0/r}-"
-  Maximum Volumes     = 21          # 3 weeks of daily volumes (headroom)
+  Maximum Volumes     = 21          # 8-day retention ⇒ ~8-9 active volumes; 21 = headroom
   Maximum Volume Jobs = 1           # one job per volume, clean separation
   Maximum Volume Bytes = 30 GB
-  Volume Use Duration = 23 hours    # force close before next daily run
+  Volume Use Duration = 23 hours    # moot here: MaxVolumeJobs=1 closes the volume first
   Volume Retention    = 8 days      # keep 8 days, prune after
   Auto Prune          = yes
   Recycle             = yes
-  Storage             = FileStorage
+  Storage             = File
 }
 
 # ─── WEEKLY POOL ─────────────────────────────────────────────────
@@ -507,11 +511,11 @@ Pool {
   Maximum Volumes     = 10          # ~2.5 months of weekly volumes
   Maximum Volume Jobs = 1
   Maximum Volume Bytes = 100 GB
-  Volume Use Duration = 7 days
+  Volume Use Duration = 7 days      # moot here: MaxVolumeJobs=1 closes the volume first
   Volume Retention    = 35 days     # keep 5 weeks
   Auto Prune          = yes
   Recycle             = yes
-  Storage             = FileStorage
+  Storage             = File
 }
 
 # ─── MONTHLY POOL ────────────────────────────────────────────────
@@ -523,11 +527,11 @@ Pool {
   Maximum Volumes     = 15          # 15 months of monthly volumes
   Maximum Volume Jobs = 1
   Maximum Volume Bytes = 500 GB
-  Volume Use Duration = 32 days
+  Volume Use Duration = 32 days     # moot here: MaxVolumeJobs=1 closes the volume first
   Volume Retention    = 400 days    # keep ~13 months
   Auto Prune          = yes
   Recycle             = yes
-  Storage             = FileStorage
+  Storage             = File
 }
 
 # ─── YEARLY POOL ─────────────────────────────────────────────────
@@ -539,11 +543,11 @@ Pool {
   Maximum Volumes     = 10          # 10 years of yearly backups
   Maximum Volume Jobs = 1
   Maximum Volume Bytes = 2 TB
-  Volume Use Duration = 400 days
+  Volume Use Duration = 400 days    # moot here: MaxVolumeJobs=1 closes the volume first
   Volume Retention    = 3650 days   # keep 10 years
   Auto Prune          = yes
   Recycle             = yes
-  Storage             = FileStorage
+  Storage             = File
 }
 
 # ─── SCRATCH POOL ────────────────────────────────────────────────
@@ -571,10 +575,13 @@ Schedule {
   Run = Level=Full Pool=Yearly Dec Last Sun at 01:00
 
   # ── MONTHLY ───────────────────────────────────────────────────
-  # Full backup on the First Sunday of each month (except December last week).
-  # Pool=Monthly. This will NOT match Dec Last Sun because that Run comes first
-  # and Bareos evaluates from top to bottom; actually in Bareos both matching
-  # Runs will fire — so we use a separate job definition instead (see Lab 16-1).
+  # Full backup on the first Sunday of each month, written to Pool=Monthly.
+  # Note: Bareos does NOT stop at the first matching Run. On any date that
+  # matches two overlapping Run lines, BOTH fire — so the Yearly run above
+  # and this Monthly run would each trigger on a date they both match. The
+  # first Sunday and the last Sunday of December never coincide here, so this
+  # particular pair is safe, but to avoid such collisions in general we split
+  # the tiers into separate schedules and jobs (see Lab 16-1).
   Run = Level=Full Pool=Monthly First Sun at 01:00
 
   # ── WEEKLY ────────────────────────────────────────────────────
@@ -603,7 +610,7 @@ Job {
   Client          = myserver-fd
   FileSet         = "LinuxAll"
   Schedule        = "GFS-Schedule"
-  Storage         = FileStorage
+  Storage         = File
   Pool            = Daily          # default pool; Schedule Run overrides
   Messages        = Standard
   Priority        = 10
@@ -633,7 +640,7 @@ When Bareos needs a new volume and `Label Format` is set on the pool, it automat
 | `${Minute}` | Minute (0–59) | `5` |
 | `${Second}` | Second (0–59) | `30` |
 | `${Week}` | ISO week number (1–53) | `27` |
-| `${WeekDay}` | Numeric weekday (0=Sun) | `0` |
+| `${WeekDay}` | Numeric weekday (see Bareos docs for the numbering) | `0` |
 | `${NumVols}` | Current volume count in pool | `5` |
 
 ### Padding Format Modifier
@@ -670,7 +677,7 @@ In bconsole you can label a volume manually (skipping LabelFormat):
 
 ```
 *label
-Automatically selected Storage: FileStorage
+Automatically selected Storage: File
 Enter new Volume name: Daily-Manual-001
 Defined Pools:
      1: Daily
@@ -684,9 +691,9 @@ Or non-interactively:
 ```bash
 # Run as bareos user with correct XDG_RUNTIME_DIR
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman exec bareos-dir \
+  podman exec bareos-director \
   bconsole <<'EOF'
-label storage=FileStorage volume=Daily-Manual-001 pool=Daily slot=0 drive=0
+label storage=File volume=Daily-Manual-001 pool=Daily slot=0 drive=0
 EOF
 ```
 
@@ -714,21 +721,21 @@ Each volume file is a raw binary stream of backup data in Bareos block format. I
 
 ### SELinux Context for Storage Directory
 
-The storage directory requires the custom SELinux type `bareos_store_t`. This must be configured before the Storage Daemon can write to it:
+The storage directory must carry the `container_file_t` SELinux type so the containerized Storage Daemon can write to it (this matches the persistent labeling set up in Chapter 3):
 
 ```bash
 # Install the SELinux policy tools
 sudo dnf install -y policycoreutils-python-utils
 
 # Set the persistent SELinux file context for the storage directory
-sudo semanage fcontext -a -t bareos_store_t "/srv/bareos-storage/volumes(/.*)?"
+sudo semanage fcontext -a -t container_file_t "/srv/bareos-storage/volumes(/.*)?"
 
 # Apply the context immediately (relabels existing files)
 sudo restorecon -RFv /srv/bareos-storage/volumes/
 
 # Verify
 ls -laZ /srv/bareos-storage/volumes/ | head -5
-# Expected: system_u:object_r:bareos_store_t:s0
+# Expected: system_u:object_r:container_file_t:s0
 ```
 
 ### Storage Daemon Device Resource
@@ -736,7 +743,7 @@ ls -laZ /srv/bareos-storage/volumes/ | head -5
 The Storage Daemon's configuration defines the **Device** resource, which maps a Pool's storage to a physical directory:
 
 ```hcl
-# Inside bareos-sd container: /etc/bareos/bareos-sd.d/device/FileStorage.conf
+# Inside bareos-storage container: /etc/bareos/bareos-sd.d/device/FileStorage.conf
 
 Device {
   Name                      = "FileStorage"
@@ -782,15 +789,17 @@ Device {
 ### Director's Storage Resource (Connects Director to Storage Daemon)
 
 ```hcl
-# /etc/bareos/bareos-dir.d/storage/FileStorage.conf
+# /etc/bareos/bareos-dir.d/storage/File.conf
 
 Storage {
-  Name            = "FileStorage"
+  Name            = "File"
   # Name used by Pool, Job, and Schedule resources to reference this storage.
+  # This is the Director's Storage resource; the underlying SD Device it
+  # points at is named "FileStorage" (see Device below).
 
-  Address         = bareos-sd
+  Address         = bareos-storage
   # Hostname or IP of the Storage Daemon. In our Podman network, containers
-  # communicate by service name. "bareos-sd" is the container's network alias.
+  # communicate by service name. "bareos-storage" is the container's network alias.
 
   Port            = 9103
   # Default Bareos Storage Daemon port.
@@ -903,6 +912,8 @@ A volume can be recycled when ALL of the following are true:
 3. `Recycle = yes` is set on the Pool
 4. The pool needs a new volume (MaxVolumes has been reached or no empty volumes are available)
 
+If the pool has hit MaxVolumes and no volume is recyclable (none is Purged and past Volume Retention), Bareos does **not** overwrite a still-retained volume — the job waits for an available volume, or errors out if none becomes available. Recycling only ever reclaims an eligible (Purged) volume.
+
 ### The Recycle Algorithm
 
 When a new volume is needed:
@@ -917,9 +928,9 @@ When a new volume is needed:
 Pool {
   Name         = "Daily"
   Recycle Pool = "Scratch"
-  # When a Daily volume is purged, it moves to Scratch.
-  # A human or automated process can then move it back to Daily
-  # or another pool as needed.
+  # Recycle Pool sets the pool a volume is MOVED TO when it is recycled.
+  # When a Daily volume is recycled it lands in Scratch, from where any
+  # pool that needs a fresh volume can draw it.
   ...
 }
 
@@ -984,10 +995,10 @@ If `Job Retention > Volume Retention`, job records reference volumes that may ha
 For debugging or custom reporting, you can query MariaDB directly from the container:
 
 ```bash
-# As bareos user
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-db \
-  mariadb -u bareos -p"$(cat /home/bareos/.config/bareos/db.env | grep DB_PASSWORD | cut -d= -f2)" \
-  bareos -e "
+# As bareos user. MARIADB_PASSWORD is defined in the repo-local db.env
+# (user "bareos", database "bareos").
+podman exec bareos-db \
+  mariadb -u bareos -p"$MARIADB_PASSWORD" bareos -e "
 SELECT j.Name, j.Level, j.StartTime, j.EndTime, j.JobStatus,
        j.JobFiles, j.JobBytes
 FROM Job j
@@ -1051,12 +1062,10 @@ Job {
 
   Selection Type  = PoolUncopied
   # Selects jobs from the source pool that have NOT been copied yet.
-  # Other options:
-  #   PoolOccupied: all jobs in pool
-  #   SmallestVolume: prioritize filling up small volumes
-  #   OldestVolume: copy oldest jobs first
-  #   Client: copy all jobs for a specific client
-  #   Volume: copy all jobs on a specific volume
+  # Several other selection types exist (e.g. by volume, by client, by
+  # smallest/oldest volume, or all jobs in the pool). Consult the Bareos
+  # documentation for the exact set of values and their precise behaviour:
+  # https://docs.bareos.org/
 }
 
 # The destination pool
@@ -1104,20 +1113,20 @@ Job {
 
 ## 13. Virtual Full Backup
 
-A **Virtual Full** is a Bareos feature that creates a new Full backup *in the catalog* by combining an existing Full with all subsequent Incrementals, without sending any data over the network from the client.
+A **Virtual Full** is a Bareos feature that creates a new Full backup *in the catalog* by combining an existing Full with all subsequent backups in the chain — any Differentials **and** all Incrementals — without sending any data over the network from the client.
 
 The result is a synthetic Full stored on a new volume that can be used as the base for future Incrementals. This allows you to:
 - Reduce the gap between Full backups without the network overhead
 - Create a single self-contained Full from many incremental pieces
-- Consolidate storage: once the Virtual Full is created, you can safely prune the constituent Incrementals
+- Consolidate storage: once the Virtual Full is created, you can safely prune the constituent Differential and Incrementals
 
 > **Storage caveat:** A Virtual Full **does not reduce physical storage** — it writes a new, complete set of file data to a new volume. The storage used is approximately equal to the combined size of the original Full plus all Incrementals that were merged. Physical storage savings only occur *after* you prune the original Full and its Incrementals. Until those volumes are pruned and recycled, total storage usage will temporarily increase. Plan for at least 2× the size of a typical Full backup as headroom when running Virtual Full jobs.
 
 ### How Virtual Full Works Internally
 
 1. Bareos reads the existing Full volume from the Storage Daemon.
-2. It reads all Incremental volumes that were created after that Full.
-3. It merges them (applying the delta logic: each Incremental overrides the same-path file from earlier backups).
+2. It reads every backup in the chain created after that Full — any Differential and all subsequent Incrementals.
+3. It merges them (applying the delta logic: each later backup overrides the same-path file from earlier backups).
 4. It writes the merged result as a new "Full" backup to a target volume.
 5. The catalog is updated to reflect the new Virtual Full job and its constituent files.
 
@@ -1137,7 +1146,7 @@ Job {
   Client          = myserver-fd
   FileSet         = "LinuxAll"
   Schedule        = "WeeklyVirtualFull"
-  Storage         = FileStorage
+  Storage         = File
   Pool            = Weekly
   # The Virtual Full is written to the Weekly pool.
   # It will be used as the new Full baseline for future Incrementals.
@@ -1336,7 +1345,7 @@ In larger environments, you may want different jobs to write to different Storag
 
 Storage {
   Name            = "FastStorage"
-  Address         = bareos-sd-fast
+  Address         = bareos-storage-fast
   Port            = 9103
   Password        = "{{ fast_sd_password }}"
   Device          = "FastDevice"
@@ -1348,7 +1357,7 @@ Storage {
 
 Storage {
   Name            = "ArchiveStorage"
-  Address         = bareos-sd-archive
+  Address         = bareos-storage-archive
   Port            = 9103
   Password        = "{{ archive_sd_password }}"
   Device          = "ArchiveDevice"
@@ -1387,22 +1396,22 @@ Schedule {
 ### Quadlet for Second Storage Daemon
 
 ```ini
-# /home/bareos/.config/containers/systemd/bareos-sd-archive.container
+# /home/bareos/.config/containers/systemd/bareos-storage-archive.container
 
 [Unit]
 Description=Bareos Storage Daemon (Archive)
-After=network-online.target bareos-sd-archive-volume.service
+After=network-online.target bareos-storage-archive-volume.service
 
 [Container]
 Image=docker.io/bareos/bareos-storage:24
-ContainerName=bareos-sd-archive
+ContainerName=bareos-storage-archive
 Network=bareos.network
 
 # Archive storage on a slow/large disk
 Volume=/srv/bareos-archive/volumes:/var/lib/bareos/storage:Z
 
 # Configuration from named volume
-Volume=bareos-sd-archive-config:/etc/bareos:Z
+Volume=bareos-storage-archive-config:/etc/bareos:Z
 
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 
@@ -1441,7 +1450,7 @@ sudo chown -R bareos:bareos /srv/bareos-storage/
 sudo chmod -R 750 /srv/bareos-storage/
 
 # Set SELinux context
-sudo semanage fcontext -a -t bareos_store_t \
+sudo semanage fcontext -a -t container_file_t \
   "/srv/bareos-storage/volumes(/.*)?"
 sudo restorecon -RFv /srv/bareos-storage/volumes/
 
@@ -1468,7 +1477,7 @@ Pool {
   Volume Retention    = 8 days
   Auto Prune          = yes
   Recycle             = yes
-  Storage             = FileStorage
+  Storage             = File
 }
 Pool {
   Name                = "Weekly"
@@ -1481,7 +1490,7 @@ Pool {
   Volume Retention    = 35 days
   Auto Prune          = yes
   Recycle             = yes
-  Storage             = FileStorage
+  Storage             = File
 }
 Pool {
   Name                = "Monthly"
@@ -1494,7 +1503,7 @@ Pool {
   Volume Retention    = 400 days
   Auto Prune          = yes
   Recycle             = yes
-  Storage             = FileStorage
+  Storage             = File
 }
 Pool {
   Name                = "Yearly"
@@ -1507,7 +1516,7 @@ Pool {
   Volume Retention    = 3650 days
   Auto Prune          = yes
   Recycle             = yes
-  Storage             = FileStorage
+  Storage             = File
 }
 Pool {
   Name      = "Scratch"
@@ -1553,7 +1562,7 @@ Job {
   Client          = myserver-fd
   FileSet         = "LinuxAll-Advanced"
   Schedule        = "GFS-Daily"
-  Storage         = FileStorage
+  Storage         = File
   Pool            = Daily
   Messages        = Standard
   Priority        = 10
@@ -1566,7 +1575,7 @@ Job {
   Client          = myserver-fd
   FileSet         = "LinuxAll-Advanced"
   Schedule        = "GFS-Weekly"
-  Storage         = FileStorage
+  Storage         = File
   Pool            = Weekly
   Messages        = Standard
   Priority        = 10
@@ -1579,7 +1588,7 @@ Job {
   Client          = myserver-fd
   FileSet         = "LinuxAll-Advanced"
   Schedule        = "GFS-Monthly"
-  Storage         = FileStorage
+  Storage         = File
   Pool            = Monthly
   Messages        = Standard
   Priority        = 9
@@ -1592,7 +1601,7 @@ Job {
   Client          = myserver-fd
   FileSet         = "LinuxAll-Advanced"
   Schedule        = "GFS-Yearly"
-  Storage         = FileStorage
+  Storage         = File
   Pool            = Yearly
   Messages        = Standard
   Priority        = 8
@@ -1605,7 +1614,7 @@ JOBCONF
 
 ```bash
 # Reload configuration without restarting (no downtime)
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
   bconsole <<'EOF'
 reload
 quit
@@ -1617,7 +1626,7 @@ Expected output: `3000 OK reload`
 ### Step 6: Verify Configuration in bconsole
 
 ```bash
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bconsole
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole
 ```
 
 ```
@@ -1659,7 +1668,7 @@ This lab demonstrates creating a Virtual Full from an existing Full + Incrementa
 ### Step 1: Verify the Backup Chain Exists
 
 ```bash
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bconsole
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole
 ```
 
 ```
@@ -1686,7 +1695,7 @@ Job {
   Level           = VirtualFull
   Client          = myserver-fd
   FileSet         = "LinuxAll-Advanced"
-  Storage         = FileStorage
+  Storage         = File
   Pool            = Weekly
   Messages        = Standard
   Priority        = 11
@@ -1694,16 +1703,20 @@ Job {
   Write Bootstrap = "/var/lib/bareos/myserver-vf.bsr"
 }
 VFJOB
+```
 
+Note that the source chain (the Monthly Full plus the Daily Incrementals seeded in Lab 16-1) lives in the `Monthly` and `Daily` pools, while this job writes the synthesized Full to the `Weekly` pool. Virtual Full consolidates the chain *across pools* by design — reading the Full and its Incrementals wherever they live and writing one self-contained Full into the destination pool you choose.
+
+```bash
 # Reload the Director
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
   bconsole <<< "reload"
 ```
 
 ### Step 3: Run the Virtual Full
 
 ```bash
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bconsole
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole
 ```
 
 ```
@@ -1720,7 +1733,7 @@ Watch the job log. You will NOT see a "Connecting to Client" message — this co
 ```
 Start Backup JobId 4, Job=VirtualFull-Linux...
 Using Device "FileStorage" to write.
-Reading to pool "Weekly" and writing to pool "Weekly"
+Consolidating the Full + Incrementals from pools "Monthly"/"Daily" into pool "Weekly"
 ```
 
 ### Step 4: Verify in bconsole
@@ -1768,7 +1781,7 @@ Pool {
   Volume Retention    = 90 days
   Auto Prune          = yes
   Recycle             = yes
-  Storage             = FileStorage
+  Storage             = File
   # In a real scenario, this would point to a second Storage Daemon.
   # For this lab we use the same storage to demonstrate the mechanics.
 }
@@ -1787,7 +1800,7 @@ Job {
   Client          = myserver-fd
   FileSet         = "LinuxAll-Advanced"
   Schedule        = "GFS-Copy"
-  Storage         = FileStorage
+  Storage         = File
   Pool            = Weekly
   Next Pool       = Offsite-Weekly
   Messages        = Standard
@@ -1809,10 +1822,10 @@ COPYSCHED
 ### Step 3: Reload and Run the Copy Job
 
 ```bash
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
   bconsole <<< "reload"
 
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bconsole
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole
 ```
 
 ```
@@ -1862,7 +1875,7 @@ This chapter covered the complete lifecycle of backups in Bareos, from the momen
 
 **Copy and Migration Jobs enable off-site and tiered storage**: Copy Jobs duplicate without removing the original; Migration Jobs move and clean up. Both use `Next Pool` to direct the destination.
 
-**SELinux must be considered at every step**: The storage directory at `/srv/bareos-storage/volumes` requires the `bareos_store_t` SELinux type. Always run `semanage fcontext` and `restorecon` before starting the Storage Daemon.
+**SELinux must be considered at every step**: The storage directory at `/srv/bareos-storage/volumes` must carry the `container_file_t` SELinux type. Always run `semanage fcontext` and `restorecon` before starting the Storage Daemon.
 
 In the next chapter, we will cover monitoring and alerting — making sure you know immediately when a backup fails or when retention thresholds are approaching.
 

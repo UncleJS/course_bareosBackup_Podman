@@ -73,7 +73,7 @@
   - [Checking for SELinux Denials](#checking-for-selinux-denials)
   - [SELinux File Contexts for Monitoring Scripts](#selinux-file-contexts-for-monitoring-scripts)
 - [16. Lab 17-1: Configure Email Summaries for Every Job](#16-lab-17-1-configure-email-summaries-for-every-job)
-  - [Step 1: Prepare msmtp](#step-1-prepare-msmtp)
+  - [Step 1: Verify the Mail Transport (bsmtp)](#step-1-verify-the-mail-transport-bsmtp)
   - [Step 2: Write the Messages Resource Configuration](#step-2-write-the-messages-resource-configuration)
   - [Step 3: Ensure Jobs Reference the Standard Messages Resource](#step-3-ensure-jobs-reference-the-standard-messages-resource)
   - [Step 4: Reload and Test](#step-4-reload-and-test)
@@ -190,11 +190,11 @@ Bareos 24.0.1 (01Jun24): ...
 
 Two common email strategies:
 
-**`mail on all`** — sends an email for every job, regardless of outcome. This is appropriate for small environments where every job is reviewed. Becomes noise in large environments running hundreds of jobs daily.
+**`Mail = addr = all`** — sends an email for every job, regardless of outcome. This is appropriate for small environments where every job is reviewed. Becomes noise in large environments running hundreds of jobs daily.
 
-**`mail on error`** — only sends email when a job ends with a non-OK status (errors, warnings, or cancellation). In large environments this is the preferred approach, combined with a weekly summary report.
+**`Mail On Error = addr = all`** — only sends email when a job ends with a non-OK status (errors, warnings, or cancellation). In large environments this is the preferred approach, combined with a weekly summary report.
 
-**Best practice**: Configure `mail on error` for routine jobs and `mail always` for the Monthly/Yearly full backups.
+**Best practice**: Configure `Mail On Error` for routine jobs and `Mail` (mail-always) for the Monthly/Yearly full backups.
 
 ---
 
@@ -208,9 +208,9 @@ The **Messages** resource is one of the most important and most misunderstood re
 
 | Destination | Syntax | Purpose |
 |---|---|---|
-| `mail` | `mail = addr = subject` | Send email to address with subject |
-| `mail on error` | `mail on error = addr = subject` | Email only on error/warning |
-| `mail on success` | `mail on success = addr = subject` | Email only on success |
+| `mail` | `mail = addr = message-types` | Send email to address for these message types |
+| `mail on error` | `mail on error = addr = message-types` | Email only on error/warning |
+| `mail on success` | `mail on success = addr = message-types` | Email only on success |
 | `append` | `append = /path/to/file = message-types` | Append to a log file |
 | `file` | `file = /path/to/file = message-types` | Write to a log file (overwrite) |
 | `syslog` | `syslog = facility.level` | Send to syslog |
@@ -249,6 +249,15 @@ The **Messages** resource is one of the most important and most misunderstood re
 Messages {
   Name = "Standard"
 
+  # ── Mail Command ──────────────────────────────────────────────
+
+  # Bareos ships the `bsmtp` helper, which speaks SMTP directly to a
+  # relay. ALWAYS set Mail Command (and Operator Command) explicitly —
+  # the built-in default points at 127.0.0.1:25, which does not exist
+  # inside the container. Point -h at your real SMTP relay.
+  Mail Command = "/usr/bin/bsmtp -h smtp.example.com:587 -f \"(Bareos) %r\" -s \"Bareos: %t %e of %c %l\" %r"
+  Operator Command = "/usr/bin/bsmtp -h smtp.example.com:587 -f \"(Bareos) %r\" -s \"Bareos: Intervention needed for %j\" %r"
+
   # ── Mail Destinations ─────────────────────────────────────────
 
   # Send full job report email for every job.
@@ -279,7 +288,7 @@ Messages {
   # ── Append to Log File ────────────────────────────────────────
 
   # Append all messages to a persistent log file inside the container.
-  # This log is available via: podman exec bareos-dir cat /var/log/bareos/bareos.log
+  # This log is available via: podman exec bareos-director cat /var/log/bareos/bareos.log
   Append = "/var/log/bareos/bareos.log" = all, !skipped, !restored
 
   # ── Operator Messages ─────────────────────────────────────────
@@ -301,6 +310,10 @@ Messages {
 
 Messages {
   Name = "Daemon"
+
+  # bsmtp delivers the mail — without Mail Command the default 127.0.0.1:25
+  # relay (absent in the container) is used and delivery silently fails.
+  Mail Command = "/usr/bin/bsmtp -h smtp.example.com:587 -f \"(Bareos) %r\" -s \"Bareos daemon: %t %e\" %r"
 
   # Email on daemon-level errors (Director crash, config error, etc.)
   Mail On Error = "backup-alerts@example.com" = error, fatal, terminate
@@ -347,33 +360,46 @@ Messages {
 Messages {
   Name = "Standard"
 
-  Director = bareos-director = all
+  Director = bareos-dir = all
+  # "bareos-dir" is the Director's resource Name (from Chapter 6),
+  # not the container name. The FD forwards all messages to it.
   Syslog   = daemon.warning = error, fatal
 }
 ```
 
 ### Message Subject Line Customization
 
-You can customize the email subject using a format string. Add the `mail command` directive:
+You customize the email subject through the `Mail Command` directive. The recommended
+approach uses Bareos's bundled `bsmtp` helper, whose `-s` flag sets the subject from
+Bareos substitution variables:
 
 ```hcl
-# In the Director's bareos-dir.conf or a separate messages resource file:
+# In a Director messages resource file (e.g. bareos-dir.d/messages/Standard.conf):
 Messages {
   Name = "Standard"
   # ...
 
-  # Custom mail command — uses sendmail-compatible interface.
-  # %r = recipient, %s = job status, %c = client name, %d = director name
-  Mail Command = "/usr/sbin/sendmail -F \"Bareos\" -h %r"
+  # bsmtp substitution variables:
+  #   %r = recipient, %t = "type" (e.g. Backup), %e = job exit status,
+  #   %c = client name, %l = job level, %j = unique job name
+  # -h sets the SMTP host:port, -f the From header, -s the Subject.
+  Mail Command = "/usr/bin/bsmtp -h smtp.example.com:587 -f \"(Bareos) %r\" -s \"Bareos: %t %e of %c %l\" %r"
 
-  # Or with msmtp:
-  Mail Command = "/usr/bin/msmtp -a default %r"
-
-  # The subject line is built from the first line of the message body.
-  # Bareos prepends it automatically. You can set a custom subject prefix
-  # using the job name and status in the Mail destination:
   Mail = "backup-alerts@example.com" = all, !skipped
 }
+```
+
+**Alternative (secondary): sendmail/msmtp.** If you prefer to route through a
+sendmail-compatible client instead of bsmtp, supply the full command with correct flags.
+Note `-h` is a *bsmtp* flag — `sendmail` and `msmtp` do not accept it; pass the recipient
+as the trailing argument and let the client read the subject from the message headers:
+
+```hcl
+  # sendmail-compatible client (host relay reachable from the container):
+  Mail Command = "/usr/sbin/sendmail -F \"Bareos\" %r"
+
+  # Or msmtp, selecting the 'default' account from msmtprc:
+  Mail Command = "/usr/bin/msmtp -a default %r"
 ```
 
 ---
@@ -382,11 +408,13 @@ Messages {
 
 ## 4. Setting Up Email Delivery from Containers
 
-Bareos containers need to send email via SMTP. Since the containers run rootless under the `bareos` user, we need a lightweight SMTP relay that can send email without running a full MTA daemon.
+Bareos containers need to send email via SMTP. Since the containers run rootless under the `bareos` user, we need a way to hand mail to an SMTP relay without running a full MTA daemon.
 
-### Option A: msmtp (Recommended for Simple Setups)
+> **Preferred: native `bsmtp`.** The Bareos image already ships `/usr/bin/bsmtp`, which speaks SMTP directly to a relay. If you set `Mail Command`/`Operator Command` to use `bsmtp -h <relay>:<port>` (as shown in [Section 3](#message-subject-line-customization)), you need **no extra binary inside the container** — point `-h` at any reachable relay (an SMTP smarthost, or the host's Postfix via `host.containers.internal:25`). The options below are only needed if you want a separate, configurable SMTP client (TLS auth from a config file, multiple accounts, etc.).
 
-`msmtp` is a minimal SMTP client that reads a config file and sends email. It is installed inside the Director container or available via a sidecar approach.
+### Option A: msmtp (Alternative — Configurable SMTP Client)
+
+`msmtp` is a minimal SMTP client that reads a config file and sends email. Use it instead of `bsmtp` when you need stored TLS credentials or multiple SMTP accounts. It is injected into the Director container via a bind mount.
 
 **Approach**: Create a custom Director image that includes msmtp, or inject the binary via a bind mount.
 
@@ -428,7 +456,7 @@ chown bareos:bareos /home/bareos/.config/bareos/msmtp/msmtprc
 **Update the Director Quadlet to mount msmtp**:
 
 ```ini
-# /home/bareos/.config/containers/systemd/bareos-dir.container
+# /home/bareos/.config/containers/systemd/bareos-director.container
 # (Add these lines to the existing [Container] section)
 
 # Inject msmtp binary from host
@@ -445,13 +473,13 @@ After updating the Quadlet, restart the Director:
 
 ```bash
 XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload
-XDG_RUNTIME_DIR=/run/user/1001 systemctl --user restart bareos-dir
+XDG_RUNTIME_DIR=/run/user/1001 systemctl --user restart bareos-director
 ```
 
 **Test email delivery from inside the container**:
 
 ```bash
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
   sh -c 'echo "Test email from Bareos Director" | msmtp backup-alerts@example.com'
 ```
 
@@ -487,10 +515,13 @@ Then update the Director container to use the host's Postfix. Since the containe
 # In bareos-dir.d/messages/Standard.conf
 Messages {
   Name = "Standard"
-  Mail Command = "/usr/sbin/sendmail -F Bareos -h %r"
-  # sendmail inside the container should point to the host relay.
-  # Add a SendMail binary or symlink that calls:
-  #   /usr/bin/msmtp --host=host.containers.internal --port=25 %r
+  # Easiest path: bsmtp talks straight to the host's Postfix relay.
+  # host.containers.internal resolves to the RHEL 10 host from inside
+  # the rootless container.
+  Mail Command = "/usr/bin/bsmtp -h host.containers.internal:25 -f \"(Bareos) %r\" -s \"Bareos: %t %e of %c %l\" %r"
+  Operator Command = "/usr/bin/bsmtp -h host.containers.internal:25 -f \"(Bareos) %r\" -s \"Bareos: Intervention needed for %j\" %r"
+  # If you instead route through msmtp, point it at the same relay:
+  #   Mail Command = "/usr/bin/msmtp --host=host.containers.internal --port=25 %r"
   ...
 }
 ```
@@ -507,7 +538,7 @@ Messages {
 
 ```bash
 # As bareos user
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bconsole
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole
 ```
 
 ### Director Status
@@ -549,7 +580,7 @@ No jobs are running.
 ### Storage Daemon Status
 
 ```
-*status storage=FileStorage
+*status storage=File
 ```
 
 Output shows:
@@ -559,7 +590,7 @@ Output shows:
 - Current job being written (if any)
 
 ```
-Connecting to Storage daemon FileStorage at bareos-sd:9103
+Connecting to Storage daemon File at bareos-storage:9103
 
 bareos-sd Version: 24.0.1 (01 Jun 2024) x86_64-pc-linux-gnu
 Daemon started 06-Jul-2025 00:00:05. Jobs: run=42, waiting=0, running=0
@@ -575,7 +606,7 @@ No jobs are running.
 ### File Daemon (Client) Status
 
 ```
-*status client=myserver-fd
+*status client=bareos-fd
 ```
 
 Output shows:
@@ -590,7 +621,7 @@ Output shows:
 *list jobs
 
 # Filter by client
-*list jobs client=myserver-fd
+*list jobs client=bareos-fd
 
 # Filter by status
 *list jobs jobstatus=E     # Error jobs
@@ -643,16 +674,17 @@ This shows any messages that haven't been delivered yet — useful during intera
 
 ```bash
 # Check if Director is alive (returns 0 on success)
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
-  bconsole <<< "status director" | grep -q "daemon is OK"
+# Match loosely on "is OK" — the exact line is "The Director daemon is OK."
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
+  bconsole <<< "status director" | grep -q "is OK"
 
 # Count failed jobs in last 24 hours
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
   bconsole <<< "list jobs days=1" | grep -c " E "
 
 # Get last successful backup time for a client
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
-  bconsole <<< "list jobs client=myserver-fd jobstatus=T" | tail -3
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
+  bconsole <<< "list jobs client=bareos-fd jobstatus=T" | tail -3
 ```
 
 ---
@@ -688,7 +720,7 @@ Go to **Jobs → All Jobs** for a filterable, sortable table of every backup job
 For a quick CLI equivalent:
 
 ```bash
-sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< "list jobs last=10"
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< "list jobs limit=10"
 ```
 
 ### Reading the Job Detail Page
@@ -861,7 +893,7 @@ set -euo pipefail
 JOBID="${1:?Usage: $0 <jobid>}"
 
 # Get the job log from bconsole
-JOB_LOG=$(XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
+JOB_LOG=$(XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
   bconsole <<EOF
 list joblog jobid=${JOBID}
 quit
@@ -905,9 +937,20 @@ The `bareos-exporter` project exposes Bareos job and volume metrics as a Prometh
 
 ### What bareos-exporter Exposes
 
-Key metrics exported:
+> **Metric and label names vary by exporter.** Each community `bareos-exporter`
+> implementation (and each version) names its metrics and labels differently. The names
+> below are **representative, not authoritative** — confirm them against your own
+> deployment before relying on them in PromQL:
+>
+> ```bash
+> curl -s http://localhost:9625/metrics | grep -E '^bareos_'
+> ```
+>
+> Adapt every query and alert rule in this chapter to the exact names your exporter emits.
 
-| Metric | Labels | Description |
+Metrics with names *like* the following (verify against your exporter's `/metrics`):
+
+| Metric (verify) | Labels (verify) | Description |
 |---|---|---|
 | `bareos_jobs_total` | `status`, `type`, `level` | Total jobs by outcome |
 | `bareos_job_bytes` | `client`, `job_name` | Bytes backed up per job |
@@ -929,13 +972,14 @@ Key metrics exported:
 
 [Unit]
 Description=Bareos Prometheus Exporter
-After=bareos-dir.service bareos-db.service
-Requires=bareos-dir.service
+After=bareos-director.service bareos-db.service
+Requires=bareos-director.service
 
 [Container]
-Image=docker.io/barcus/bareos-exporter:latest
-# Alternatively: ghcr.io/some-org/bareos-exporter:latest
-# Pin to a specific version in production to avoid unexpected updates.
+Image=docker.io/barcus/bareos-exporter:1.0.0
+# Alternatively: ghcr.io/some-org/bareos-exporter:<tag>
+# A concrete tag is pinned here (not :latest) so upstream updates can't
+# silently change behaviour. Verify the tag exists for your chosen image.
 ContainerName=bareos-exporter
 
 Network=bareos.network
@@ -947,8 +991,12 @@ Environment=BAREOS_DB_PORT=3306
 Environment=BAREOS_DB_NAME=bareos
 Environment=BAREOS_DB_USER=bareos
 EnvironmentFile=/home/bareos/.config/bareos/db.env
-# db.env must contain: BAREOS_DB_PASSWORD=<password>
-# Ensure this file is mode 600.
+# db.env (from Chapter 6) supplies MARIADB_PASSWORD — the same catalog
+# password used by the Director. The exporter's password variable name
+# differs between implementations; check your exporter's docs and map it.
+# Note: systemd does NOT expand ${...} in Environment= lines, so add a
+# line such as BAREOS_DB_PASSWORD=<same value as MARIADB_PASSWORD>
+# directly to db.env (keep it mode 600).
 
 # The exporter listens on port 9625 by default.
 PublishPort=127.0.0.1:9625:9625
@@ -1003,7 +1051,10 @@ scrape_configs:
     scrape_interval: 60s
     scrape_timeout:  30s
     static_configs:
-      - targets: ['localhost:9625']
+      # Prometheus runs in the same Podman network as the exporter, so it
+      # reaches it by container DNS name (NOT localhost — that would be the
+      # Prometheus container itself).
+      - targets: ['bareos-exporter:9625']
         labels:
           service: 'bareos-backup'
     # Relabeling: keep all metrics, no filtering needed.
@@ -1016,10 +1067,13 @@ scrape_configs:
       - targets: ['localhost:9090']
 
   # ── Node Exporter (RHEL 10 host metrics) ────────────────────
+  # Node-exporter runs on port 9110 here — port 9100 is taken by the
+  # Bareos WebUI (Chapter 6). The host is reachable from the container
+  # via host.containers.internal.
   - job_name: 'node'
     scrape_interval: 15s
     static_configs:
-      - targets: ['localhost:9100']
+      - targets: ['host.containers.internal:9110']
         labels:
           host: 'bareos-server'
 ```
@@ -1088,7 +1142,7 @@ groups:
           severity: critical
         annotations:
           summary: "Bareos exporter is not responding"
-          description: "The bareos-exporter at localhost:9625 is unreachable. Backup metrics are unavailable."
+          description: "The bareos-exporter at bareos-exporter:9625 is unreachable. Backup metrics are unavailable."
 ```
 
 ---
@@ -1109,14 +1163,16 @@ Description=Prometheus Time Series Database
 After=network-online.target
 
 [Container]
-Image=docker.io/prom/prometheus:latest
+Image=docker.io/prom/prometheus:v2.53.0
 ContainerName=prometheus
 Network=bareos.network
 
 Volume=bareos-prometheus-config:/etc/prometheus:Z
 Volume=bareos-prometheus-data:/prometheus:Z
 
-PodmanArgs=--user=nobody
+# The prom/prometheus image already runs as an unprivileged user. Do NOT
+# add --user=nobody: under rootless Podman it remaps to an unwritable UID
+# and breaks writes to the data volume.
 
 PublishPort=127.0.0.1:9090:9090
 
@@ -1136,11 +1192,15 @@ Description=Grafana Dashboard
 After=prometheus.service
 
 [Container]
-Image=docker.io/grafana/grafana-oss:latest
+Image=docker.io/grafana/grafana-oss:11.1.0
 ContainerName=grafana
 Network=bareos.network
 
 Volume=bareos-grafana-data:/var/lib/grafana:Z
+# Provisioning (datasources, dashboards) MUST live under
+# /etc/grafana/provisioning — that is the only path Grafana scans at
+# startup. Mount a dedicated config volume there.
+Volume=bareos-grafana-config:/etc/grafana/provisioning:Z
 
 Environment=GF_SERVER_HTTP_PORT=3000
 Environment=GF_SECURITY_ADMIN_USER=admin
@@ -1186,10 +1246,18 @@ Once Grafana is running at `http://localhost:3000`, add Prometheus as a data sou
 | Volume status by pool | `bareos_pool_volumes_total` by `pool`, `status` | Bar chart |
 | Bytes per pool | `sum(bareos_volume_bytes) by (pool)` | Pie chart |
 
-**Grafana Provisioning** (load dashboard automatically on startup):
+**Grafana Provisioning** (load the datasource automatically on startup). Grafana only
+reads provisioning files from `/etc/grafana/provisioning`, so write the file into the
+`bareos-grafana-config` volume that is mounted there (see the Quadlet above). Create the
+volume first if you have not already:
+
+```bash
+podman volume create bareos-grafana-config
+```
 
 ```yaml
-# ~/.local/share/containers/storage/volumes/bareos-grafana-data/_data/provisioning/datasources/prometheus.yml
+# ~/.local/share/containers/storage/volumes/bareos-grafana-config/_data/datasources/prometheus.yml
+# (mounted inside the container at /etc/grafana/provisioning/datasources/prometheus.yml)
 
 apiVersion: 1
 datasources:
@@ -1213,45 +1281,46 @@ All Bareos containers managed by Quadlet write their stdout/stderr to the system
 
 ```bash
 # Follow live logs from the Director
-XDG_RUNTIME_DIR=/run/user/1001 journalctl --user -u bareos-dir -f
+XDG_RUNTIME_DIR=/run/user/1001 journalctl --user -u bareos-director -f
 
 # View last 200 lines
-XDG_RUNTIME_DIR=/run/user/1001 journalctl --user -u bareos-dir -n 200
+XDG_RUNTIME_DIR=/run/user/1001 journalctl --user -u bareos-director -n 200
 
 # Filter by time range
-XDG_RUNTIME_DIR=/run/user/1001 journalctl --user -u bareos-dir \
+XDG_RUNTIME_DIR=/run/user/1001 journalctl --user -u bareos-director \
   --since "2025-07-06 00:00:00" --until "2025-07-06 06:00:00"
 
 # Filter by priority (only errors and above)
-XDG_RUNTIME_DIR=/run/user/1001 journalctl --user -u bareos-dir -p err
+XDG_RUNTIME_DIR=/run/user/1001 journalctl --user -u bareos-director -p err
 
 # All Bareos-related units at once
 XDG_RUNTIME_DIR=/run/user/1001 journalctl --user \
-  -u bareos-dir -u bareos-sd -u bareos-fd -u bareos-db -f
+  -u bareos-director -u bareos-storage -u bareos-fd -u bareos-db -f
 
 # Export as JSON for log aggregation pipelines
-XDG_RUNTIME_DIR=/run/user/1001 journalctl --user -u bareos-dir \
+XDG_RUNTIME_DIR=/run/user/1001 journalctl --user -u bareos-director \
   --since "1 hour ago" -o json | jq '.MESSAGE'
 ```
 
 ### Persistent Journal Configuration
 
-By default on RHEL 10, user journals may not persist across reboots. Enable persistence:
+By default on RHEL 10, journals may not persist across reboots. `systemd-journald` is a
+**system** service (there is no per-user journald daemon), so its configuration lives under
+`/etc/systemd/journald.conf.d/` and requires `sudo`. Enabling persistence here also makes
+the rootless `--user` journals (which the bareos user's containers write to) survive
+reboots:
 
 ```bash
-# Create the persistent journal directory for the bareos user
-mkdir -p /home/bareos/.config/systemd/journald.conf.d/
-cat > /home/bareos/.config/systemd/journald.conf.d/persistent.conf << 'EOF'
+# Persistent-storage drop-in for the system journald (requires sudo)
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo tee /etc/systemd/journald.conf.d/persistent.conf > /dev/null << 'EOF'
 [Journal]
 Storage=persistent
 SystemMaxUse=500M
 # Limit journal size to 500 MB to prevent disk exhaustion.
 EOF
-```
 
-For system-level journal persistence (recommended):
-
-```bash
+# Create the on-disk journal directory and apply the new config
 sudo mkdir -p /var/log/journal
 sudo systemd-tmpfiles --create --prefix /var/log/journal
 sudo systemctl restart systemd-journald
@@ -1297,7 +1366,7 @@ Environment=XDG_RUNTIME_DIR=/run/user/1001
 # /home/bareos/scripts/journal-monitor.sh
 # Monitors the systemd journal for Bareos error patterns and sends alerts.
 
-journalctl --user -u bareos-dir -u bareos-sd -f --output=cat | \
+journalctl --user -u bareos-director -u bareos-storage -f --output=cat | \
 while IFS= read -r line; do
   if echo "$line" | grep -qiE "(error|fatal|failed|Termination: Backup Error)"; then
     echo "BAREOS ALERT: $line" | \
@@ -1340,12 +1409,12 @@ set -uo pipefail
 
 export XDG_RUNTIME_DIR=/run/user/1001
 
-CONTAINER="bareos-dir"
+CONTAINER="bareos-director"
 TIMEOUT=30
 
 # ── 1. Check container is running ────────────────────────────────
 if ! podman inspect --format '{{.State.Running}}' "${CONTAINER}" 2>/dev/null | grep -q "true"; then
-  echo "CRITICAL: bareos-dir container is not running"
+  echo "CRITICAL: ${CONTAINER} container is not running"
   exit 2
 fi
 
@@ -1363,7 +1432,8 @@ if [[ $? -ne 0 ]]; then
 fi
 
 # ── 3. Check Director response ────────────────────────────────────
-if ! echo "${STATUS_OUTPUT}" | grep -q "daemon is OK"; then
+# Match loosely on "is OK" — the full line is "The Director daemon is OK."
+if ! echo "${STATUS_OUTPUT}" | grep -q "is OK"; then
   echo "CRITICAL: Director status check failed"
   echo "${STATUS_OUTPUT}" | tail -5
   exit 2
@@ -1404,7 +1474,7 @@ chmod 750 /home/bareos/scripts/bareos-healthcheck.sh
 
 [Unit]
 Description=Bareos Director Health Check
-After=bareos-dir.service
+After=bareos-director.service
 
 [Service]
 Type=oneshot
@@ -1448,7 +1518,7 @@ Description=Prometheus Alertmanager
 After=prometheus.service
 
 [Container]
-Image=docker.io/prom/alertmanager:latest
+Image=docker.io/prom/alertmanager:v0.27.0
 ContainerName=alertmanager
 Network=bareos.network
 
@@ -1556,8 +1626,10 @@ receivers:
 
   - name: 'pagerduty-critical'
     pagerduty_configs:
-      - service_key: 'YOUR_PAGERDUTY_INTEGRATION_KEY'
-        # PagerDuty Events API v1 key. Find in PagerDuty → Service → Integrations.
+      - routing_key: 'YOUR_PAGERDUTY_INTEGRATION_KEY'
+        # PagerDuty Events API v2 Integration Key (routing key). Create an
+        # "Events API v2" integration on the PagerDuty service and copy its
+        # Integration Key here. (service_key/Events API v1 is deprecated.)
         send_resolved: true
         description: '{{ (index .Alerts 0).Annotations.summary }}'
         details:
@@ -1601,7 +1673,7 @@ export XDG_RUNTIME_DIR=/run/user/1001
 # ── Configuration ─────────────────────────────────────────────────
 
 REPORT_EMAIL="${REPORT_EMAIL:-backup-reports@example.com}"
-BAREOS_CONTAINER="bareos-dir"
+BAREOS_CONTAINER="bareos-director"
 QUIET=false
 
 # SLA thresholds — adjust to match your backup schedule.
@@ -1896,6 +1968,9 @@ sudo semanage port -a -t http_port_t -p tcp 9090
 # Port 9100 (Bareos WebUI)
 sudo semanage port -a -t http_port_t -p tcp 9100
 
+# Port 9110 (node-exporter — moved off 9100 to avoid the WebUI clash)
+sudo semanage port -a -t http_port_t -p tcp 9110
+
 # Port 9093 (Alertmanager)
 sudo semanage port -a -t http_port_t -p tcp 9093
 ```
@@ -1950,7 +2025,7 @@ sudo restorecon -RFv /home/bareos/.local/share/containers/storage/volumes/
 
 This lab configures Bareos to send a detailed email summary for every completed backup job.
 
-### Step 1: Prepare msmtp
+### Step 1: Verify the Mail Transport (bsmtp)
 
 ```bash
 # Ensure you are running as bareos user
@@ -1958,16 +2033,23 @@ sudo -u bareos -s
 
 export XDG_RUNTIME_DIR=/run/user/1001
 
-# Verify msmtp is accessible inside the container
-podman exec bareos-dir which msmtp || \
-  echo "msmtp not found in container — bind mount needed (see Section 4)"
+# The native bsmtp helper ships in the image — confirm it is present.
+# (This lab uses bsmtp by default; msmtp is only needed for the
+#  configurable-client alternative from Section 4.)
+podman exec bareos-director which bsmtp || \
+  echo "bsmtp not found — check the Bareos image"
 
-# Test SMTP connectivity (replace with your actual SMTP server)
-podman exec bareos-dir \
-  sh -c 'echo -e "Subject: Bareos Test\n\nTest message" | msmtp backup-alerts@example.com'
+# Optional: if you chose the msmtp alternative, verify it is mounted in
+podman exec bareos-director which msmtp || \
+  echo "msmtp not present (only needed for the Section 4 alternative)"
+
+# Test SMTP connectivity with bsmtp (replace with your actual relay)
+podman exec bareos-director \
+  bsmtp -h smtp.example.com:587 -f bareos@example.com \
+    -s "Bareos Test" backup-alerts@example.com <<< "Test message"
 ```
 
-If the test fails, review the msmtp configuration in `/home/bareos/.config/bareos/msmtp/msmtprc` and ensure the SMTP credentials are correct.
+If the test fails, check that the relay host/port in the `bsmtp -h` argument is reachable from the container. If you are using the msmtp alternative instead, review its configuration in `/home/bareos/.config/bareos/msmtp/msmtprc` and ensure the SMTP credentials are correct.
 
 ### Step 2: Write the Messages Resource Configuration
 
@@ -1977,6 +2059,11 @@ BAREOS_CONFIG="$HOME/.local/share/containers/storage/volumes/bareos-director-con
 cat > "${BAREOS_CONFIG}/bareos-dir.d/messages/Standard.conf" << 'MSGCONF'
 Messages {
   Name = "Standard"
+
+  # bsmtp delivers the mail — required, or the default 127.0.0.1:25
+  # relay (absent in the container) is used and delivery fails silently.
+  Mail Command = "/usr/bin/bsmtp -h smtp.example.com:587 -f \"(Bareos) %r\" -s \"Bareos: %t %e of %c %l\" %r"
+  Operator Command = "/usr/bin/bsmtp -h smtp.example.com:587 -f \"(Bareos) %r\" -s \"Bareos: Intervention needed for %j\" %r"
 
   # Email for every job (success and failure)
   Mail = "backup-alerts@example.com" = all, !skipped, !restored
@@ -2008,14 +2095,14 @@ grep -r "Messages" "${BAREOS_CONFIG}/bareos-dir.d/job/"
 
 ```bash
 # Reload Director
-podman exec bareos-dir bconsole <<< "reload"
+podman exec bareos-director bconsole <<< "reload"
 
 # Run a test job
-podman exec -it bareos-dir bconsole
+podman exec -it bareos-director bconsole
 ```
 
 ```
-*run job=Backup-Linux-Daily level=Incremental yes
+*run job=BackupLocalHost level=Incremental yes
 *wait
 *messages
 ```
@@ -2025,8 +2112,13 @@ Wait for the job to complete. Check your email inbox. You should receive the ful
 ### Step 5: Verify Email Was Sent
 
 ```bash
-# Check the msmtp log inside the container
-podman exec bareos-dir cat /var/log/bareos/msmtp.log | tail -10
+# Confirm the Director logged the mail dispatch (bsmtp errors surface here)
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  journalctl --user -u bareos-director --since "5 min ago" --no-pager | grep -i "mail\|bsmtp"
+# A delivery failure shows up as a bsmtp/SMTP error line; success is silent.
+
+# If you chose the msmtp alternative, check its log instead:
+podman exec bareos-director cat /var/log/bareos/msmtp.log | tail -10
 # Should show: host=smtp.example.com from=bareos@example.com to=backup-alerts@example.com ...
 ```
 
@@ -2068,10 +2160,10 @@ Job {
   Type     = Backup
   Client   = "bareos-fd"
   FileSet  = "BrokenFileSet"
-  Storage  = "File1"
+  Storage  = File
   Pool     = "Full"
   Messages = "Standard"
-  Schedule = "WeeklyCycle"
+  # No Schedule — this job is run manually below.
 }
 EOF
 '
@@ -2201,6 +2293,7 @@ export XDG_RUNTIME_DIR=/run/user/1001
 podman volume create bareos-prometheus-config
 podman volume create bareos-prometheus-data
 podman volume create bareos-grafana-data
+podman volume create bareos-grafana-config
 podman volume create bareos-alertmanager-config
 
 PROM_CONFIG="$HOME/.local/share/containers/storage/volumes/bareos-prometheus-config/_data"
@@ -2270,10 +2363,10 @@ ALERTCONF
 cat > /home/bareos/.config/containers/systemd/bareos-exporter.container << 'QUADLET'
 [Unit]
 Description=Bareos Prometheus Exporter
-After=bareos-dir.service bareos-db.service
+After=bareos-director.service bareos-db.service
 
 [Container]
-Image=docker.io/barcus/bareos-exporter:latest
+Image=docker.io/barcus/bareos-exporter:1.0.0
 ContainerName=bareos-exporter
 Network=bareos.network
 Environment=BAREOS_DB_HOST=bareos-db
@@ -2281,6 +2374,8 @@ Environment=BAREOS_DB_PORT=3306
 Environment=BAREOS_DB_NAME=bareos
 Environment=BAREOS_DB_USER=bareos
 EnvironmentFile=/home/bareos/.config/bareos/db.env
+# BAREOS_DB_PASSWORD must be set directly in db.env (systemd does not
+# expand ${...} here) — use the same value as MARIADB_PASSWORD.
 PublishPort=127.0.0.1:9625:9625
 
 [Service]
@@ -2298,7 +2393,7 @@ Description=Prometheus
 After=bareos-exporter.service
 
 [Container]
-Image=docker.io/prom/prometheus:latest
+Image=docker.io/prom/prometheus:v2.53.0
 ContainerName=prometheus
 Network=bareos.network
 Volume=bareos-prometheus-config:/etc/prometheus:Z
@@ -2320,10 +2415,11 @@ Description=Grafana
 After=prometheus.service
 
 [Container]
-Image=docker.io/grafana/grafana-oss:latest
+Image=docker.io/grafana/grafana-oss:11.1.0
 ContainerName=grafana
 Network=bareos.network
 Volume=bareos-grafana-data:/var/lib/grafana:Z
+Volume=bareos-grafana-config:/etc/grafana/provisioning:Z
 Environment=GF_SERVER_HTTP_PORT=3000
 Environment=GF_SECURITY_ADMIN_USER=admin
 Environment=GF_SECURITY_ADMIN_PASSWORD=Grafana_ChangeMe

@@ -22,7 +22,7 @@
 - [6. TLS-PSK: How It Works in Bareos](#6-tls-psk-how-it-works-in-bareos)
   - [6.1 The Password-as-PSK Mechanism](#61-the-password-as-psk-mechanism)
   - [6.2 PSK Without Certificates](#62-psk-without-certificates)
-  - [6.3 PSK + Certificates Together](#63-psk-certificates-together)
+  - [6.3 Certificates Replace PSK](#63-certificates-replace-psk)
 - [7. Certificate-Based TLS: Generating the CA and All Certificates](#7-certificate-based-tls-generating-the-ca-and-all-certificates)
   - [7.1 Certificate Naming Convention](#71-certificate-naming-convention)
   - [7.2 OpenSSL Configuration Files](#72-openssl-configuration-files)
@@ -54,7 +54,7 @@
 - [14. Verifying TLS Connections](#14-verifying-tls-connections)
   - [14.1 Checking Bareos Logs for TLS Messages](#141-checking-bareos-logs-for-tls-messages)
   - [14.2 Testing with openssl s_client](#142-testing-with-openssl-s_client)
-  - [14.3 Testing That TLS Is Required](#143-testing-that-tls-is-required)
+  - [14.3 Testing That an Unauthenticated Client Is Rejected](#143-testing-that-an-unauthenticated-client-is-rejected)
   - [14.4 Running a Test Backup Job to Confirm End-to-End TLS](#144-running-a-test-backup-job-to-confirm-end-to-end-tls)
   - [14.5 bconsole Status Check](#145-bconsole-status-check)
 - [15. Certificate Rotation Procedure](#15-certificate-rotation-procedure)
@@ -71,7 +71,7 @@
 - [Lab 15-1: Set Up a Bareos CA and Generate All Certificates](#lab-15-1-set-up-a-bareos-ca-and-generate-all-certificates)
 - [Lab 15-2: Configure All Bareos Daemons to Use Certificates](#lab-15-2-configure-all-bareos-daemons-to-use-certificates)
 - [Lab 15-3: Verify Encrypted Connections and Rotate a Certificate](#lab-15-3-verify-encrypted-connections-and-rotate-a-certificate)
-- [20. Summary](#20-summary)
+- [17. Summary](#17-summary)
 
 ## 1. Why TLS Matters for Backup
 
@@ -107,25 +107,22 @@ TLS adds CPU overhead for encryption and decryption. On modern hardware, this ov
 Bareos uses a three-component architecture. Understanding which component communicates with which, and in which direction, is essential before configuring TLS.
 
 ```
-┌───────────────┐     DIR:9101     ┌───────────────────┐
-│   bconsole    │ ───────────────> │  Bareos Director  │
-│  (operator)   │                  │    (bareos-director)   │
-└───────────────┘                  └────────┬──────────┘
+┌────────────────┐    DIR:9101    ┌────────────────────┐
+│    bconsole    │ ─────────────> │   Bareos Director  │
+│   (operator)   │                │  (bareos-director)  │
+└────────────────┘                └─────────┬──────────┘
                                             │
-                          DIR→SD: 9103      │      DIR→FD: 9102
-                                   ┌────────┴──────────┐
-                                   │                   │
-                          ┌────────▼──────┐   ┌────────▼──────┐
-                          │ Storage Daemon│   │  File Daemon  │
-                          │ (bareos-storage)   │   │ (bareos-fd)   │
-                          └────────┬──────┘   └───────────────┘
-                                   │
-                          SD←FD: 9103 (data channel)
-                                   │
-                          ┌────────▼──────┐
-                          │  File Daemon  │
-                          │ (data stream) │
-                          └───────────────┘
+                       DIR→SD: 9103         │         DIR→FD: 9102
+                              ┌──────────────┴──────────────┐
+                              │                             │
+                     ┌────────▼─────────┐         ┌─────────▼────────┐
+                     │  Storage Daemon  │         │   File Daemon    │
+                     │ (bareos-storage)  │ <─────── │   (bareos-fd)    │
+                     └──────────────────┘  FD→SD:  └──────────────────┘
+                                            9103
+                                        (data channel —
+                                     FD initiates connection
+                                          to the SD)
 ```
 
 There are **four distinct TLS connections** to configure:
@@ -221,7 +218,7 @@ Bareos uses these directives in daemon configuration files to control TLS behavi
 | `TLS Certificate` | Path | Path to this daemon's own certificate (`.pem` or `.crt` file). Required on the server side. |
 | `TLS Key` | Path | Path to this daemon's private key (`.key` file). Required on the server side. Must be mode `0600`. |
 | `TLS Allowed CN` | String | If set, only accept connections where the peer certificate's Common Name matches this value. An additional layer of authorization. |
-| `TLS DH File` | Path | Path to Diffie-Hellman parameters file (for perfect forward secrecy with older cipher suites). Recommended. |
+| `TLS DH File` | Path | Path to Diffie-Hellman parameters file. Only affects legacy DHE cipher suites; TLS 1.3 ignores it (it uses ECDHE). Recommended for backward compatibility. |
 
 ### 4.1 Directive Location in Configuration Files
 
@@ -272,7 +269,7 @@ Bareos supports two fundamentally different TLS authentication mechanisms. Under
 TLS-PSK uses a shared password as the authentication secret instead of certificates. In Bareos, the PSK is derived from the **password** you configure in each resource (e.g., the `Password` field in a `Client` resource, or in `bareos-fd.conf`).
 
 **How Bareos derives the PSK:**
-Bareos takes the configured password string and uses it directly as the TLS PSK identity and key material. No certificates are involved. No CA is involved.
+Bareos runs the configured password through its internal key-derivation function to produce the pre-shared key, and uses the daemon/resource name as the PSK identity. No certificates are involved. No CA is involved.
 
 **What TLS-PSK provides:**
 - Encrypted data in transit (full TLS encryption)
@@ -305,7 +302,7 @@ TLS-cert uses X.509 certificates signed by a trusted CA. Each daemon has its own
 - Separation of authentication from authorization
 - Audit trail via certificate serial numbers
 
-**The course focus:** The remainder of this chapter implements TLS-cert, as it is the production-grade approach. The TLS-PSK behavior is preserved as a fallback when `TLS Verify Peer = no`.
+**The course focus:** The remainder of this chapter implements TLS-cert, as it is the production-grade approach. TLS-PSK and TLS-cert are alternative handshake mechanisms, not two phases: once you configure `TLS Certificate`, `TLS Key`, and `TLS CA Certificate File`, the handshake uses certificate-based cipher suites instead of PSK. PSK is what the daemons fall back to when no certificate is configured.
 
 ---
 
@@ -321,7 +318,8 @@ When two Bareos daemons connect, before any certificate exchange, they go throug
 
 ```
 PSK identity: <daemon-name>
-PSK key:      MD5 hash of the configured password
+PSK key:      derived from the configured password via Bareos's
+              internal key-derivation function (not a plain MD5 hash)
 ```
 
 For example, if `bareos-fd.conf` contains:
@@ -348,13 +346,11 @@ Both sides compute the same PSK from "abc123" and use it to authenticate. If the
 
 A Bareos deployment that uses only PSK (no certificates configured) is encrypted (the tunnel is established with TLS-PSK ciphersuites), but the authentication is only as strong as the password. There is no certificate to verify, so the identity of the peer cannot be verified independently of the password.
 
-### 6.3 PSK + Certificates Together
+### 6.3 Certificates Replace PSK
 
-When you add `TLS Certificate` and `TLS Verify Peer = yes`, Bareos uses:
-1. PSK for the initial connection authentication phase
-2. Certificate exchange for additional identity verification
+PSK and certificate-based TLS are not layered on top of each other — they are alternative handshake mechanisms. When no certificate is configured, the daemons negotiate a TLS-PSK cipher suite derived from the resource password. When you configure `TLS Certificate`, `TLS Key`, and `TLS CA Certificate File`, the handshake instead negotiates a certificate-based cipher suite and the certificate is used for identity verification; PSK is no longer part of that handshake.
 
-This is the recommended configuration: it provides both the operational simplicity of PSK and the cryptographic strength of certificates.
+Certificate-based TLS is the recommended production configuration: it provides cryptographic identity verification, revocation, and expiry that PSK cannot. PSK remains the zero-configuration default whenever certificates are absent.
 
 ---
 
@@ -388,7 +384,7 @@ We will use the following file naming convention throughout this chapter:
 
 ### 7.2 OpenSSL Configuration Files
 
-We use OpenSSL configuration files (`.cnf`) to embed Subject Alternative Names (SANs) in each certificate. SANs are required for modern TLS — browsers and many TLS libraries reject certificates without them. While Bareos itself checks the CN (`TLS Allowed CN`), using SANs is still best practice.
+We use OpenSSL extension files (`.ext`) to embed Subject Alternative Names (SANs) in each certificate at signing time. SANs are required for modern TLS — browsers and many TLS libraries reject certificates without them. While Bareos itself checks the CN (`TLS Allowed CN`), using SANs is still best practice.
 
 Each component (Director, Storage Daemon, File Daemon, bconsole) gets its own extension file. In Section 8.3 these files are created at paths like `${TLS_DIR}/director.ext`, `${TLS_DIR}/storage.ext`, etc. — i.e., directly inside the `tls/` directory created in Section 8.1. They are referenced during the certificate signing commands in Sections 8.4–8.7 and can be deleted once all certificates have been signed.
 
@@ -447,28 +443,13 @@ openssl x509 -in "${TLS_DIR}/certs/ca.pem" -text -noout | head -40
 
 ### 8.3 Create OpenSSL Extension Files for Each Certificate
 
-Each certificate needs Subject Alternative Names. Create a separate extension file for each component.
+Each certificate needs Subject Alternative Names. We apply the SANs **at signing time**, not in the CSR: the CSR carries only the subject (set with `-subj` in Sections 8.4–8.7), and the extension file passed to `openssl x509 -extfile … -extensions v3_req` contains **only** the `[v3_req]` section. Do not put `[req]`, `req_extensions`, or `[dn]` blocks in a file fed to `openssl x509` — those sections are ignored by `x509` and only add confusion.
 
 ```bash
 TLS_DIR="/home/bareos/.config/bareos/tls"
 
-# Director certificate extensions
+# Director certificate extensions (signing-time only)
 cat > "${TLS_DIR}/director.ext" << 'EOF'
-[req]
-default_bits       = 2048
-prompt             = no
-default_md         = sha256
-distinguished_name = dn
-req_extensions     = v3_req
-
-[dn]
-C  = US
-ST = State
-L  = City
-O  = Bareos Lab
-OU = Backup Infrastructure
-CN = bareos-director
-
 [v3_req]
 subjectAltName = @alt_names
 keyUsage = critical, digitalSignature, keyEncipherment
@@ -482,21 +463,6 @@ EOF
 
 # Storage Daemon certificate extensions
 cat > "${TLS_DIR}/storage.ext" << 'EOF'
-[req]
-default_bits       = 2048
-prompt             = no
-default_md         = sha256
-distinguished_name = dn
-req_extensions     = v3_req
-
-[dn]
-C  = US
-ST = State
-L  = City
-O  = Bareos Lab
-OU = Backup Infrastructure
-CN = bareos-storage
-
 [v3_req]
 subjectAltName = @alt_names
 keyUsage = critical, digitalSignature, keyEncipherment
@@ -510,21 +476,6 @@ EOF
 
 # File Daemon certificate extensions
 cat > "${TLS_DIR}/client.ext" << 'EOF'
-[req]
-default_bits       = 2048
-prompt             = no
-default_md         = sha256
-distinguished_name = dn
-req_extensions     = v3_req
-
-[dn]
-C  = US
-ST = State
-L  = City
-O  = Bareos Lab
-OU = Backup Infrastructure
-CN = bareos-fd
-
 [v3_req]
 subjectAltName = @alt_names
 keyUsage = critical, digitalSignature, keyEncipherment
@@ -538,21 +489,6 @@ EOF
 
 # bconsole certificate extensions
 cat > "${TLS_DIR}/console.ext" << 'EOF'
-[req]
-default_bits       = 2048
-prompt             = no
-default_md         = sha256
-distinguished_name = dn
-req_extensions     = v3_req
-
-[dn]
-C  = US
-ST = State
-L  = City
-O  = Bareos Lab
-OU = Backup Infrastructure
-CN = bareos-console
-
 [v3_req]
 subjectAltName = @alt_names
 keyUsage = critical, digitalSignature, keyEncipherment
@@ -572,14 +508,14 @@ TLS_DIR="/home/bareos/.config/bareos/tls"
 openssl genrsa -out "${TLS_DIR}/private/director.key" 2048
 chmod 600 "${TLS_DIR}/private/director.key"
 
-# Step 2: Generate a CSR (Certificate Signing Request)
+# Step 2: Generate a CSR (Certificate Signing Request) — subject only, no SANs
 openssl req \
     -new \
     -key "${TLS_DIR}/private/director.key" \
     -out "${TLS_DIR}/csr/director.csr" \
-    -config "${TLS_DIR}/director.ext"
+    -subj "/C=US/ST=State/L=City/O=Bareos Lab/OU=Backup Infrastructure/CN=bareos-director"
 
-# Step 3: Sign the CSR with our CA to produce the Director certificate
+# Step 3: Sign the CSR with our CA, applying the SANs from director.ext
 openssl x509 \
     -req \
     -days 365 \
@@ -591,8 +527,9 @@ openssl x509 \
     -extfile "${TLS_DIR}/director.ext" \
     -extensions v3_req
 
-# Verify the certificate
-openssl x509 -in "${TLS_DIR}/certs/director.pem" -text -noout | grep -A3 "Subject:"
+# Verify the certificate (subject and the SANs that were applied at signing)
+openssl x509 -in "${TLS_DIR}/certs/director.pem" -noout -text | grep -A3 "Subject:"
+openssl x509 -in "${TLS_DIR}/certs/director.pem" -noout -text | grep -A1 "Subject Alternative Name"
 openssl verify -CAfile "${TLS_DIR}/certs/ca.pem" "${TLS_DIR}/certs/director.pem"
 # Expected: director.pem: OK
 ```
@@ -609,7 +546,7 @@ openssl req \
     -new \
     -key "${TLS_DIR}/private/storage.key" \
     -out "${TLS_DIR}/csr/storage.csr" \
-    -config "${TLS_DIR}/storage.ext"
+    -subj "/C=US/ST=State/L=City/O=Bareos Lab/OU=Backup Infrastructure/CN=bareos-storage"
 
 openssl x509 \
     -req \
@@ -622,6 +559,7 @@ openssl x509 \
     -extfile "${TLS_DIR}/storage.ext" \
     -extensions v3_req
 
+openssl x509 -in "${TLS_DIR}/certs/storage.pem" -noout -text | grep -A1 "Subject Alternative Name"
 openssl verify -CAfile "${TLS_DIR}/certs/ca.pem" "${TLS_DIR}/certs/storage.pem"
 ```
 
@@ -637,7 +575,7 @@ openssl req \
     -new \
     -key "${TLS_DIR}/private/client.key" \
     -out "${TLS_DIR}/csr/client.csr" \
-    -config "${TLS_DIR}/client.ext"
+    -subj "/C=US/ST=State/L=City/O=Bareos Lab/OU=Backup Infrastructure/CN=bareos-fd"
 
 openssl x509 \
     -req \
@@ -650,6 +588,7 @@ openssl x509 \
     -extfile "${TLS_DIR}/client.ext" \
     -extensions v3_req
 
+openssl x509 -in "${TLS_DIR}/certs/client.pem" -noout -text | grep -A1 "Subject Alternative Name"
 openssl verify -CAfile "${TLS_DIR}/certs/ca.pem" "${TLS_DIR}/certs/client.pem"
 ```
 
@@ -665,7 +604,7 @@ openssl req \
     -new \
     -key "${TLS_DIR}/private/console.key" \
     -out "${TLS_DIR}/csr/console.csr" \
-    -config "${TLS_DIR}/console.ext"
+    -subj "/C=US/ST=State/L=City/O=Bareos Lab/OU=Backup Infrastructure/CN=bareos-console"
 
 openssl x509 \
     -req \
@@ -678,12 +617,13 @@ openssl x509 \
     -extfile "${TLS_DIR}/console.ext" \
     -extensions v3_req
 
+openssl x509 -in "${TLS_DIR}/certs/console.pem" -noout -text | grep -A1 "Subject Alternative Name"
 openssl verify -CAfile "${TLS_DIR}/certs/ca.pem" "${TLS_DIR}/certs/console.pem"
 ```
 
 ### 8.8 Generate Diffie-Hellman Parameters
 
-DH parameters are used for perfect forward secrecy with DHE cipher suites. This command takes several minutes to complete:
+DH parameters are used for perfect forward secrecy with legacy DHE cipher suites only; TLS 1.3 ignores this file and uses ECDHE. Generate them for backward compatibility with TLS 1.2 peers. This command takes several minutes to complete:
 
 ```bash
 TLS_DIR="/home/bareos/.config/bareos/tls"
@@ -754,14 +694,17 @@ Volume=/etc/bareos:/etc/bareos:ro,Z
 
 # TLS certificates bind-mount
 # ro: container only reads certs, never writes
-# Z: SELinux relabeling for rootless container access
-Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,Z
+# ca.pem and dh2048.pem are read by multiple containers, so they use the
+#   shared label :z (lowercase). The Director's own key/cert are read by
+#   only this container, so they use the private label :Z (uppercase).
+Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,z
 Volume=/home/bareos/.config/bareos/tls/certs/director.pem:/etc/bareos/tls/director.pem:ro,Z
 Volume=/home/bareos/.config/bareos/tls/private/director.key:/etc/bareos/tls/director.key:ro,Z
-Volume=/home/bareos/.config/bareos/tls/dh2048.pem:/etc/bareos/tls/dh2048.pem:ro,Z
+Volume=/home/bareos/.config/bareos/tls/dh2048.pem:/etc/bareos/tls/dh2048.pem:ro,z
 
-# State and log volumes
-Volume=bareos-director-var:/var/lib/bareos:Z
+# State and log volumes (named volume from Chapter 6, mounted at /var/lib/bareos)
+# No :z/:Z — bareos-working.volume is a named volume shared by DIR/SD/FD
+Volume=bareos-working.volume:/var/lib/bareos
 Volume=bareos-director-log:/var/log/bareos:Z
 
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
@@ -790,14 +733,18 @@ ContainerName=bareos-storage
 Volume=/etc/bareos:/etc/bareos:ro,Z
 
 # Storage Daemon TLS certificates
-Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,Z
+# ca.pem and dh2048.pem are shared across containers -> :z; the SD's own
+#   key/cert are read only here -> :Z
+Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,z
 Volume=/home/bareos/.config/bareos/tls/certs/storage.pem:/etc/bareos/tls/storage.pem:ro,Z
 Volume=/home/bareos/.config/bareos/tls/private/storage.key:/etc/bareos/tls/storage.key:ro,Z
-Volume=/home/bareos/.config/bareos/tls/dh2048.pem:/etc/bareos/tls/dh2048.pem:ro,Z
+Volume=/home/bareos/.config/bareos/tls/dh2048.pem:/etc/bareos/tls/dh2048.pem:ro,z
+
+# Working directory (named volume shared by DIR/SD/FD, from Chapter 6)
+Volume=bareos-working.volume:/var/lib/bareos
 
 # Storage volume for backup data
-# The /srv/bareos-storage/volumes path on the host is labeled bareos_store_t
-Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:Z
+Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
 
 Network=bareos.network
 PublishPort=9103:9103
@@ -821,19 +768,21 @@ After=network-online.target
 Image=docker.io/bareos/bareos-client:24
 ContainerName=bareos-fd
 
-# FD config volume (set up in Chapter 6)
-Volume=bareos-fd-config:/etc/bareos:Z
+# FD config and working volumes (named volumes from Chapter 6)
+Volume=bareos-fd-config.volume:/etc/bareos
+Volume=bareos-working.volume:/var/lib/bareos
 
 # File Daemon TLS certificates
-Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,Z
+# ca.pem is shared across containers -> :z; the FD's own key/cert -> :Z
+Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,z
 Volume=/home/bareos/.config/bareos/tls/certs/client.pem:/etc/bareos/tls/client.pem:ro,Z
 Volume=/home/bareos/.config/bareos/tls/private/client.key:/etc/bareos/tls/client.key:ro,Z
 
 # Host filesystem — read-only; FileSet paths use /hostfs/ prefix
-Volume=/:/hostfs:ro,z
+Volume=/:/hostfs:ro
 
 # Podman socket — allows hook scripts to manage containers
-Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock:z
+Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock
 
 Network=bareos.network
 
@@ -895,7 +844,8 @@ Director {
   TLS Certificate = /etc/bareos/tls/director.pem
   TLS Key = /etc/bareos/tls/director.key
 
-  # Diffie-Hellman parameters for perfect forward secrecy
+  # Diffie-Hellman parameters — only used by legacy DHE cipher suites;
+  # TLS 1.3 ignores this file and uses ECDHE instead.
   TLS DH File = /etc/bareos/tls/dh2048.pem
 }
 ```
@@ -1043,10 +993,10 @@ Client {
 The FD has a `Director` resource that authenticates incoming Director connections:
 
 ```
-# /etc/bareos/bareos-fd.d/director/bareos-director.conf
+# /etc/bareos/bareos-fd.d/director/bareos-dir.conf
 
 Director {
-  Name = bareos-director
+  Name = bareos-dir
   Password = "FileDaemonPassword"
 
   # TLS settings to validate the Director's certificate
@@ -1096,7 +1046,8 @@ Director {
 The bconsole certificate and key must also be bind-mounted into the Director container, since that is where `bconsole` runs:
 
 ```ini
-# In bareos-director.container, add:
+# In bareos-director.container, add these alongside the mounts from Section 9.2.
+# The console cert/key are read only by the Director container, so :Z (private).
 Volume=/home/bareos/.config/bareos/tls/certs/console.pem:/etc/bareos/tls/console.pem:ro,Z
 Volume=/home/bareos/.config/bareos/tls/private/console.key:/etc/bareos/tls/console.key:ro,Z
 ```
@@ -1151,8 +1102,10 @@ journalctl --user -u bareos-fd.service -n 100 | grep -i tls
 Successful TLS connection messages look like:
 ```
 bareos-director: Connecting to Storage Daemon "File-1" at bareos-storage:9103
-bareos-director: TLS negotiation failed for SD "bareos-storage" [or: TLS connection established]
+bareos-director: Connected to Storage Daemon at bareos-storage:9103, encryption: TLS_AES_256_GCM_SHA384 TLSv1.3
 ```
+
+A *failed* handshake, by contrast, would read `TLS negotiation failed for SD "bareos-storage"` — if you see that line, TLS is misconfigured on one side.
 
 ### 14.2 Testing with openssl s_client
 
@@ -1226,18 +1179,22 @@ openssl s_client \
     </dev/null 2>&1 | head -50
 ```
 
-### 14.3 Testing That TLS Is Required
+### 14.3 Testing That an Unauthenticated Client Is Rejected
 
-Verify that a connection without a valid certificate is rejected. If `TLS Require = yes` and `TLS Verify Peer = yes` are correctly configured, a connection without a certificate should fail:
+This test connects with `s_client` but offers **neither** a client certificate **nor** a PSK. With `TLS Verify Peer = yes` on the Director, the peer has no acceptable way to authenticate, so the TLS handshake is refused. Note what this does and does not show:
+
+- It **does** demonstrate that an unauthenticated TLS client cannot complete the handshake.
+- It **does not** demonstrate `TLS Require`. `TLS Require` rejects a *plaintext* Bareos connection, and `s_client` cannot speak Bareos's plaintext protocol, so it cannot exercise that path.
 
 ```bash
-# Attempt connection without providing a client certificate
+# Attempt connection with no client cert and no PSK
 openssl s_client \
     -connect localhost:9101 \
     -CAfile "${TLS_DIR}/certs/ca.pem" \
     </dev/null 2>&1 | grep -E "error|alert|handshake"
 
-# Expected: alert handshake failure or certificate required error
+# Expected: a generic TLS handshake failure (e.g. "alert handshake failure"),
+# because s_client presents neither a client certificate nor a PSK.
 ```
 
 ### 14.4 Running a Test Backup Job to Confirm End-to-End TLS
@@ -1302,14 +1259,14 @@ TLS_DIR="/home/bareos/.config/bareos/tls"
 openssl genrsa -out "${TLS_DIR}/private/client.key.new" 2048
 chmod 600 "${TLS_DIR}/private/client.key.new"
 
-# Generate new CSR
+# Generate new CSR — subject only; SANs come from client.ext at signing
 openssl req \
     -new \
     -key "${TLS_DIR}/private/client.key.new" \
     -out "${TLS_DIR}/csr/client.csr.new" \
-    -config "${TLS_DIR}/client.ext"
+    -subj "/C=US/ST=State/L=City/O=Bareos Lab/OU=Backup Infrastructure/CN=bareos-fd"
 
-# Sign with the existing CA
+# Sign with the existing CA (reusing the client.ext v3_req extensions)
 openssl x509 \
     -req \
     -days 365 \
@@ -1322,6 +1279,7 @@ openssl x509 \
     -extensions v3_req
 
 # Verify the new certificate
+openssl x509 -in "${TLS_DIR}/certs/client.pem.new" -noout -text | grep -A1 "Subject Alternative Name"
 openssl verify -CAfile "${TLS_DIR}/certs/ca.pem" "${TLS_DIR}/certs/client.pem.new"
 ```
 
@@ -1432,7 +1390,8 @@ If you need to permanently relabel certificate files (without relying on Podman'
 # Label certificate files as container_file_t
 sudo chcon -R -t container_file_t /home/bareos/.config/bareos/tls/certs/
 
-# Label private keys more restrictively
+# Private keys get the SAME SELinux type (container_file_t); their extra
+# restriction is the Unix mode 600 set earlier, not a different label.
 sudo chcon -R -t container_file_t /home/bareos/.config/bareos/tls/private/
 
 # Verify
@@ -1515,10 +1474,10 @@ openssl req \
 openssl x509 -in "${TLS_DIR}/certs/ca.pem" -text -noout | grep -E "Subject:|Issuer:|Not After"
 ```
 
-Expected output:
+Expected output (the `Not After` date is about ten years from the day you run the command, since the CA is created with `-days 3650`):
 ```
         Issuer: CN = Bareos-Lab-CA, O = Bareos Lab, C = US
-        Not After : Feb 24 00:00:00 2036 GMT
+        Not After : <about 10 years from generation> GMT
         Subject: CN = Bareos-Lab-CA, O = Bareos Lab, C = US
 ```
 
@@ -1533,19 +1492,8 @@ create_cert() {
     local cn="$2"
     local extra_dns="${3:-}"
 
+    # Extension file holds ONLY the v3_req section applied at signing time
     cat > "${TLS_DIR}/${name}.ext" << EXTEOF
-[req]
-default_bits       = 2048
-prompt             = no
-default_md         = sha256
-distinguished_name = dn
-req_extensions     = v3_req
-
-[dn]
-CN = ${cn}
-O  = Bareos Lab
-C  = US
-
 [v3_req]
 subjectAltName = @alt_names
 keyUsage = critical, digitalSignature, keyEncipherment
@@ -1562,14 +1510,14 @@ EXTEOF
     openssl genrsa -out "${TLS_DIR}/private/${name}.key" 2048
     chmod 600 "${TLS_DIR}/private/${name}.key"
 
-    # CSR
+    # CSR — subject only, via -subj
     openssl req \
         -new \
         -key "${TLS_DIR}/private/${name}.key" \
         -out "${TLS_DIR}/csr/${name}.csr" \
-        -config "${TLS_DIR}/${name}.ext"
+        -subj "/CN=${cn}/O=Bareos Lab/C=US"
 
-    # Sign
+    # Sign — SANs applied here from the v3_req extension file
     openssl x509 \
         -req -days 365 \
         -in "${TLS_DIR}/csr/${name}.csr" \
@@ -1580,7 +1528,8 @@ EXTEOF
         -extfile "${TLS_DIR}/${name}.ext" \
         -extensions v3_req
 
-    # Verify
+    # Verify SANs and CA signature
+    openssl x509 -in "${TLS_DIR}/certs/${name}.pem" -noout -text | grep -A1 "Subject Alternative Name"
     openssl verify -CAfile "${TLS_DIR}/certs/ca.pem" "${TLS_DIR}/certs/${name}.pem"
     echo "Created: ${name} (CN=${cn})"
 }
@@ -1595,6 +1544,7 @@ create_cert "console"  "bareos-console"
 
 ```bash
 TLS_DIR="/home/bareos/.config/bareos/tls"
+# DH params only matter for legacy DHE (TLS 1.2) suites; TLS 1.3 uses ECDHE
 openssl dhparam -out "${TLS_DIR}/dh2048.pem" 2048
 # This takes 1-3 minutes — be patient
 echo "DH parameters generated."
@@ -1655,13 +1605,16 @@ After=network-online.target bareos-db.service
 Image=docker.io/bareos/bareos-director:24
 ContainerName=bareos-director
 Volume=/etc/bareos:/etc/bareos:ro,Z
+# Shared across containers -> :z
 Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,z
-Volume=/home/bareos/.config/bareos/tls/certs/director.pem:/etc/bareos/tls/director.pem:ro,z
-Volume=/home/bareos/.config/bareos/tls/private/director.key:/etc/bareos/tls/director.key:ro,Z
-Volume=/home/bareos/.config/bareos/tls/certs/console.pem:/etc/bareos/tls/console.pem:ro,z
-Volume=/home/bareos/.config/bareos/tls/private/console.key:/etc/bareos/tls/console.key:ro,Z
 Volume=/home/bareos/.config/bareos/tls/dh2048.pem:/etc/bareos/tls/dh2048.pem:ro,z
-Volume=bareos-director-var:/var/lib/bareos:Z
+# Read only by this (Director) container -> :Z
+Volume=/home/bareos/.config/bareos/tls/certs/director.pem:/etc/bareos/tls/director.pem:ro,Z
+Volume=/home/bareos/.config/bareos/tls/private/director.key:/etc/bareos/tls/director.key:ro,Z
+Volume=/home/bareos/.config/bareos/tls/certs/console.pem:/etc/bareos/tls/console.pem:ro,Z
+Volume=/home/bareos/.config/bareos/tls/private/console.key:/etc/bareos/tls/console.key:ro,Z
+# Named volume shared by DIR/SD/FD (no :z/:Z)
+Volume=bareos-working.volume:/var/lib/bareos
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 Network=bareos.network
 PublishPort=9101:9101
@@ -1828,7 +1781,8 @@ openssl x509 \
     -extfile "${TLS_DIR}/client-rotate.ext" \
     -extensions v3_req
 
-# Verify the new certificate
+# Verify the new certificate (SANs applied at signing, plus CA signature)
+openssl x509 -in "${TLS_DIR}/certs/client.pem.new" -noout -text | grep -A1 "Subject Alternative Name"
 openssl verify -CAfile "${TLS_DIR}/certs/ca.pem" "${TLS_DIR}/certs/client.pem.new"
 ```
 
@@ -1866,13 +1820,15 @@ systemctl --user status bareos-fd.service --no-pager
 ```bash
 TLS_DIR="/home/bareos/.config/bareos/tls"
 
-# The new certificate's 'Not After' date should be ~1 year from today
+# The new certificate's 'Not After' date should be about one year from
+# the moment you generated it (it was signed with -days 365)
 openssl s_client \
     -connect localhost:9102 \
     -CAfile "${TLS_DIR}/certs/ca.pem" \
     </dev/null 2>&1 | grep -E "CN|Not After|Verify return"
 
-# Expected: CN = bareos-fd, Not After ~ Feb 2027, Verify return code: 0 (ok)
+# Expected: CN = bareos-fd, Not After about one year from generation,
+#           Verify return code: 0 (ok)
 ```
 
 **Step 7: Run a backup job to confirm the rotated certificate works**
@@ -1892,7 +1848,7 @@ The job should complete successfully, confirming that the Director can connect t
 
 [↑ Back to Table of Contents](#table-of-contents)
 
-## 20. Summary
+## 17. Summary
 
 TLS in Bareos transforms your backup infrastructure from a potential data exfiltration channel into a secure, authenticated, encrypted communication system.
 
@@ -1900,7 +1856,7 @@ The key architectural facts to remember:
 
 - **Four connections require TLS:** bconsole→DIR, DIR→FD, DIR→SD, FD→SD
 - **Both ends must be configured:** enabling TLS on the server without configuring the client results in a connection failure, not a fallback to plaintext
-- **TLS-PSK is the default and is encrypted** — but certificate-based TLS (`TLS Verify Peer = yes`) adds cryptographic identity verification
+- **TLS-PSK is the encrypted default** (no certificates) — configuring `TLS Certificate`/`TLS Key`/`TLS CA Certificate File` switches the handshake to certificate-based cipher suites instead of PSK, adding cryptographic identity verification
 - **`TLS Require = yes` is mandatory in production** — otherwise a misconfigured client can connect without encryption
 
 The certificate hierarchy for Bareos is simple:

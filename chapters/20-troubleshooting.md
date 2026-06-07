@@ -21,25 +21,25 @@
   - [2.3 Bareos Configuration Validation Logs](#23-bareos-configuration-validation-logs)
   - [2.4 SELinux Audit Log](#24-selinux-audit-log)
 - [3. Common Error: No Route to Client](#3-common-error-no-route-to-client)
-  - [What It Looks Like](#what-it-looks-like)
-  - [Root Causes and Diagnosis](#root-causes-and-diagnosis)
-  - [Fix](#fix)
+  - [What It Looks Like (No Route to Client)](#what-it-looks-like-no-route-to-client)
+  - [Root Causes and Diagnosis (No Route to Client)](#root-causes-and-diagnosis-no-route-to-client)
+  - [Fix (No Route to Client)](#fix-no-route-to-client)
 - [4. Common Error: Authorization Failure](#4-common-error-authorization-failure)
-  - [What It Looks Like](#what-it-looks-like)
-  - [Root Causes and Diagnosis](#root-causes-and-diagnosis)
-  - [Fix](#fix)
+  - [What It Looks Like (Authorization Failure)](#what-it-looks-like-authorization-failure)
+  - [Root Causes and Diagnosis (Authorization Failure)](#root-causes-and-diagnosis-authorization-failure)
+  - [Fix (Authorization Failure)](#fix-authorization-failure)
 - [5. Common Error: Cannot Open Volume](#5-common-error-cannot-open-volume)
-  - [What It Looks Like](#what-it-looks-like)
-  - [Root Causes and Diagnosis](#root-causes-and-diagnosis)
-  - [Fix](#fix)
+  - [What It Looks Like (Cannot Open Volume)](#what-it-looks-like-cannot-open-volume)
+  - [Root Causes and Diagnosis (Cannot Open Volume)](#root-causes-and-diagnosis-cannot-open-volume)
+  - [Fix (Cannot Open Volume)](#fix-cannot-open-volume)
 - [6. Common Error: Catalog Database Error](#6-common-error-catalog-database-error)
-  - [What It Looks Like](#what-it-looks-like)
-  - [Root Causes and Diagnosis](#root-causes-and-diagnosis)
-  - [Fix](#fix)
+  - [What It Looks Like (Catalog Database Error)](#what-it-looks-like-catalog-database-error)
+  - [Root Causes and Diagnosis (Catalog Database Error)](#root-causes-and-diagnosis-catalog-database-error)
+  - [Fix (Catalog Database Error)](#fix-catalog-database-error)
 - [7. Common Error: Max Concurrent Jobs Exceeded](#7-common-error-max-concurrent-jobs-exceeded)
-  - [What It Looks Like](#what-it-looks-like)
-  - [Explanation](#explanation)
-  - [Fix](#fix)
+  - [What It Looks Like (Max Concurrent Jobs)](#what-it-looks-like-max-concurrent-jobs)
+  - [Explanation (Max Concurrent Jobs)](#explanation-max-concurrent-jobs)
+  - [Fix (Max Concurrent Jobs)](#fix-max-concurrent-jobs)
 - [8. Jobs Stuck Waiting](#8-jobs-stuck-waiting)
   - [Waiting for Storage Daemon](#waiting-for-storage-daemon)
   - [Waiting for Client](#waiting-for-client)
@@ -73,23 +73,23 @@
   - [Diagnosing Label Problems](#diagnosing-label-problems)
   - [Relabeling a Volume](#relabeling-a-volume)
   - [Truncating a Volume](#truncating-a-volume)
-  - [Manual Label Repair with bscrypto](#manual-label-repair-with-bscrypto)
+  - [Rebuilding Catalog Entries with bscan](#rebuilding-catalog-entries-with-bscan)
 - [16. Backup Runs But No Files Are Backed Up](#16-backup-runs-but-no-files-are-backed-up)
-  - [What It Looks Like](#what-it-looks-like)
-  - [Root Causes](#root-causes)
+  - [What It Looks Like (No Files Backed Up)](#what-it-looks-like-no-files-backed-up)
+  - [Root Causes (No Files Backed Up)](#root-causes-no-files-backed-up)
 - [17. Large Backups Taking Too Long](#17-large-backups-taking-too-long)
   - [Spooling Full](#spooling-full)
   - [Catalog Query Slow](#catalog-query-slow)
   - [Network Saturated](#network-saturated)
 - [18. Error: JobId Already Running After a Crash](#18-error-jobid-already-running-after-a-crash)
-  - [What It Looks Like](#what-it-looks-like)
-  - [Explanation](#explanation)
-  - [Fix](#fix)
+  - [What It Looks Like (JobId Already Running)](#what-it-looks-like-jobid-already-running)
+  - [Explanation (JobId Already Running)](#explanation-jobid-already-running)
+  - [Fix (JobId Already Running)](#fix-jobid-already-running)
 - [19. Recovery from a Killed Job](#19-recovery-from-a-killed-job)
   - [What State a Killed Job Leaves Behind](#what-state-a-killed-job-leaves-behind)
   - [Cleanup Procedure](#cleanup-procedure)
   - [Preventing Data Loss After a Kill](#preventing-data-loss-after-a-kill)
-- [19b. Auto-Update Failures: Catalog Schema Mismatch](#19-auto-update-failures-catalog-schema-mismatch)
+- [19b. Auto-Update Failures: Catalog Schema Mismatch](#19b-auto-update-failures-catalog-schema-mismatch)
   - [Symptoms](#symptoms)
   - [Recovery Procedure](#recovery-procedure)
   - [Prevention](#prevention)
@@ -102,6 +102,7 @@
   - [query — Run Catalog Queries](#query-run-catalog-queries)
   - [run — Start Jobs](#run-start-jobs)
   - [restore — Interactive Restore Wizard](#restore-interactive-restore-wizard)
+  - [setdebug — Raise Daemon Debug Level and Trace](#setdebug-raise-daemon-debug-level-and-trace)
 - [21. WebUI Troubleshooting](#21-webui-troubleshooting)
   - [Container Not Starting](#container-not-starting)
   - [Login Error: "Could Not Connect to Director"](#login-error-could-not-connect-to-director)
@@ -196,13 +197,13 @@ Once you are in a bareos shell:
 
 ```bash
 # Director daemon log — follow in real time
-journalctl --user -u bareos-dir -f
+journalctl --user -u bareos-director -f
 
 # Director daemon log — last 200 lines
-journalctl --user -u bareos-dir -n 200 --no-pager
+journalctl --user -u bareos-director -n 200 --no-pager
 
 # Storage Daemon log
-journalctl --user -u bareos-sd -f
+journalctl --user -u bareos-storage -f
 
 # File Daemon (client) log
 journalctl --user -u bareos-fd -f
@@ -214,10 +215,10 @@ journalctl --user -u bareos-db -f
 journalctl --user -u 'bareos-*' -f
 
 # Show logs since a specific time
-journalctl --user -u bareos-dir --since "2026-02-24 10:00:00"
+journalctl --user -u bareos-director --since "2026-02-24 10:00:00"
 
 # Show logs between two timestamps
-journalctl --user -u bareos-dir \
+journalctl --user -u bareos-director \
   --since "2026-02-24 10:00:00" \
   --until "2026-02-24 10:30:00"
 ```
@@ -228,12 +229,12 @@ The job log is stored in the MariaDB catalog database and is accessible through 
 
 ```bash
 # Start bconsole (as bareos user)
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bconsole
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole
 
 # Inside bconsole:
 
 # List the last 10 jobs
-*list jobs last=10
+*list jobs limit=10
 
 # Show the full log for a specific job
 *list joblog jobid=42
@@ -263,10 +264,10 @@ Before the daemons even start, they validate their configuration files. Validati
 
 ```bash
 # Check if the Director configuration is valid (dry run)
-podman exec bareos-dir bareos-dir -t -c /etc/bareos/bareos-dir.d
+podman exec bareos-director bareos-dir -t -c /etc/bareos/bareos-dir.d
 
 # Check if the Storage Daemon configuration is valid
-podman exec bareos-sd bareos-sd -t -c /etc/bareos/bareos-sd.d
+podman exec bareos-storage bareos-sd -t -c /etc/bareos/bareos-sd.d
 
 # Check if the File Daemon configuration is valid
 podman exec bareos-fd bareos-fd -t -c /etc/bareos/bareos-fd.d
@@ -280,16 +281,16 @@ SELinux denials are written to `/var/log/audit/audit.log` (requires root) or are
 
 ```bash
 # Show AVC denials from the last 10 minutes (run as root)
-ausearch -m avc -ts recent
+sudo ausearch -m avc -ts recent
 
 # Show all AVC denials since boot
-ausearch -m avc -ts boot
+sudo ausearch -m avc -ts boot
 
 # Pipe through audit2why for human-readable explanations
-ausearch -m avc -ts recent | audit2why
+sudo ausearch -m avc -ts recent | audit2why
 
-# Search for denials involving a specific process
-ausearch -m avc -ts recent -c bareos-dir
+# Search for denials involving a specific process (comm is the binary name)
+sudo ausearch -m avc -ts recent -c bareos-dir
 ```
 
 ---
@@ -298,7 +299,7 @@ ausearch -m avc -ts recent -c bareos-dir
 
 ## 3. Common Error: No Route to Client
 
-### What It Looks Like
+### What It Looks Like (No Route to Client)
 
 In the job log:
 
@@ -314,7 +315,7 @@ Fatal error: bsock.c:NNNN Connecting to Client bareos-client1 at 192.168.1.50:91
 ERR=No route to host
 ```
 
-### Root Causes and Diagnosis
+### Root Causes and Diagnosis (No Route to Client)
 
 This error means the Director attempted a TCP connection to the File Daemon's address and port, and the connection was refused or the network path did not exist. There are five common causes:
 
@@ -340,10 +341,10 @@ XDG_RUNTIME_DIR=/run/user/1001 podman port bareos-fd
 # 9102/tcp -> 0.0.0.0:9102
 
 # Check the Client resource in the Director config
-podman exec bareos-dir grep -r "Address" /etc/bareos/bareos-dir.d/client/
+podman exec bareos-director grep -r "Address" /etc/bareos/bareos-dir.d/client/
 ```
 
-If containers are on the same Podman network (e.g., `bareos-net`), they can address each other by container name. If they use host port publishing, they must use the host's IP or `host.containers.internal`.
+If containers are on the same Podman network (e.g., `bareos`), they can address each other by container name. If they use host port publishing, they must use the host's IP or `host.containers.internal`.
 
 **Cause 3: The host firewall is blocking port 9102.**
 
@@ -361,7 +362,7 @@ iptables -L INPUT -n -v | grep 9102
 
 ```bash
 # Check for AVC denials related to network connections
-ausearch -m avc -ts recent | grep "9102\|bareos"
+sudo ausearch -m avc -ts recent | grep "9102\|bareos"
 ```
 
 **Cause 5: The wrong `FDAddress` or `FDPort` is set in the File Daemon's own configuration.**
@@ -371,7 +372,7 @@ ausearch -m avc -ts recent | grep "9102\|bareos"
 podman exec bareos-fd grep -r "FDAddress\|FDPort" /etc/bareos/bareos-fd.d/
 ```
 
-### Fix
+### Fix (No Route to Client)
 
 1. Start the FD container if it is not running: `systemctl --user start bareos-fd`
 2. Correct the `Address` in the Client resource to match where the FD is actually reachable
@@ -385,7 +386,7 @@ podman exec bareos-fd grep -r "FDAddress\|FDPort" /etc/bareos/bareos-fd.d/
 
 ## 4. Common Error: Authorization Failure
 
-### What It Looks Like
+### What It Looks Like (Authorization Failure)
 
 ```
 Fatal error: Director authorization error at "bareos-fd:9102".
@@ -399,7 +400,7 @@ Or in the FD journal:
 ERR=Client rejected: Name or password is wrong, please see ...
 ```
 
-### Root Causes and Diagnosis
+### Root Causes and Diagnosis (Authorization Failure)
 
 Authorization in Bareos is mutual: the Director authenticates to the File Daemon, and the File Daemon authenticates back to the Director. The shared secret is the `Password` field in the `Client` resource (Director side) and the `Director` resource (FD side). They must match exactly, including case.
 
@@ -409,7 +410,7 @@ The most common cause. The password in `/etc/bareos/bareos-dir.d/client/bareos-c
 
 ```bash
 # Check the password on the Director side
-podman exec bareos-dir grep -A5 "Client {" /etc/bareos/bareos-dir.d/client/bareos-client1.conf
+podman exec bareos-director grep -A5 "Client {" /etc/bareos/bareos-dir.d/client/bareos-client1.conf
 
 # Check the password on the FD side
 podman exec bareos-fd grep -A5 "Director {" /etc/bareos/bareos-fd.d/director/bareos-dir.conf
@@ -421,7 +422,7 @@ The `Name` field in the Director's `Client` resource must match the `Name` field
 
 ```bash
 # Director's view of the client name
-podman exec bareos-dir grep "Name" /etc/bareos/bareos-dir.d/client/bareos-client1.conf
+podman exec bareos-director grep "Name" /etc/bareos/bareos-dir.d/client/bareos-client1.conf
 
 # FD's own name
 podman exec bareos-fd grep "Name" /etc/bareos/bareos-fd.d/fileDaemon/bareos-fd.conf
@@ -433,15 +434,15 @@ If TLS is enabled on one side but not the other, or if certificate validation fa
 
 ```bash
 # Look for TLS directives on both sides
-podman exec bareos-dir grep -r "TLS\|tls" /etc/bareos/bareos-dir.d/client/
+podman exec bareos-director grep -r "TLS\|tls" /etc/bareos/bareos-dir.d/client/
 podman exec bareos-fd grep -r "TLS\|tls" /etc/bareos/bareos-fd.d/director/
 ```
 
-### Fix
+### Fix (Authorization Failure)
 
 1. Generate a new random password: `openssl rand -base64 33`
 2. Update the `Password` field in both the Director's Client resource and the FD's Director resource with the same value
-3. Reload the Director: `XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir bareos-ctl-dir reload`
+3. Reload the Director: `XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director bconsole <<< "reload"`
 4. Restart the FD: `systemctl --user restart bareos-fd`
 
 ---
@@ -450,7 +451,7 @@ podman exec bareos-fd grep -r "TLS\|tls" /etc/bareos/bareos-fd.d/director/
 
 ## 5. Common Error: Cannot Open Volume
 
-### What It Looks Like
+### What It Looks Like (Cannot Open Volume)
 
 ```
 3304 Error: Volume "Vol-0001" not in catalog.
@@ -468,17 +469,20 @@ Or:
 3991 Bad label: Volume=Vol-0001 Expected=Vol-0002
 ```
 
-### Root Causes and Diagnosis
+### Root Causes and Diagnosis (Cannot Open Volume)
 
 **Cause 1: The volume file does not exist at the expected path.**
 
-This happens when the storage volume path has changed (e.g., the Podman volume was recreated), or when the catalog records a path that was never actually created.
+This happens when the storage volume path has changed (e.g., the Podman volume was recreated), or when the catalog records a path that was never actually created. Inside the `bareos-storage` container the archive path is `/var/lib/bareos/storage`; on the host it is the bind-mounted directory `/srv/bareos-storage/volumes`.
 
 ```bash
 # Check what path the Storage Daemon expects
-podman exec bareos-sd grep -r "Archive Device\|Device" /etc/bareos/bareos-sd.d/device/
+podman exec bareos-storage grep -r "Archive Device\|Device" /etc/bareos/bareos-sd.d/device/
 
-# List the actual files present
+# List the actual files present (inside the container)
+podman exec bareos-storage ls -la /var/lib/bareos/storage/
+
+# Or on the host (bind-mounted directory)
 ls -la /srv/bareos-storage/volumes/
 
 # Check what volumes the catalog knows about
@@ -491,8 +495,10 @@ ls -la /srv/bareos-storage/volumes/
 Bareos writes a label to the beginning of every volume file. The label contains the volume name. If the file was copied, renamed, or truncated, the label may not match what the catalog expects.
 
 ```bash
-# Read the label from a volume file (as bareos user, inside SD container)
-podman exec bareos-sd bls -L /srv/bareos-storage/volumes/Vol-0001
+# Read the label from a volume, inside the SD container.
+# bls takes the config dir (-c) and the SD Device name (FileStorage),
+# selecting the volume with -V. It does NOT take a host path.
+podman exec bareos-storage bls -c /etc/bareos -j -V Vol-0001 FileStorage
 ```
 
 **Cause 3: Wrong SELinux context on the volume path.**
@@ -503,13 +509,13 @@ The Storage Daemon process inside the container accesses the host path `/srv/bar
 # Check the SELinux context on the storage path
 ls -laZ /srv/bareos-storage/volumes/
 
-# It should show: bareos_store_t (or container_file_t as a fallback)
-# If it shows something else (e.g., default_t), fix it:
-sudo semanage fcontext -a -t bareos_store_t "/srv/bareos-storage/volumes(/.*)?"
-sudo restorecon -Rv /srv/bareos-storage/volumes/
+# It should show: container_file_t (the label Podman expects for bind-mounted
+# volume data). If it shows something else (e.g., default_t), fix it:
+sudo semanage fcontext -a -t container_file_t "/srv/bareos-storage(/.*)?"
+sudo restorecon -Rv /srv/bareos-storage/
 ```
 
-### Fix
+### Fix (Cannot Open Volume)
 
 - If the volume file is missing, either restore it from another backup, or use `relabel` in bconsole to assign a new label to a blank file (see Section 15).
 - If the label is mismatched, use `relabel` or the `truncate` command in bconsole to reset the volume.
@@ -521,7 +527,7 @@ sudo restorecon -Rv /srv/bareos-storage/volumes/
 
 ## 6. Common Error: Catalog Database Error
 
-### What It Looks Like
+### What It Looks Like (Catalog Database Error)
 
 In the Director journal:
 
@@ -532,10 +538,10 @@ Could not open database "bareos": Error: Can't connect to MySQL server on '127.0
 Or:
 
 ```
-ERR=Access denied for user 'bareos'@'172.16.0.1' (using password: YES)
+ERR=Access denied for user 'bareos'@'10.89.0.2' (using password: YES)
 ```
 
-### Root Causes and Diagnosis
+### Root Causes and Diagnosis (Catalog Database Error)
 
 **Cause 1: The MariaDB container is not running.**
 
@@ -558,7 +564,7 @@ chmod 600 /home/bareos/.config/bareos/db.env
 
 # Test the credentials manually
 XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-db \
-  mysql -u bareos -p"$(grep BAREOS_DB_PASSWORD /home/bareos/.config/bareos/db.env | cut -d= -f2)" \
+  mysql -u bareos -p"$(grep MARIADB_PASSWORD /home/bareos/.config/bareos/db.env | cut -d= -f2)" \
   -e "SELECT 1;" bareos
 ```
 
@@ -568,15 +574,15 @@ After a fresh deployment, `bareos_db_create` and `bareos_db_make_tables` must be
 
 ```bash
 # Run the initialization inside the Director container
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
   /usr/lib/bareos/scripts/create_bareos_database
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
   /usr/lib/bareos/scripts/make_bareos_tables
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
   /usr/lib/bareos/scripts/grant_bareos_privileges
 ```
 
-### Fix
+### Fix (Catalog Database Error)
 
 1. Start the MariaDB container: `systemctl --user start bareos-db`
 2. Wait 10–15 seconds for MariaDB to fully initialize before starting the Director
@@ -589,7 +595,7 @@ XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
 
 ## 7. Common Error: Max Concurrent Jobs Exceeded
 
-### What It Looks Like
+### What It Looks Like (Max Concurrent Jobs)
 
 In the job log:
 
@@ -603,7 +609,7 @@ Or a job simply queues and never starts, and `status director` shows:
 Waiting on max Client jobs: 2
 ```
 
-### Explanation
+### Explanation (Max Concurrent Jobs)
 
 Bareos has several concurrency limits that can cause jobs to wait:
 
@@ -615,12 +621,13 @@ Bareos has several concurrency limits that can cause jobs to wait:
 These limits exist to prevent the Storage Daemon from being overwhelmed and to avoid thrashing the File Daemon's I/O subsystem.
 
 ```bash
-# In bconsole, check what jobs are waiting and why
+# In bconsole, check what jobs are waiting and why.
+# `status director` is the authoritative view of jobs currently waiting
+# (the catalog's JobStatus is only updated to a terminal letter once a job ends).
 *status director
-*list jobs jobstatus=W
 ```
 
-### Fix
+### Fix (Max Concurrent Jobs)
 
 Increase the `Maximum Concurrent Jobs` value in the relevant resource. Be conservative — more concurrent jobs means more simultaneous I/O, which can make all jobs slower.
 
@@ -636,7 +643,7 @@ Client {
 After editing, reload the Director:
 
 ```bash
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir bareos-ctl-dir reload
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director bconsole <<< "reload"
 ```
 
 ---
@@ -657,7 +664,7 @@ A job shows status "W" (waiting) with the message "waiting for Storage Daemon". 
 
 ```bash
 # Check SD status
-journalctl --user -u bareos-sd -n 50 --no-pager
+journalctl --user -u bareos-storage -n 50 --no-pager
 
 # In bconsole
 *status storage
@@ -676,7 +683,7 @@ A job shows "waiting for client" — the Director is trying to connect to the Fi
 journalctl --user -u bareos-fd -n 50 --no-pager
 
 # Test TCP connectivity from the Director container to the FD
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
   nc -zv bareos-client1 9102
 ```
 
@@ -685,8 +692,8 @@ XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
 The job is waiting for a volume to be mounted. This usually means the Storage Daemon is configured for a tape or optical device (not a file-based storage), or a manual mount is required. In our disk-based setup, this should not occur unless the `Automount` directive is `No`.
 
 ```bash
-# In bconsole, mount the storage manually
-*mount storage=FileStorage
+# In bconsole, mount the storage manually (storage= takes the Storage resource name)
+*mount storage=File
 ```
 
 ---
@@ -717,22 +724,22 @@ Reading this: the process `bareos-sd` (running in a container with context `cont
 
 ```bash
 # Step 1: Check for recent denials (run as root)
-ausearch -m avc -ts recent
+sudo ausearch -m avc -ts recent
 
 # Step 2: Get a human-readable explanation
-ausearch -m avc -ts recent | audit2why
+sudo ausearch -m avc -ts recent | audit2why
 
 # Step 3: Generate a policy module to allow the denied operation
-ausearch -m avc -ts recent | audit2allow -M bareos_local
+sudo ausearch -m avc -ts recent | audit2allow -M bareos_local
 
 # Step 4: Review what the policy module will allow (IMPORTANT — read this)
 cat bareos_local.te
 
 # Step 5: Install the policy module
-semodule -i bareos_local.pp
+sudo semodule -i bareos_local.pp
 
 # Verify it was installed
-semodule -l | grep bareos_local
+sudo semodule -l | grep bareos_local
 ```
 
 ### Common SELinux Fixes for Bareos + Podman
@@ -740,9 +747,10 @@ semodule -l | grep bareos_local
 **Fix 1: Wrong context on storage directory**
 
 ```bash
-# Storage volumes must have bareos_store_t (or container_file_t for Podman volumes)
-sudo semanage fcontext -a -t container_file_t "/srv/bareos-storage/volumes(/.*)?"
-sudo restorecon -Rv /srv/bareos-storage/volumes/
+# Bind-mounted storage volumes must carry the container_file_t type so that
+# processes in the container (context container_t) may read and write them.
+sudo semanage fcontext -a -t container_file_t "/srv/bareos-storage(/.*)?"
+sudo restorecon -Rv /srv/bareos-storage/
 ```
 
 **Fix 2: Wrong context on config files**
@@ -758,26 +766,31 @@ ls -laZ /home/bareos/.config/bareos/
 
 **Fix 3: Container cannot bind a port**
 
-If a container cannot bind port 9101, 9102, or 9103, check if the port is in SELinux's allowed list for containers:
+For **rootless** Podman with published ports, SELinux port labelling (`http_port_t`,
+`unreserved_port_t`, etc.) is rarely the cause — rootless port publishing is handled by
+the user-space network stack (pasta/slirp4netns), not by a process binding a privileged
+SELinux-labelled port on the host. Reach for `semanage port` only if `ausearch` actually
+shows a `name_bind` denial against a specific port type:
 
 ```bash
-# Check if port 9101 is permitted for containers
+# Check whether a port is permitted for the container's type (diagnostic)
 semanage port -l | grep 9101
 
-# If not, add it
-sudo semanage port -a -t http_port_t -p tcp 9101
-# Or more specifically for container ports:
+# Only if a name_bind AVC names this port — otherwise this is not your problem:
 sudo semanage port -a -t unreserved_port_t -p tcp 9101
 ```
 
 **Fix 4: Using setsebool for Podman networking**
 
-```bash
-# Allow containers to connect to the network
-sudo setsebool -P container_connect_any 1
+Container-to-container traffic on a shared Podman network is permitted by the default
+`container_t` policy, so `container_connect_any` is generally **not** needed for the
+Director, SD, and FD to talk to each other (see Chapter 21, Section on container
+connectivity). Set it only if a container must reach an arbitrary host-side service and
+`ausearch` shows a matching network AVC:
 
-# Allow containers to manage network namespaces
-sudo setsebool -P virt_use_nfs 1
+```bash
+# Allow containers to initiate connections to any network port (rarely required)
+sudo setsebool -P container_connect_any 1
 ```
 
 ---
@@ -843,16 +856,16 @@ When a container starts and immediately exits (shown as `Exited (1)` or similar 
 
 ```bash
 # Show logs from the last run of a container
-XDG_RUNTIME_DIR=/run/user/1001 podman logs bareos-dir
+XDG_RUNTIME_DIR=/run/user/1001 podman logs bareos-director
 
 # Show the exit code
-XDG_RUNTIME_DIR=/run/user/1001 podman inspect bareos-dir \
+XDG_RUNTIME_DIR=/run/user/1001 podman inspect bareos-director \
   --format '{{.State.ExitCode}} {{.State.Error}}'
 
 # Run the container interactively to see startup errors
 XDG_RUNTIME_DIR=/run/user/1001 podman run --rm -it \
-  --name bareos-dir-debug \
-  -v bareos-dir-config:/etc/bareos:Z \
+  --name bareos-director-debug \
+  -v bareos-director-config:/etc/bareos:Z \
   docker.io/bareos/bareos-director:24 bash
 ```
 
@@ -872,7 +885,7 @@ Quadlet is the mechanism that translates `.container` files in `/home/bareos/.co
 
 ### Unit Not Generated
 
-If you created or modified a `.container` file but `systemctl --user status bareos-dir` says the unit does not exist, Quadlet has not processed your file.
+If you created or modified a `.container` file but `systemctl --user status bareos-director` says the unit does not exist, Quadlet has not processed your file.
 
 ```bash
 # Reload the systemd user daemon and Quadlet generator
@@ -884,22 +897,25 @@ XDG_RUNTIME_DIR=/run/user/1001 systemctl --user list-unit-files | grep bareos
 # If the unit still does not appear, check the Quadlet generator log
 journalctl --user -xe | grep -i quadlet
 
-# Verify the .container file syntax
-XDG_RUNTIME_DIR=/run/user/1001 /usr/lib/systemd/system-generators/podman-system-generator \
-  --user /home/bareos/.config/containers/systemd/ /tmp/quadlet-test/ /tmp/quadlet-test/
-ls /tmp/quadlet-test/
+# Verify the .container files by running Quadlet in dry-run mode (as the bareos user).
+# It parses every unit in the user's systemd directory and prints the generated
+# unit files (or the parse errors) to stdout without writing anything.
+XDG_RUNTIME_DIR=/run/user/1001 /usr/libexec/podman/quadlet -dryrun -user
+
+# Secondary check: have systemd validate the resulting unit
+XDG_RUNTIME_DIR=/run/user/1001 systemd-analyze --user verify bareos-director.service
 ```
 
-The Quadlet generator writes the generated unit files to a temporary directory when invoked manually. If a `.container` file has a syntax error, the generator will skip it or produce an invalid unit.
+If a `.container` file has a syntax error, the dry-run output prints a `converting ...: ` error line naming the offending file and directive, and the unit is skipped.
 
 ### Unit Generated But Fails to Start
 
 ```bash
 # Check the detailed status
-XDG_RUNTIME_DIR=/run/user/1001 systemctl --user status bareos-dir
+XDG_RUNTIME_DIR=/run/user/1001 systemctl --user status bareos-director
 
 # Check the journal for this specific unit
-journalctl --user -u bareos-dir -n 100 --no-pager
+journalctl --user -u bareos-director -n 100 --no-pager
 
 # Common issues:
 # - "Failed to pull image" — network issue or wrong image name
@@ -911,7 +927,7 @@ journalctl --user -u bareos-dir -n 100 --no-pager
 
 If the Director starts before MariaDB is ready, it will fail to connect to the database. Quadlet supports `After=` and `Requires=` directives to enforce startup order.
 
-A correct `bareos-dir.container` should include:
+A correct `bareos-director.container` should include:
 
 ```ini
 [Unit]
@@ -949,7 +965,7 @@ The Bareos daemon processes inside containers typically run as UID 0 or a specif
 
 ```bash
 # Inspect files in a named volume
-ls -la ~/.local/share/containers/storage/volumes/bareos-dir-config/_data/
+ls -la ~/.local/share/containers/storage/volumes/bareos-director-config/_data/
 
 # Output might show:
 # -rw-r--r-- 1 100000 100000  ... bareos-dir.conf
@@ -962,7 +978,10 @@ This is normal and expected. Do not `chown` these files to the `bareos` user —
 When Bareos restores files, the File Daemon recreates them with the original UID/GID stored in the catalog. If the original files were owned by UID 1000 on the backup source, and the restore target system has a different UID 1000 (or no such UID), the restored files will appear to belong to "1000" (displayed as a number when there is no matching user).
 
 ```bash
-# Check what UIDs are stored in a backup set (in bconsole)
+# List the file PATHS recorded for a job (in bconsole).
+# Note: `list files` shows names only — it does NOT print the stored UID/GID
+# or mode. Those attributes live in the per-file metadata and are applied at
+# restore time; to inspect them, do a test restore and check the result.
 *list files jobid=42
 
 # To restore files as a specific user, use the "where" and "replace" options
@@ -983,14 +1002,14 @@ If containers cannot resolve hostnames (e.g., cannot pull images or cannot reach
 
 ```bash
 # Test DNS resolution inside a container
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
   getent hosts mariadb.example.com
 
 # Check the /etc/resolv.conf inside the container
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir cat /etc/resolv.conf
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director cat /etc/resolv.conf
 
 # If using a Podman network (bridge mode), check network DNS settings
-XDG_RUNTIME_DIR=/run/user/1001 podman network inspect bareos-net
+XDG_RUNTIME_DIR=/run/user/1001 podman network inspect bareos
 ```
 
 ### Port Conflicts
@@ -1013,22 +1032,23 @@ lsof -i :9101
 When multiple Bareos containers (Director, SD, FD) need to communicate with each other, they should be on the same Podman network. A Podman user-defined network allows containers to address each other by container name.
 
 ```bash
-# Create a shared network (if not already created)
-XDG_RUNTIME_DIR=/run/user/1001 podman network create bareos-net
+# Create a shared network (if not already created — normally managed by the
+# bareos.network Quadlet unit, whose NetworkName is "bareos")
+XDG_RUNTIME_DIR=/run/user/1001 podman network create bareos
 
 # Check that all containers are on the network
-XDG_RUNTIME_DIR=/run/user/1001 podman network inspect bareos-net
+XDG_RUNTIME_DIR=/run/user/1001 podman network inspect bareos
 
 # Test connectivity between containers
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
-  ping -c 3 bareos-sd
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
+  ping -c 3 bareos-storage
 ```
 
 In Quadlet `.container` files, add the network with:
 
 ```ini
 [Container]
-Network=bareos-net.network
+Network=bareos.network
 ```
 
 ---
@@ -1053,28 +1073,30 @@ Common symptoms:
 
 ```bash
 # Step 1: Stop the Director
-XDG_RUNTIME_DIR=/run/user/1001 systemctl --user stop bareos-dir
+XDG_RUNTIME_DIR=/run/user/1001 systemctl --user stop bareos-director
 
-# Step 2: Run dbcheck in scan-only mode (no changes)
+# Step 2: Run dbcheck in scan-only mode (no changes), verbose
 XDG_RUNTIME_DIR=/run/user/1001 podman run --rm \
   --env-file /home/bareos/.config/bareos/db.env \
-  --network bareos-net \
+  --network bareos \
   docker.io/bareos/bareos-director:24 \
-  dbcheck -c /etc/bareos/bareos-dir.conf -B -d 50
+  dbcheck -c /etc/bareos/bareos-dir.conf -v
 
-# Step 3: Run dbcheck with automatic repairs
+# Step 3: Run dbcheck non-interactively with automatic repairs
 XDG_RUNTIME_DIR=/run/user/1001 podman run --rm \
   --env-file /home/bareos/.config/bareos/db.env \
-  --network bareos-net \
+  --network bareos \
   docker.io/bareos/bareos-director:24 \
-  dbcheck -c /etc/bareos/bareos-dir.conf -B -f -v
+  dbcheck -c /etc/bareos/bareos-dir.conf -b -f -v
 
-# -B = batch mode (answer yes to all prompts)
-# -f = fix inconsistencies
+# -b = batch mode (run all checks non-interactively, no menu)
+# -f = fix inconsistencies (otherwise dbcheck only reports them)
 # -v = verbose output
+# (-B is a different flag: it prints the catalog connection info and exits —
+#  useful only to confirm which database dbcheck would connect to.)
 
 # Step 4: Restart the Director
-XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start bareos-dir
+XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start bareos-director
 ```
 
 ### What dbcheck Checks
@@ -1098,26 +1120,35 @@ Every Bareos volume (file on disk, tape, etc.) begins with a software label writ
 ### Diagnosing Label Problems
 
 ```bash
-# Read the label from a volume file (run inside the SD container)
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-sd \
-  bls -L /srv/bareos-storage/volumes/Vol-0001
+# Read the label from a volume, inside the SD container.
+# bls is given the config dir (-c /etc/bareos) and the SD Device name
+# (FileStorage); -j prints the label as a job-style record and -V selects
+# the volume by name. bls resolves the on-disk file from the Device's
+# Archive Device path itself — you never pass a host path.
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-storage \
+  bls -c /etc/bareos -j -V Vol-0001 FileStorage
 
-# Output shows the label contents:
-# Volume Name:           Vol-0001
-# Pool Name:             Full
-# Pool Type:             Backup
-# Creation Date/Time:    ...
+# Confirm the available flags in your build:
+#   podman exec bareos-storage bls --help
+
+# Output shows the label contents, e.g.:
+# bls JobId 0: Ready to read from volume "Vol-0001" on device "FileStorage".
+# Volume Label:
+#   Volume name      : Vol-0001
+#   Pool name        : Full
+#   Pool type        : Backup
+#   Date written     : ...
 ```
 
-If `bls` reports "no label" or "bad label", the volume label is corrupted or missing.
+If `bls` reports "Could not read Volume label" or "Wrong Volume mounted", the volume label is corrupted or missing.
 
 ### Relabeling a Volume
 
 **Warning:** Relabeling overwrites the existing label. If the volume contains backup data, that data will become unreadable. Only relabel volumes you are certain are empty or whose data you no longer need.
 
 ```bash
-# In bconsole, relabel a volume
-*relabel storage=FileStorage oldvolume=Vol-0001 volume=Vol-0001 pool=Full
+# In bconsole, relabel a volume (storage= takes the Storage RESOURCE name, "File")
+*relabel storage=File oldvolume=Vol-0001 volume=Vol-0001 pool=Full
 
 # Bareos will ask for confirmation and write a new label
 ```
@@ -1128,20 +1159,45 @@ If a volume is in an error state but you want to reuse it:
 
 ```bash
 # In bconsole
-*truncate storage=FileStorage volume=Vol-0001
+*truncate storage=File volume=Vol-0001
 
 # This marks the volume as empty in the catalog and truncates the file
 ```
 
-### Manual Label Repair with bscrypto
+### Rebuilding Catalog Entries with bscan
 
-In rare cases where label corruption is partial, `bscrypto` can be used to inspect and repair cryptographic signatures on volumes. This is an advanced procedure:
+`bscrypto` is **not** a label-repair tool — it manages tape hardware encryption keys and
+has nothing to do with disk volume labels. The correct toolkit for label and catalog
+problems is `bls`, the bconsole `relabel`/`truncate` commands, and `bscan`:
 
-```bash
-# List volume signatures
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-sd \
-  bscrypto -D /srv/bareos-storage/volumes/Vol-0001
-```
+1. **Inspect the label with `bls`** (read-only) to see what the volume actually contains:
+
+   ```bash
+   XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-storage \
+     bls -c /etc/bareos -j -V Vol-0001 FileStorage
+   ```
+
+2. **Fix the label with bconsole.** If the volume is empty or its data is expendable,
+   `relabel` writes a fresh label and `truncate` resets the file and its catalog state:
+
+   ```bash
+   # In bconsole
+   *relabel storage=File oldvolume=Vol-0001 volume=Vol-0001 pool=Full
+   *truncate storage=File volume=Vol-0001
+   ```
+
+3. **Rebuild catalog entries with `bscan`** when the volume is *intact on disk* but the
+   catalog has lost or corrupted its records (e.g. after a catalog restore older than the
+   last backups). `bscan` reads the volume and re-creates the Job/File/JobMedia rows:
+
+   ```bash
+   # Re-import a volume's contents into the catalog (Director should be stopped)
+   XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-storage \
+     bscan -c /etc/bareos -V Vol-0001 -s -n bareos -u bareos FileStorage
+   ```
+
+   `bscan` is the inverse of a lost catalog: it trusts the volume and rewrites the
+   database, whereas `relabel`/`truncate` trust the catalog and rewrite the volume.
 
 ---
 
@@ -1149,7 +1205,7 @@ XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-sd \
 
 ## 16. Backup Runs But No Files Are Backed Up
 
-### What It Looks Like
+### What It Looks Like (No Files Backed Up)
 
 The job completes with status "T" (terminated normally), but the job log shows:
 
@@ -1165,7 +1221,7 @@ Or the job shows 0 files and 0 bytes:
   Bytes Backed Up:     0
 ```
 
-### Root Causes
+### Root Causes (No Files Backed Up)
 
 **Cause 1: FileSet Include path is wrong.**
 
@@ -1173,7 +1229,7 @@ The `Include` block in the FileSet resource specifies what directories to back u
 
 ```bash
 # Check the FileSet definition
-podman exec bareos-dir grep -r "Include\|File =" /etc/bareos/bareos-dir.d/fileset/
+podman exec bareos-director grep -r "Include\|File =" /etc/bareos/bareos-dir.d/fileset/
 
 # Test what the FD can see
 XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-fd \
@@ -1210,8 +1266,8 @@ journalctl --user -u bareos-fd -n 100 --no-pager | grep -i "permission\|denied\|
 If the backup is an Incremental job and no files have changed since the last Full backup, this is correct behavior, not an error.
 
 ```bash
-# Check the job type
-*list job jobid=42
+# Check the job type (llist prints each field on its own line)
+*llist job jobid=42
 # Look at the "Level" field: Full, Incremental, or Differential
 ```
 
@@ -1228,7 +1284,7 @@ Bareos uses a spool file on the Director or Storage Daemon host to buffer backup
 ```bash
 # Check spool usage
 df -h /var/lib/bareos/spool/   # inside SD container
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-sd df -h /var/lib/bareos/
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-storage df -h /var/lib/bareos/
 
 # Increase spool size in the Job resource:
 # SpoolSize = 10G
@@ -1244,12 +1300,12 @@ As the catalog grows, queries for incremental backup file lists can become slow.
 ```bash
 # Check MariaDB status
 XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-db \
-  mysql -u bareos -p"${BAREOS_DB_PASSWORD}" bareos \
+  mysql -u bareos -p"${MARIADB_PASSWORD}" bareos \
   -e "SHOW STATUS LIKE 'Innodb_buffer_pool%';"
 
 # Run ANALYZE to update table statistics
 XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-db \
-  mysql -u bareos -p"${BAREOS_DB_PASSWORD}" bareos \
+  mysql -u bareos -p"${MARIADB_PASSWORD}" bareos \
   -e "ANALYZE TABLE File, Job, JobMedia, Media;"
 ```
 
@@ -1271,7 +1327,7 @@ If backup traffic is saturating the network, Bareos supports bandwidth limiting:
 
 ## 18. Error: JobId Already Running After a Crash
 
-### What It Looks Like
+### What It Looks Like (JobId Already Running)
 
 After a system crash or forced container restart, trying to run a backup produces:
 
@@ -1279,11 +1335,11 @@ After a system crash or forced container restart, trying to run a backup produce
 Fatal error: Job bareos-fd.2026-02-24_10.15 is already running. Terminating.
 ```
 
-### Explanation
+### Explanation (JobId Already Running)
 
 When Bareos crashes or is forcefully killed mid-job, the catalog retains the job record in a "Running" state. When the Director restarts and tries to run the same job, it sees the stale "Running" entry and refuses to start a new instance.
 
-### Fix
+### Fix (JobId Already Running)
 
 ```bash
 # In bconsole, find the stale running job
@@ -1347,7 +1403,7 @@ When a job is killed (container killed, host rebooted, OOM killer) mid-execution
 
 # Step 4: If the volume is inconsistent, truncate it (if data loss is acceptable)
 # or relabel it (see Section 15)
-*truncate storage=FileStorage volume=Vol-0001
+*truncate storage=File volume=Vol-0001
 
 # Step 5: Run a new Full backup to ensure all data is protected
 *run job=BackupClient1 level=Full yes
@@ -1361,7 +1417,7 @@ Bareos uses a feature called "accurate backup" and its own internal volume verif
 
 [↑ Back to Table of Contents](#table-of-contents)
 
-## 19. Auto-Update Failures: Catalog Schema Mismatch
+## 19b. Auto-Update Failures: Catalog Schema Mismatch
 
 `podman auto-update` can pull a new Bareos image that contains a **catalog schema migration** — a change to the MariaDB database structure. If this happens without manual intervention, the Director will refuse to start.
 
@@ -1397,7 +1453,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 # The bareos-db container must be running.
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman run --rm \
-    --network bareos-net \
+    --network bareos \
     --env-file /home/bareos/.config/bareos/bareos.env \
     --env-file /home/bareos/.config/bareos/db.env \
     docker.io/bareos/bareos-director:24 \
@@ -1441,10 +1497,10 @@ If the migration script itself fails (e.g., due to a DB corruption), restore fro
 
 ```
 *list jobs                # All jobs
-*list jobs last=10        # Last 10 jobs
+*list jobs limit=10       # Last 10 jobs
 *list jobs jobstatus=E    # Failed jobs (E=Error)
 *list jobs jobstatus=R    # Running jobs
-*list job jobid=42        # Details for a specific job
+*llist job jobid=42       # Details for a specific job (one field per line)
 *list joblog jobid=42     # Full log output for a specific job
 *list volumes             # All volumes in all pools
 *list volumes pool=Full   # Volumes in the Full pool
@@ -1457,11 +1513,11 @@ If the migration script itself fails (e.g., due to a DB corruption), restore fro
 ### show — Display Configuration
 
 ```
-*show job=BackupClient1   # Show the Job resource configuration
+*show job=BackupLocalHost # Show the Job resource configuration
 *show client=bareos-fd    # Show the Client resource
-*show storage=FileStorage # Show the Storage resource
-*show fileset=LinuxAll    # Show the FileSet resource
-*show schedule=WeeklyCycle # Show the Schedule resource
+*show storage=File        # Show the Storage resource
+*show fileset=RHEL10-Standard # Show the FileSet resource
+*show schedule=WeeklyBackup   # Show the Schedule resource
 *show all                 # Show all resources (verbose)
 ```
 
@@ -1500,6 +1556,37 @@ If the migration script itself fails (e.g., due to a DB corruption), restore fro
 ```
 *restore                  # Start the interactive restore menu
 ```
+
+### setdebug — Raise Daemon Debug Level and Trace
+
+When the job log and journals are not detailed enough, `setdebug` turns up a daemon's
+internal debug verbosity at runtime — no restart needed. Use it to diagnose handshake,
+TLS, device, or backup-selection problems from the inside.
+
+```
+# Director itself
+*setdebug level=100 trace=1 dir
+
+# A specific File Daemon (use the Client RESOURCE name)
+*setdebug level=100 trace=1 client=bareos-fd
+
+# The Storage Daemon (use the Storage RESOURCE name "File")
+*setdebug level=100 trace=1 storage=File
+
+# Turn tracing/debug back off when finished
+*setdebug level=0 trace=0 dir
+```
+
+With `trace=1`, each daemon writes a trace file into its working directory —
+`/var/lib/bareos` *inside that daemon's container* (e.g. `bareos-fd.trace`). Read it with:
+
+```bash
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-fd \
+  cat /var/lib/bareos/bareos-fd.trace
+```
+
+Always reset the level to `0` afterwards — a high debug level on a busy daemon generates
+large trace files and adds overhead.
 
 ---
 
@@ -1707,7 +1794,7 @@ cat "${WEBUI_VOL}/directors.ini"
 
 # Confirm jobs exist in the catalog
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman exec bareos-director bconsole <<< "list jobs last=5"
+  podman exec bareos-director bconsole <<< "list jobs limit=5"
 ```
 
 If jobs exist in bconsole but not in the WebUI, the WebUI may be connected to a different Director instance. Check that `diraddress` points to `bareos-director` and that only one Director container is running.
@@ -1730,7 +1817,7 @@ In this lab, you will intentionally introduce a password mismatch between the Di
 
 ```bash
 # Find the current FD client password in the Director's config
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir \
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
   grep -A 10 "Client {" /etc/bareos/bareos-dir.d/client/bareos-client1.conf | grep Password
 ```
 
@@ -1742,7 +1829,7 @@ Edit the Director-side client configuration to use a deliberately wrong password
 
 ```bash
 # Edit the Director's client config (inside the named volume)
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bash
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bash
 
 # Inside the container:
 vi /etc/bareos/bareos-dir.d/client/bareos-client1.conf
@@ -1753,14 +1840,14 @@ exit
 ### Step 3: Reload the Director
 
 ```bash
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir bareos-ctl-dir reload
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director bconsole <<< "reload"
 ```
 
 ### Step 4: Trigger a Backup and Observe the Error
 
 ```bash
 # Run a backup (it should fail)
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bconsole <<EOF
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole <<EOF
 run job=BackupClient1 level=Full yes
 wait
 messages
@@ -1772,13 +1859,13 @@ EOF
 
 ```bash
 # Find the failed job ID
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bconsole <<EOF
-list jobs last=5
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole <<EOF
+list jobs limit=5
 quit
 EOF
 
 # Read the job log (replace 99 with actual job ID)
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bconsole <<EOF
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole <<EOF
 list joblog jobid=99
 quit
 EOF
@@ -1800,14 +1887,14 @@ journalctl --user -u bareos-fd -n 30 --no-pager | grep -i "auth\|password\|error
 
 ```bash
 # Edit the config back to the original password
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bash -c \
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bash -c \
   "vi /etc/bareos/bareos-dir.d/client/bareos-client1.conf"
 
 # Reload
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-dir bareos-ctl-dir reload
+XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director bconsole <<< "reload"
 
 # Verify with a successful backup
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bconsole <<EOF
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole <<EOF
 run job=BackupClient1 level=Full yes
 wait
 messages
@@ -1852,7 +1939,7 @@ ls -laZ /srv/bareos-test-storage
 
 ```bash
 # Create a new device config (inside the SD container's config volume)
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-sd bash
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-storage bash
 
 # Inside the container, create a new device config:
 cat > /etc/bareos/bareos-sd.d/device/TestDevice.conf << 'EOF'
@@ -1873,10 +1960,10 @@ exit
 ### Step 3: Restart the SD and Try to Use the New Device
 
 ```bash
-XDG_RUNTIME_DIR=/run/user/1001 systemctl --user restart bareos-sd
+XDG_RUNTIME_DIR=/run/user/1001 systemctl --user restart bareos-storage
 
 # In bconsole, label a new volume in the test device
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bconsole <<EOF
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole <<EOF
 label storage=TestStorage volume=TestVol-0001 pool=Scratch
 quit
 EOF
@@ -1891,7 +1978,7 @@ This will fail. The SD will try to create the volume file, SELinux will deny it.
 sudo ausearch -m avc -ts recent | grep bareos-test
 
 # Get a human-readable explanation
-sudo ausearch -m avc -ts recent | audit2why
+sudo ausearch -m avc -ts recent | sudo audit2why
 ```
 
 **Expected output:**
@@ -1939,7 +2026,7 @@ sudo semodule -l | grep bareos_local_test
 
 ```bash
 # Retry the volume labeling
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bconsole <<EOF
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole <<EOF
 label storage=TestStorage volume=TestVol-0001 pool=Scratch
 quit
 EOF
@@ -1953,7 +2040,7 @@ EOF
 
 ## 24. Lab 20-3: Use dbcheck to Repair a Catalog Inconsistency
 
-In this lab, you will manually delete a volume file from disk (simulating a disk failure), then use `dbcheck` to identify and clean up the orphaned catalog records.
+In this lab, you will manually delete a volume file from disk (simulating a disk failure), record the loss in the catalog so it stays visible, and then use `dbcheck` to find and clean up any catalog records orphaned by removing the volume.
 
 ### Prerequisites
 
@@ -1963,7 +2050,7 @@ In this lab, you will manually delete a volume file from disk (simulating a disk
 ### Step 1: Find a Volume to "Lose"
 
 ```bash
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bconsole <<EOF
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole <<EOF
 list volumes
 quit
 EOF
@@ -1985,7 +2072,7 @@ ls /srv/bareos-storage/volumes/
 
 ```bash
 # The catalog still thinks the volume exists
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bconsole <<EOF
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole <<EOF
 list volumes
 quit
 EOF
@@ -1994,43 +2081,52 @@ EOF
 
 ### Step 4: Update the Volume Status to Reflect the Loss
 
+We want to *preserve* the record that this volume existed and was lost — not silently
+recycle it. Marking it `Purged` would tell Bareos the volume is empty and free to reuse,
+which hides the failure. Instead, set it to `Error` so the loss stays visible in
+`list volumes`:
+
 ```bash
-# Mark the volume as "Purged" in the catalog
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bconsole <<EOF
-update volume=Full-Vol-0001 volstatus=Purged
+# Mark the volume "Error" so the catalog still records that it existed and is gone
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole <<EOF
+update volume=Full-Vol-0001 volstatus=Error
 quit
 EOF
+
+# Alternatively, to remove the volume record entirely (and let dbcheck clean up the
+# now-orphaned File/JobMedia rows), use:
+#   delete volume=Full-Vol-0001 yes
 ```
 
 ### Step 5: Stop the Director and Run dbcheck
 
 ```bash
-XDG_RUNTIME_DIR=/run/user/1001 systemctl --user stop bareos-dir
+XDG_RUNTIME_DIR=/run/user/1001 systemctl --user stop bareos-director
 
 # Run dbcheck in verbose scan mode first
 XDG_RUNTIME_DIR=/run/user/1001 podman run --rm \
   --env-file /home/bareos/.config/bareos/db.env \
-  --network bareos-net \
-  -v bareos-dir-config:/etc/bareos:ro,Z \
+  --network bareos \
+  -v bareos-director-config:/etc/bareos:ro,Z \
   docker.io/bareos/bareos-director:24 \
   dbcheck -c /etc/bareos/bareos-dir.conf -v 2>&1 | head -100
 
-# Now run with fixes enabled
+# Now run non-interactively with fixes enabled (-b batch, -f fix, -v verbose)
 XDG_RUNTIME_DIR=/run/user/1001 podman run --rm \
   --env-file /home/bareos/.config/bareos/db.env \
-  --network bareos-net \
-  -v bareos-dir-config:/etc/bareos:ro,Z \
+  --network bareos \
+  -v bareos-director-config:/etc/bareos:ro,Z \
   docker.io/bareos/bareos-director:24 \
-  dbcheck -c /etc/bareos/bareos-dir.conf -B -f -v
+  dbcheck -c /etc/bareos/bareos-dir.conf -b -f -v
 ```
 
 ### Step 6: Restart and Verify
 
 ```bash
-XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start bareos-dir
+XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start bareos-director
 
 # Check the catalog is now consistent
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-dir bconsole <<EOF
+XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole <<EOF
 list volumes
 messages
 quit
@@ -2067,7 +2163,7 @@ The deleted volume should either be gone from the catalog or marked in a state t
 | Container exits immediately | Config error, missing env var, or DB not ready | `podman logs <container>` to see startup error |
 | `Linger=no` | loginctl linger not enabled | `sudo loginctl enable-linger bareos` |
 | DNS fails inside container | pasta/slirp4netns DNS issue | Check `/etc/resolv.conf` inside container |
-| `dbcheck` finds orphaned records | Volumes deleted outside Bareos | Run `dbcheck -B -f` with Director stopped |
+| `dbcheck` finds orphaned records | Volumes deleted outside Bareos | Run `dbcheck -b -f` with Director stopped |
 | `Spooling full` | Backup larger than spool space | Increase `Maximum Spool Size` or add spool directory |
 | `estimate` shows 0 files | FileSet path not visible to FD | Check FD's view of the path; check bind mounts |
 
@@ -2204,7 +2300,7 @@ This chapter has given you a complete toolkit for diagnosing and resolving Bareo
 
 **Always start with the job log.** The Bareos job log is specific, timestamped, and actionable. Every Bareos diagnosis should begin with `list joblog jobid=N` in bconsole.
 
-**The daemon journals are your second resource.** Use `journalctl --user -u bareos-dir` (and `-sd`, `-fd`, `-db`) to see what happened at the daemon level. Always set `XDG_RUNTIME_DIR=/run/user/1001` before running commands as the bareos user.
+**The daemon journals are your second resource.** Use `journalctl --user -u bareos-director` (and `bareos-storage`, `bareos-fd`, `bareos-db`) to see what happened at the daemon level. Always set `XDG_RUNTIME_DIR=/run/user/1001` before running commands as the bareos user.
 
 **SELinux is your friend, not your enemy.** A mysterious "permission denied" in a container is almost certainly a SELinux denial. Use `ausearch -m avc -ts recent | audit2why` to understand it, and `restorecon` or `semanage fcontext` to fix it. Never set SELinux to permissive.
 
@@ -2212,7 +2308,7 @@ This chapter has given you a complete toolkit for diagnosing and resolving Bareo
 
 **Quadlet failures are usually syntax problems.** When a unit does not appear after `daemon-reload`, check the `.container` file syntax and run the Quadlet generator manually to see error output.
 
-**`dbcheck` is the catalog repair tool.** Run it with the Director stopped, in `-v` mode first to assess damage, then with `-B -f` to repair it.
+**`dbcheck` is the catalog repair tool.** Run it with the Director stopped, in `-v` mode first to assess damage, then with `-b -f` to repair it.
 
 **The Quick-Reference Error Table** (Section 25) and the Diagnostic Decision Tree (Section 26) are your quick-lookup guides for the most common problems.
 

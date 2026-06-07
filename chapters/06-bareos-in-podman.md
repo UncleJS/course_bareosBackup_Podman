@@ -59,7 +59,7 @@ This chapter deploys the complete Bareos stack as rootless Podman containers man
 │   ├── containers/systemd/         ← Quadlet unit files
 │   │   ├── bareos.network
 │   │   ├── bareos-db-data.volume
-│   │   ├── bareos-config.volume
+│   │   ├── bareos-working.volume
 │   │   ├── bareos-fd-config.volume
 │   │   ├── bareos-webui-config.volume
 │   │   ├── bareos-db.container
@@ -85,14 +85,13 @@ This chapter deploys the complete Bareos stack as rootless Podman containers man
 ```
 bareos-director  ──depends on──► bareos-storage
                  ──depends on──► bareos-db
-                 ──depends on──► bareos-fd (container)
 
 bareos-fd        ──depends on──► bareos.network (Quadlet)
 bareos-storage   ──depends on──► bareos.network (Quadlet)
 bareos-db        ──depends on──► bareos.network (Quadlet)
 ```
 
-Systemd/Quadlet automatically enforces these dependencies based on `After=` and `Requires=` directives.
+The Director has **no** startup dependency on the File Daemon: connecting to a client is a runtime action the Director performs only when a job runs, not at start. Systemd/Quadlet automatically enforces the dependencies above based on `After=` and `Requires=` directives.
 
 ---
 
@@ -107,6 +106,9 @@ Systemd/Quadlet automatically enforces these dependencies based on `After=` and 
 sudo mkdir -p /etc/bareos/{bareos-dir.d,bareos-sd.d}
 sudo mkdir -p /etc/bareos/bareos-dir.d/{catalog,client,console,director,fileset,job,jobdefs,messages,pool,profile,schedule,storage}
 sudo mkdir -p /etc/bareos/bareos-sd.d/{device,director,messages,storage}
+
+# Shared scripts directory (hook & catalog-dump scripts; populated in Chapters 7 and 10)
+sudo mkdir -p /etc/bareos/scripts
 
 # Own all config by the bareos user
 sudo chown -R bareos:bareos /etc/bareos
@@ -197,6 +199,7 @@ sudo -u bareos tee /home/bareos/.config/containers/systemd/bareos.network > /dev
 # bareos.network — Internal network for Bareos containers
 
 [Network]
+NetworkName=bareos
 Driver=bridge
 Subnet=10.89.10.0/24
 Gateway=10.89.10.1
@@ -205,7 +208,11 @@ Label=managed-by=quadlet
 EOF
 ```
 
-This creates a dedicated bridge network `bareos` with a known subnet. All Bareos containers join this network and can reach each other by container name.
+This creates a dedicated bridge network with a known subnet. All Bareos containers join this network and can reach each other by container name.
+
+By default, Quadlet names the runtime network after the unit with a `systemd-` prefix — a `bareos.network` file would otherwise produce a network called `systemd-bareos`. The `NetworkName=bareos` line overrides that so the runtime network is literally `bareos`, which is the name every `--network bareos` reference in this chapter expects.
+
+> **Design note:** This course wires the daemons together with a shared Quadlet network rather than placing them in a single pod, so each daemon keeps its own published ports and DNS name and can be started, stopped, and reasoned about independently. A pod-based layout (one pod, shared network namespace) is a valid alternative if you prefer to manage the stack as a single unit.
 
 ### Volume Definitions
 
@@ -215,6 +222,7 @@ sudo -u bareos tee /home/bareos/.config/containers/systemd/bareos-db-data.volume
 # bareos-db-data.volume — Persistent storage for the Bareos MariaDB catalog
 
 [Volume]
+VolumeName=bareos-db-data
 Driver=local
 Label=app=bareos
 Label=component=catalog
@@ -225,21 +233,36 @@ sudo -u bareos tee /home/bareos/.config/containers/systemd/bareos-working.volume
 # bareos-working.volume — Bareos working directory (bootstrap files, etc.)
 
 [Volume]
+VolumeName=bareos-working
 Driver=local
 Label=app=bareos
 Label=component=working
 EOF
 
-# File Daemon config volume (directors.ini equivalent lives here)
+# File Daemon config volume (File Daemon configuration lives here)
 sudo -u bareos tee /home/bareos/.config/containers/systemd/bareos-fd-config.volume > /dev/null <<'EOF'
 # bareos-fd-config.volume — File Daemon configuration (/etc/bareos inside the container)
 
 [Volume]
+VolumeName=bareos-fd-config
 Driver=local
 Label=app=bareos
 Label=component=fd
 EOF
+
+# WebUI configuration volume (directors.ini and configuration.ini live here)
+sudo -u bareos tee /home/bareos/.config/containers/systemd/bareos-webui-config.volume > /dev/null <<'EOF'
+# bareos-webui-config.volume — Bareos WebUI configuration (/etc/bareos-webui)
+
+[Volume]
+VolumeName=bareos-webui-config
+Driver=local
+Label=app=bareos
+Label=component=webui
+EOF
 ```
+
+Each volume file sets `VolumeName=<name>` so the runtime volume is named exactly (e.g. `bareos-working`) instead of receiving Quadlet's default `systemd-` prefix; this keeps the names you see in `podman volume ls` identical to the names used in the mounts below.
 
 ---
 
@@ -269,7 +292,8 @@ HostName=bareos-db
 EnvironmentFile=/home/bareos/.config/bareos/db.env
 
 # Persistent storage for database files
-Volume=bareos-db-data.volume:/var/lib/mysql:Z
+# No :Z — Podman makes named volumes container-accessible automatically.
+Volume=bareos-db-data.volume:/var/lib/mysql
 
 # Connect to the Bareos internal network
 Network=bareos.network
@@ -284,12 +308,18 @@ PublishPort=127.0.0.1:3306:3306
 # Security hardening
 NoNewPrivileges=true
 
-# Health check — ensures MariaDB is ready before Director starts
-HealthCmd=/usr/local/bin/healthcheck.sh --innodb_initialized
+# Health check — ensures MariaDB is ready before Director starts.
+# healthcheck.sh ships on the image PATH; --connect forces a real
+# connection test in addition to the InnoDB-initialised check.
+HealthCmd=healthcheck.sh --connect --innodb_initialized
 HealthInterval=10s
 HealthTimeout=5s
 HealthRetries=3
 HealthStartPeriod=30s
+
+# Hold the unit in "activating" until the health check passes, so
+# dependents that order After= this unit only start once it is healthy.
+Notify=healthy
 
 # Labels for identification
 Label=app=bareos
@@ -343,7 +373,9 @@ Volume=/etc/bareos/bareos-sd.d:/etc/bareos/bareos-sd.d:ro,Z
 Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
 
 # Working data (log files, state files)
-Volume=bareos-working.volume:/var/lib/bareos:Z
+# No :Z — bareos-working is shared by the Director, Storage Daemon, and
+# File Daemon; a private MCS label here would lock the other two out.
+Volume=bareos-working.volume:/var/lib/bareos
 
 # Connect to the Bareos internal network
 Network=bareos.network
@@ -445,7 +477,9 @@ sudo -u bareos tee /home/bareos/.config/containers/systemd/bareos-director.conta
 Description=Bareos Director
 Documentation=https://docs.bareos.org
 After=network-online.target
-# Wait for DB to be healthy before starting Director
+# Requires= + After= order the start after these units; because bareos-db
+# sets Notify=healthy, its "started" state means "healthy", so together
+# the Director waits for a healthy database (and a started Storage Daemon).
 After=bareos-db.service
 After=bareos-storage.service
 Requires=bareos-db.service
@@ -465,7 +499,13 @@ EnvironmentFile=/home/bareos/.config/bareos/db.env
 Volume=/etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z
 
 # Working data: bootstrap files, state files
-Volume=bareos-working.volume:/var/lib/bareos:Z
+# No :Z — bareos-working is shared with the Storage Daemon and File Daemon;
+# a private MCS label here would lock the other daemons out.
+Volume=bareos-working.volume:/var/lib/bareos
+
+# Shared scripts directory (hook & catalog-dump scripts; populated in
+# Chapters 7 and 10). :z because it is shared with the File Daemon.
+Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,z
 
 # Connect to the Bareos internal network
 Network=bareos.network
@@ -659,7 +699,7 @@ EOF
 
 The File Daemon (`bareos-fd`) runs as a rootless Podman container managed by Quadlet — consistent with every other Bareos component in this course. It uses the `bareos-client:24` image, which contains the same `bareos-fd` binary as the RPM package.
 
-The container gets full read access to the host filesystem via a bind-mount (`/:/hostfs:ro,z`), so it can back up any path on the host just as a traditional RPM-based FD would. It also mounts the host Podman socket so that `ClientRunBeforeJob` hook scripts (Chapter 10) can call `podman exec` against running containers.
+The container gets full read access to the host filesystem via a bind-mount (`/:/hostfs:ro`), so it can back up any path on the host just as a traditional RPM-based FD would. Because Podman cannot relabel `/` and a confined `container_t` process cannot read arbitrarily-labeled host files anyway, the unit sets `SecurityLabelDisable=true` (explained below). It also mounts the host Podman socket so that `ClientRunBeforeJob` hook scripts (Chapter 10) can call `podman exec` against running containers.
 
 > **Production clients on other hosts** — when the course refers to backing up a remote machine, that host runs the File Daemon as an RPM install (`dnf install bareos-filedaemon`). The container FD used here is for the local Podman host itself. The config file format is identical in both cases.
 
@@ -696,12 +736,14 @@ Client {
 EOF
 ```
 
-**Authorize the Director to connect (`director/bareos-director.conf`):**
+**Authorize the Director to connect (`director/bareos-dir.conf`):**
+
+The `Name` here must equal the Director's own resource name (`bareos-dir`, set in `bareos-dir.d/director/bareos-dir.conf`), not the container name — the Storage Daemon's `director/bareos-dir.conf` matches it the same way.
 
 ```bash
-sudo -u bareos tee "${FD_VOL}/bareos-fd.d/director/bareos-director.conf" > /dev/null <<'EOF'
+sudo -u bareos tee "${FD_VOL}/bareos-fd.d/director/bareos-dir.conf" > /dev/null <<'EOF'
 Director {
-  Name = bareos-director
+  Name = bareos-dir
   Password = "CHANGEME_FD_PASSWORD"   # must match Director's Client resource password
   Monitor = No
 }
@@ -755,19 +797,39 @@ Image=docker.io/bareos/bareos-client:24
 ContainerName=bareos-fd
 
 # ── Config volume ─────────────────────────────────────────────────
-# bareos-fd.d/ lives inside this volume (created above)
-Volume=bareos-fd-config.volume:/etc/bareos:Z
+# bareos-fd.d/ lives inside this volume (created above). No :Z —
+# Podman makes named volumes container-accessible automatically.
+Volume=bareos-fd-config.volume:/etc/bareos
+
+# ── Shared working volume ─────────────────────────────────────────
+# Shared working volume so the FD can back up catalog dumps and
+# bootstrap files (used by Chapters 7/14/18). No :Z — shared with the
+# Director and Storage Daemon.
+Volume=bareos-working.volume:/var/lib/bareos
+
+# ── Shared scripts directory ──────────────────────────────────────
+# Hook & catalog-dump scripts; populated in Chapters 7 and 10.
+Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,z
 
 # ── Host filesystem access ────────────────────────────────────────
 # Read-only bind-mount of the entire host filesystem so the FD can
 # back up any host path. Backup jobs use paths under /hostfs/.
 # Example: to back up /home on the host, use File = /hostfs/home
-Volume=/:/hostfs:ro,z
+# No :z — Podman cannot relabel /, so a relabel request fails startup.
+Volume=/:/hostfs:ro
 
 # ── Podman socket ─────────────────────────────────────────────────
 # Allows ClientRunBeforeJob scripts (Chapter 10) to call
 # `podman exec` against containers running on the host.
-Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock:z
+Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock
+
+# ── SELinux ───────────────────────────────────────────────────────
+# Relabeling / is impossible, and a confined container_t process cannot
+# read host files that carry arbitrary labels. Disabling label
+# separation is the standard pattern for a host backup agent that must
+# read the whole filesystem. The container is still rootless and mounts
+# /hostfs read-only, so this does not grant write access to the host.
+SecurityLabelDisable=true
 
 # ── Networking ────────────────────────────────────────────────────
 Network=bareos.network
@@ -834,34 +896,31 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bash -c '
 
 ### Running the Bareos Schema Setup
 
-The Bareos Director image includes scripts to initialize the database. We run them using a temporary Director container:
+The Bareos Director image includes scripts to initialize the database. The `create_bareos_database`, `make_bareos_tables`, and `grant_bareos_privileges` scripts do **not** read the `MARIADB_*` variables from `db.env` — they read the `db_*` variables that Bareos itself uses. We pass those explicitly with `--env` so they connect to the `bareos-db` container, and the values must match the Director's `Catalog` resource (`MyCatalog.conf`):
 
 ```bash
-# Run the Bareos catalog creation script
-# This connects to bareos-db and creates the bareos schema
+# Run the three Bareos catalog scripts in one throwaway Director container.
+# db_password must equal MARIADB_PASSWORD in db.env (and DBPassword in MyCatalog.conf).
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman run --rm \
-  --network bareos.network \
-  --env-file /home/bareos/.config/bareos/db.env \
-  --env-file /home/bareos/.config/bareos/bareos.env \
-  -v /etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z \
+  --network bareos \
+  --env db_address=bareos-db \
+  --env db_name=bareos \
+  --env db_user=bareos \
+  --env db_password=CHANGEME_BAREOS_DB_PASSWORD \
+  --env dbdriver=mysql \
   docker.io/bareos/bareos-director:24 \
-  /usr/lib/bareos/scripts/create_bareos_database
-
-# Grant privileges
-sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman run --rm \
-  --network bareos.network \
-  --env-file /home/bareos/.config/bareos/db.env \
-  -v /etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z \
-  docker.io/bareos/bareos-director:24 \
-  /usr/lib/bareos/scripts/grant_bareos_privileges
+  bash -c '/usr/lib/bareos/scripts/create_bareos_database \
+        && /usr/lib/bareos/scripts/make_bareos_tables \
+        && /usr/lib/bareos/scripts/grant_bareos_privileges'
 ```
 
-Expected output from `create_bareos_database`:
+Expected output ends with:
 ```
-Creating MySQL database
-Succeeded creating bareos database
+Creating mysql database
+Creating of bareos database succeeded.
+Creating of bareos tables succeeded.
+Privileges for user bareos granted on database bareos.
 ```
 
 ---
@@ -1033,16 +1092,12 @@ The WebUI is **stateless** — it translates web requests into bconsole API call
 
 ### Step 1 — Create the WebUI Console Resource
 
-The WebUI authenticates to the Director using a dedicated `Console` resource. Add two config files to the Director's config volume:
+The WebUI authenticates to the Director using a dedicated `Console` resource. The Director reads its configuration from the host bind mount at `/etc/bareos/bareos-dir.d/`, so write the two resources straight to the host:
 
 ```bash
-# Get the Director config volume path
-DIR_VOL=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman volume inspect bareos-config --format "{{.Mountpoint}}")
-
-# Create the console resource directory if not already present
-sudo mkdir -p "${DIR_VOL}/bareos-dir.d/console"
-sudo mkdir -p "${DIR_VOL}/bareos-dir.d/profile"
+# The Director's config directories already exist on the host (Section 2)
+sudo mkdir -p /etc/bareos/bareos-dir.d/console
+sudo mkdir -p /etc/bareos/bareos-dir.d/profile
 
 # Generate a strong password for the WebUI
 WEBUI_PASSWORD=$(openssl rand -base64 24)
@@ -1050,7 +1105,7 @@ echo "WebUI password: ${WEBUI_PASSWORD}"
 echo "Save this in your password manager before continuing."
 
 # Write the Console resource
-sudo tee "${DIR_VOL}/bareos-dir.d/console/webui-admin.conf" > /dev/null <<EOF
+sudo tee /etc/bareos/bareos-dir.d/console/webui-admin.conf > /dev/null <<EOF
 #
 # Console resource that the WebUI uses to authenticate to the Director.
 # This is equivalent to a bconsole connection with the webui-admin profile.
@@ -1065,12 +1120,12 @@ Console {
 EOF
 
 # Check if the webui-admin profile already ships with Bareos
-if [ ! -f "${DIR_VOL}/bareos-dir.d/profile/webui-admin.conf" ]; then
-  sudo tee "${DIR_VOL}/bareos-dir.d/profile/webui-admin.conf" > /dev/null <<'EOF'
+if [ ! -f /etc/bareos/bareos-dir.d/profile/webui-admin.conf ]; then
+  sudo tee /etc/bareos/bareos-dir.d/profile/webui-admin.conf > /dev/null <<'EOF'
 #
 # The webui-admin profile is shipped with Bareos 24 inside the image.
-# This file is only needed if your Director config volume does not
-# already contain it (i.e., on a fresh volume without the default configs).
+# This file is only needed if your Director config directory does not
+# already contain it (i.e., a fresh /etc/bareos without the default configs).
 #
 Profile {
   Name            = "webui-admin"
@@ -1096,10 +1151,10 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 
 ### Step 2 — Create the WebUI Configuration Volume
 
-The WebUI container reads two INI files from `/etc/bareos-webui/` inside the container. Create a named volume and populate it:
+The WebUI container reads two INI files from `/etc/bareos-webui/` inside the container. The `bareos-webui-config` volume is declared as a Quadlet unit (Section 4), but we create it now so we can populate it before the container starts. Because the `.volume` file sets `VolumeName=bareos-webui-config`, the volume created here and the one the Quadlet unit references are the same runtime volume:
 
 ```bash
-# Create the volume
+# Create the volume (same runtime name the Quadlet unit uses)
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman volume create bareos-webui-config
 
@@ -1177,7 +1232,8 @@ ContainerName=bareos-webui
 Network=bareos.network
 
 # Mount the config volume at the path the WebUI image expects.
-Volume=bareos-webui-config:/etc/bareos-webui:Z
+# No :Z — Podman makes named volumes container-accessible automatically.
+Volume=bareos-webui-config.volume:/etc/bareos-webui
 
 # Expose the WebUI on localhost only — put nginx in front for HTTPS.
 PublishPort=127.0.0.1:9100:80
@@ -1285,21 +1341,20 @@ for i in $(seq 1 12); do
 done
 
 # Step 4: Initialize catalog schema
+# The Bareos DB scripts read db_* vars, not MARIADB_* — pass them explicitly.
+# db_password must equal MARIADB_PASSWORD in db.env and DBPassword in MyCatalog.conf.
 echo "Initializing Bareos catalog schema..."
 bareos_run podman run --rm \
-  --network bareos.network \
-  --env-file /home/bareos/.config/bareos/db.env \
-  --env-file /home/bareos/.config/bareos/bareos.env \
-  -v /etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z \
+  --network bareos \
+  --env db_address=bareos-db \
+  --env db_name=bareos \
+  --env db_user=bareos \
+  --env db_password=CHANGEME_BAREOS_DB_PASSWORD \
+  --env dbdriver=mysql \
   docker.io/bareos/bareos-director:24 \
-  /usr/lib/bareos/scripts/create_bareos_database
-
-bareos_run podman run --rm \
-  --network bareos.network \
-  --env-file /home/bareos/.config/bareos/db.env \
-  -v /etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z \
-  docker.io/bareos/bareos-director:24 \
-  /usr/lib/bareos/scripts/grant_bareos_privileges
+  bash -c '/usr/lib/bareos/scripts/create_bareos_database \
+        && /usr/lib/bareos/scripts/make_bareos_tables \
+        && /usr/lib/bareos/scripts/grant_bareos_privileges'
 
 # Step 5: Start Storage Daemon
 echo "Starting Storage Daemon..."
@@ -1326,7 +1381,7 @@ bareos_run systemctl --user enable \
   bareos-db.service bareos-storage.service \
   bareos-director.service bareos-webui.service bareos-fd.service
 
-# Step 9: Verify
+# Step 10: Verify
 echo ""
 echo "=== Verifying deployment ==="
 bareos_run podman ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
@@ -1370,18 +1425,20 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   nc -zv bareos-fd 9102
 # Expected: Connection to bareos-fd 9102 port [tcp] succeeded!
 
-# Test 4: Storage Daemon can write to the volume path
+# Test 4: Storage Daemon can write to the volume path (and clean up after)
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman exec bareos-storage \
-  touch /var/lib/bareos/storage/.write-test && \
+  sh -c 'touch /var/lib/bareos/storage/.write-test \
+      && rm -f /var/lib/bareos/storage/.write-test' && \
   echo "Storage write test: PASSED" || \
   echo "Storage write test: FAILED"
 
-# Test 5: Catalog database connectivity from Director
+# Test 5: Catalog database connectivity (run from the DB container, which
+# ships the mariadb client; the Director image may not include it).
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman exec bareos-director \
-  mysql -h bareos-db -u bareos -p"CHANGEME_BAREOS_DB_PASSWORD" \
-  -e "SELECT COUNT(*) FROM Job;" bareos 2>/dev/null
+  podman exec bareos-db \
+  mariadb -u bareos -p"CHANGEME_BAREOS_DB_PASSWORD" bareos \
+  -e "SELECT COUNT(*) FROM Job;" 2>/dev/null
 # Expected: A numeric result (0 initially, before any jobs run)
 
 # Test 6: WebUI can reach the Director

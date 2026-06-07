@@ -14,7 +14,7 @@
 - [2. `podman save` — OCI Tarball Format and Options](#2-podman-save-oci-tarball-format-and-options)
   - [Basic syntax](#basic-syntax)
   - [Output format](#output-format)
-  - [Formats: OCI vs Docker](#formats-oci-vs-docker)
+  - [Formats: Docker vs OCI](#formats-docker-vs-oci)
   - [Saving multiple images in one archive](#saving-multiple-images-in-one-archive)
   - [Checking image size before saving](#checking-image-size-before-saving)
   - [Compressing the archive](#compressing-the-archive)
@@ -41,7 +41,7 @@
 - [8. Automating Image List Discovery](#8-automating-image-list-discovery)
   - [Basic image enumeration](#basic-image-enumeration)
   - [Filtering out intermediate and dangling images](#filtering-out-intermediate-and-dangling-images)
-  - [Getting the image ID and digest alongside the name](#getting-the-image-id-and-digest-alongside-the-name)
+  - [Getting the image ID alongside the name](#getting-the-image-id-alongside-the-name)
   - [Filtering by label](#filtering-by-label)
   - [Filtering by repository prefix](#filtering-by-repository-prefix)
   - [Generating safe filenames from image names](#generating-safe-filenames-from-image-names)
@@ -177,35 +177,35 @@ Or use the `--output` flag:
 podman save --output bareos-director-24.tar docker.io/bareos/bareos-director:24
 ```
 
-### Formats: OCI vs Docker
+### Formats: Docker vs OCI
 
 Podman supports two archive formats:
 
-**OCI archive (default):**
-```bash
-podman save --format oci-archive --output bareos-director-24.tar docker.io/bareos/bareos-director:24
-```
-- Compliant with the OCI Image Spec
-- Portable to any OCI-compliant runtime (Podman, Buildah, containerd, etc.)
-- The recommended format for long-term archival
-
-**Docker archive format:**
+**Docker archive (default):**
 ```bash
 podman save --format docker-archive --output bareos-director-24.tar docker.io/bareos/bareos-director:24
 ```
-- Compatible with Docker's image format
-- Useful if you need to load the image into a Docker daemon
-- Required for some legacy tools that do not understand OCI format
+- This is what `podman save` produces when you do not pass `--format`
+- Supports saving **multiple images in a single archive**
+- Deduplicates layers shared between images (a shared layer is stored once)
+- Reliably preserves the `repository:tag` on `podman load`, so the loaded image keeps its full name
+- Loadable by both Podman and a Docker daemon
 
-For Bareos backup purposes, use `oci-archive`. It is the most portable and future-proof format.
+**OCI archive format:**
+```bash
+podman save --format oci-archive --output bareos-director-24.tar docker.io/bareos/bareos-director:24
+```
+- Compliant with the OCI Image Spec — useful for interchange with the broader OCI ecosystem (Buildah, containerd-based tooling, `skopeo`)
+- **Caveats for backup use:** an oci-archive holds only a **single image**, and the `repository:tag` may not survive a `podman load` — you may have to re-tag the image afterwards with `podman tag <image-id> <name>:<tag>`
+
+For Bareos backup purposes, use `docker-archive` (the default). It is the format this chapter standardizes on: it handles multi-image archives, deduplicates shared layers, and keeps image names intact across a save/load round-trip — which matters because Quadlet references images by name (`Image=docker.io/bareos/bareos-director:24`). Reach for `oci-archive` only when you specifically need OCI-ecosystem interchange.
 
 ### Saving multiple images in one archive
 
-You can save multiple images into a single OCI archive (multi-image OCI archive):
+You can save multiple images into a single archive. This requires the **docker-archive** format (an oci-archive holds only one image), which is the default — so no `--format` flag is needed:
 
 ```bash
 podman save \
-    --format oci-archive \
     --output all-bareos-images.tar \
     docker.io/bareos/bareos-director:24 \
     docker.io/bareos/bareos-storage:24 \
@@ -213,7 +213,7 @@ podman save \
     docker.io/library/mariadb:10.11
 ```
 
-This is efficient in terms of storage when images share common layers — the shared layers appear only once in the archive.
+A docker-archive deduplicates layers, so a layer shared between several of these images is stored only once in the combined archive — making this noticeably more space-efficient than four separate single-image tarballs.
 
 ### Checking image size before saving
 
@@ -229,17 +229,17 @@ Image archives are roughly the same size as the uncompressed image data (the lay
 
 ### Compressing the archive
 
-The tar file from `podman save` already contains gzip-compressed layers, so additional compression yields minimal benefit. Avoid wrapping it in gzip unless disk space is extremely tight:
+The layer blobs inside the archive are already gzip-compressed, so re-compressing the tar gives a smaller return than on uncompressed data. It is not zero, though — the tar wrapper, the manifest, the config JSON, and any uncompressed metadata still compress, so gzipping a docker-archive can shave off a useful percentage. The trade is extra CPU and a `.tar.gz` that you must decompress before `podman load`:
 
 ```bash
-# This provides minimal compression benefit and wastes CPU:
+# Saves some space (mostly on tar/manifest overhead), at a CPU cost:
 podman save docker.io/bareos/bareos-director:24 | gzip > bareos-director-24.tar.gz
 
-# This is usually good enough:
+# Often sufficient — let Bareos handle compression in the backup stream:
 podman save --output bareos-director-24.tar docker.io/bareos/bareos-director:24
 ```
 
-Bareos itself applies compression to backed-up files (configured via `Compression = GZIP` in the FileSet), so the file will be compressed in the backup stream regardless.
+Bareos itself applies compression to backed-up files (configured via `Compression = GZIP` in the FileSet), so the file is compressed in the backup stream regardless. For that reason, leaving the on-disk staging file uncompressed is usually the simpler choice.
 
 ---
 
@@ -306,22 +306,22 @@ The repository prefix (`bareos`, `library`, `mycompany`) distinguishes images fr
 
 ### Encoding the image digest in the filename
 
-An image tag like `24` is a mutable pointer — the same tag can point to different images over time. The image **digest** (a SHA256 hash of the manifest) is immutable and uniquely identifies a specific image version:
+An image tag like `24` is a mutable pointer — the same tag can point to different images over time. The image **ID** (the SHA256 digest of the image's config object, reported as `{{.Id}}`) is immutable and uniquely identifies a specific image version. We use the ID rather than `{{.Digest}}` because `{{.Digest}}` is the *registry manifest* digest, which is empty or different for an image that was loaded from a `podman save` tarball — whereas the ID is stable across a save/load round-trip:
 
 ```bash
-# Get the image digest
-podman inspect --format '{{.Digest}}' docker.io/bareos/bareos-director:24
+# Get the image ID (config digest)
+podman inspect --format '{{.Id}}' docker.io/bareos/bareos-director:24
 # sha256:a3b9c1d2e4f5...
 
-# Use the first 12 characters of the digest in the filename
-DIGEST=$(podman inspect --format '{{.Digest}}' docker.io/bareos/bareos-director:24 | cut -c8-19)
-echo "${DIGEST}"  # a3b9c1d2e4f5 (first 12 chars after "sha256:")
+# Use the first 12 characters of the ID in the filename
+IMAGE_ID=$(podman inspect --format '{{.Id}}' docker.io/bareos/bareos-director:24 | cut -c8-19)
+echo "${IMAGE_ID}"  # a3b9c1d2e4f5 (first 12 chars after "sha256:")
 ```
 
 A filename like `bareos-director-24-YYYYMMDD-a3b9c1d2e4f5.tar` tells you:
 - The image name and tag
 - When it was archived
-- The exact image version (via the digest prefix)
+- The exact image version (via the image-ID prefix)
 
 ### Metadata file
 
@@ -331,7 +331,7 @@ For each archive, write a companion metadata file:
 cat > "bareos-director-24-${DATE}.meta" << EOF
 image_name: docker.io/bareos/bareos-director:24
 image_tag: 24
-image_digest: sha256:a3b9c1d2e4f5...
+image_id: sha256:a3b9c1d2e4f5...
 archive_date: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 archive_host: backup-server.example.com
 bareos_job: backup-container-images
@@ -574,25 +574,31 @@ podman images \
     --format "{{.Repository}}:{{.Tag}}"
 ```
 
-### Getting the image ID and digest alongside the name
+### Getting the image ID alongside the name
 
 ```bash
 podman images \
     --filter "dangling=false" \
-    --format "{{.ID}}\t{{.Repository}}:{{.Tag}}\t{{.Digest}}"
+    --format "{{.ID}}\t{{.Repository}}:{{.Tag}}"
 ```
+
+The 12-character `{{.ID}}` shown here is the short form of the full image ID (`{{.Id}}` in `podman inspect`) — the stable identifier we use for integrity checks later.
 
 ### Filtering by label
 
-If you want only images that have been explicitly tagged for backup, add a `backup=true` label when pulling or building:
+A *tag* is just a name pointing at an image; it is not a label, so `podman image tag` does not let you filter with `--filter label=…`. To filter by label, the label must actually exist on the image — which means baking it in at build time:
+
+```dockerfile
+# In your Containerfile
+LABEL backup=yes
+```
 
 ```bash
-# Tag an image with a backup label
-podman image tag docker.io/bareos/bareos-director:24 bareos-director:backup
-
-# Filter for images with a specific label
+# Now this filter matches images built with that label
 podman images --filter "label=backup=yes" --format "{{.Repository}}:{{.Tag}}"
 ```
+
+If you cannot rebuild the image (e.g. a third-party image), select it by name instead using a `reference` filter (see the next subsection) rather than a label.
 
 ### Filtering by repository prefix
 
@@ -624,7 +630,7 @@ echo "${SAFE_NAME}"  # bareos-bareos-director-24
 
 ## 9. Restoring Images with `podman load`
 
-`podman load` is the inverse of `podman save`. It reads an OCI archive (or Docker archive) and imports the image into the local container storage.
+`podman load` is the inverse of `podman save`. It reads a docker-archive (or OCI archive) and imports the image into the local container storage.
 
 ### Basic syntax
 
@@ -646,7 +652,7 @@ Writing manifest to image destination
 Loaded image: docker.io/bareos/bareos-director:24
 ```
 
-The `Loaded image:` line confirms the full name and tag of the restored image. This name is preserved from the original `podman save` command.
+The `Loaded image:` line confirms the full name and tag of the restored image. Because the archive was written as a docker-archive, the `repository:tag` is preserved from the original `podman save` command — the loaded image is immediately usable by name, with no re-tagging needed. (If you had instead saved with `--format oci-archive`, the name may load as `<none>:<none>`; you would then restore it with `podman tag <image-id> docker.io/bareos/bareos-director:24`.)
 
 ### Loading a multi-image archive
 
@@ -659,17 +665,20 @@ podman load --input all-bareos-images-20260224.tar
 
 ### Verifying the loaded image
 
-After loading, verify the image is present and the digest matches:
+After loading, verify the image is present and its ID matches:
 
 ```bash
 # List images (the newly loaded image should appear)
 podman images
 
-# Check that the digest matches your records
-podman inspect --format '{{.Digest}}' docker.io/bareos/bareos-director:24
+# Check that the image ID matches your records.
+# Use {{.Id}} (the config digest) — it is stable across save/load,
+# unlike {{.Digest}}, which is the registry manifest digest and is
+# empty/different for a loaded archive.
+podman inspect --format '{{.Id}}' docker.io/bareos/bareos-director:24
 
 # Compare with your metadata file
-grep image_digest bareos-director-24-20260224.meta
+grep image_id bareos-director-24-20260224.meta
 ```
 
 ### Loading images as a different user
@@ -839,8 +848,8 @@ status director
 EOF
 
 # Check MariaDB is accepting connections
-sudo -u bareos podman exec bareos-mariadb \
-    mysql -u root --password="${MYSQL_ROOT_PASSWORD}" -e "SHOW DATABASES;"
+sudo -u bareos podman exec bareos-db \
+    mysql -u root --password="${MARIADB_ROOT_PASSWORD}" -e "SHOW DATABASES;"
 ```
 
 ---
@@ -1098,21 +1107,24 @@ ls -Zd /var/tmp/bareos-image-exports
 ```bash
 export XDG_RUNTIME_DIR=/run/user/1001
 
-# Verify the image exists
-sudo -u bareos podman images --filter reference=bareos-director
+# Verify the image exists (reference filter; the trailing tag makes the
+# match exact, so it does not also catch e.g. bareos-director-debug)
+sudo -u bareos podman images --filter "reference=docker.io/bareos/bareos-director:24"
 
-# Get image digest for the metadata file
-DIGEST=$(sudo -u bareos podman inspect \
-    --format '{{.Digest}}' \
+# Get the image ID for the metadata file. Use {{.Id}} (the config digest),
+# not {{.Digest}} (the registry manifest digest) — the ID is stable across
+# a podman save/load round-trip, the manifest digest is not.
+IMAGE_ID=$(sudo -u bareos podman inspect \
+    --format '{{.Id}}' \
     docker.io/bareos/bareos-director:24)
-echo "Digest: ${DIGEST}"
+echo "Image ID: ${IMAGE_ID}"
 
-# Export the image
+# Export the image (docker-archive is the default; it preserves the
+# repository:tag on load, so no --format flag is needed)
 DATE=$(date '+%Y%m%d')
 ARCHIVE="/var/tmp/bareos-image-exports/bareos-director-24-${DATE}.tar"
 
 sudo -u bareos podman save \
-    --format oci-archive \
     --output "${ARCHIVE}" \
     docker.io/bareos/bareos-director:24
 
@@ -1122,7 +1134,7 @@ ls -lh "${ARCHIVE}"
 # Write metadata file
 sudo -u bareos tee "${ARCHIVE%.tar}.meta" > /dev/null << EOF
 image_name: docker.io/bareos/bareos-director:24
-image_digest: ${DIGEST}
+image_id: ${IMAGE_ID}
 archive_date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
 archive_host: $(hostname)
 EOF
@@ -1142,9 +1154,10 @@ FileSet {
   Include {
     Options {
       Signature   = SHA1
-      # Note: GZIP compression provides minimal benefit for OCI archives
-      # because the layers inside are already gzip-compressed.
-      # Use GZIP level 1 (fast) to avoid wasting CPU.
+      # Note: the layer blobs inside the archive are already gzip-compressed,
+      # so GZIP buys less here than on uncompressed data — but it still
+      # compresses the tar wrapper, manifest, and config JSON. GZIP level 1
+      # (fast) is a reasonable trade of CPU for that modest extra saving.
       Compression = GZIP1
     }
 
@@ -1216,8 +1229,8 @@ Save this at `/etc/bareos/scripts/export-images.sh` on the **host** (accessible 
 # =============================================================================
 # /etc/bareos/scripts/export-images.sh
 #
-# Bareos pre-backup hook: export all local Podman container images to OCI
-# archive files in a staging directory for Bareos to back up.
+# Bareos pre-backup hook: export all local Podman container images to
+# docker-archive files in a staging directory for Bareos to back up.
 #
 # This script runs as a ClientRunBeforeJob hook inside the bareos-fd container.
 # It enumerates all non-dangling images in the bareos user's Podman storage
@@ -1251,6 +1264,10 @@ PODMAN="/usr/bin/podman"
 DATE=$(date '+%Y%m%d')
 TIMESTAMP=$(date '+%Y%m%d-%H%M%S')
 EXPORT_TIMEOUT=1800  # 30 minutes per image export
+
+# podman save's stdout is the archive; its progress/errors go to stderr.
+# We capture that stderr to a log file so save failures are not masked.
+LOG_FILE="${LOG_FILE:-/var/tmp/bareos-image-exports/export-${TIMESTAMP}.log}"
 
 # Skip re-exporting images that already have an archive from today
 # Set to "yes" to force re-export of all images
@@ -1372,22 +1389,25 @@ while IFS=' ' read -r IMAGE_ID IMAGE_NAME; do
         continue
     fi
 
-    # Get image digest for metadata
-    DIGEST=$("${PODMAN}" inspect --format '{{.Digest}}' "${IMAGE_ID}" 2>/dev/null || echo "unknown")
+    # Get the full image ID for metadata. We record the ID (the config
+    # digest) rather than {{.Digest}} (the registry manifest digest),
+    # because the ID is stable across a podman save/load round-trip while
+    # the manifest digest is empty/different for a loaded archive.
+    FULL_ID=$("${PODMAN}" inspect --format '{{.Id}}' "${IMAGE_ID}" 2>/dev/null || echo "unknown")
 
-    log "  Archive: ${ARCHIVE}"
-    log "  Digest:  ${DIGEST:0:35}..."
+    log "  Archive:  ${ARCHIVE}"
+    log "  Image ID: ${FULL_ID:0:19}..."
 
-    # Export the image
+    # Export the image (docker-archive is podman save's default format and
+    # preserves repository:tag across load, so no --format flag is needed).
     log "  Running podman save..."
     EXPORT_START=$(date '+%s')
 
+    # Do NOT pipe podman save into a while-loop: a pipe would mask its exit
+    # status. Redirect stderr to the log and test the exit status directly.
     if timeout "${EXPORT_TIMEOUT}" "${PODMAN}" save \
-        --format oci-archive \
         --output "${ARCHIVE}.tmp" \
-        "${IMAGE_NAME}" 2>&1 | while read -r line; do
-            log "    podman: ${line}"
-        done; then
+        "${IMAGE_NAME}" >>"${LOG_FILE:-/dev/stderr}" 2>&1; then
 
         # Verify the archive is non-empty
         if [ ! -s "${ARCHIVE}.tmp" ]; then
@@ -1411,8 +1431,7 @@ while IFS=' ' read -r IMAGE_ID IMAGE_NAME; do
         # Write metadata file
         cat > "${META}" << METAEOF
 image_name: ${IMAGE_NAME}
-image_id: ${IMAGE_ID}
-image_digest: ${DIGEST}
+image_id: ${FULL_ID}
 archive_path: ${ARCHIVE}
 archive_size_human: ${ARCHIVE_SIZE}
 export_date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
@@ -1630,14 +1649,19 @@ Wants=network-online.target
 Image=docker.io/bareos/bareos-client:24
 ContainerName=bareos-fd
 
-# Mount the restore staging directories
-Volume=/var/tmp:/var/tmp:Z
-Volume=/home/bareos/.local/share/containers/storage/volumes:/mnt/volumes:Z
+# Restore target uses the same FD layout as Chapter 6: SELinux relabelling
+# is disabled on this container's mounts instead of per-volume :Z.
+SecurityLabelDisable=true
 
-# Required for rootless Podman socket access
-Volume=/run/user/1001/podman/podman.sock:/run/user/1001/podman/podman.sock:Z
+# Mount the restore staging directories
+Volume=/var/tmp:/var/tmp
+Volume=/home/bareos/.local/share/containers/storage/volumes:/mnt/volumes
+
+# Rootless Podman socket — same path the export/load scripts expect
+Volume=/run/podman/podman.sock:/run/podman/podman.sock
 
 Environment=XDG_RUNTIME_DIR=/run/user/1001
+Environment=CONTAINER_HOST=unix:///run/podman/podman.sock
 
 [Service]
 Restart=always
@@ -1705,28 +1729,31 @@ sudo -u bareos podman load --input "${ARCHIVE}"
 # Copying blob sha256:... done
 # Loaded image: docker.io/bareos/bareos-director:24
 
-# Verify the image is loaded
-sudo -u bareos podman images --filter reference=bareos-director
+# Verify the image is loaded (fully-qualified reference with tag = exact
+# match, so it will not catch similarly-named images)
+sudo -u bareos podman images --filter "reference=docker.io/bareos/bareos-director:24"
 ```
 
-### Step 6: Verify the digest matches the metadata
+### Step 6: Verify the image ID matches the metadata
 
 ```bash
-# Get the digest of the loaded image
-LOADED_DIGEST=$(sudo -u bareos podman inspect \
-    --format '{{.Digest}}' \
+# Get the ID of the loaded image. We compare {{.Id}} (the config digest),
+# not {{.Digest}} (the registry manifest digest) — the ID is stable across
+# a podman save/load round-trip, so it is the reliable integrity check.
+LOADED_ID=$(sudo -u bareos podman inspect \
+    --format '{{.Id}}' \
     docker.io/bareos/bareos-director:24)
 
-# Get the expected digest from metadata
-EXPECTED_DIGEST=$(grep image_digest "${ARCHIVE%.tar}.meta" | awk '{print $2}')
+# Get the expected ID from metadata
+EXPECTED_ID=$(grep image_id "${ARCHIVE%.tar}.meta" | awk '{print $2}')
 
-echo "Loaded digest:   ${LOADED_DIGEST}"
-echo "Expected digest: ${EXPECTED_DIGEST}"
+echo "Loaded ID:   ${LOADED_ID}"
+echo "Expected ID: ${EXPECTED_ID}"
 
-if [ "${LOADED_DIGEST}" = "${EXPECTED_DIGEST}" ]; then
-    echo "DIGEST MATCH: Image integrity verified"
+if [ "${LOADED_ID}" = "${EXPECTED_ID}" ]; then
+    echo "ID MATCH: Image integrity verified"
 else
-    echo "WARNING: Digest mismatch — image may have been corrupted during backup/restore"
+    echo "WARNING: Image ID mismatch — image may have been corrupted during backup/restore"
 fi
 ```
 
@@ -1763,16 +1790,15 @@ sudo -u bareos podman ps --filter name=bareos-director \
 ### Step 9: Confirm the image matches the backup
 
 ```bash
-# Get the digest of the running container's image
-RUNNING_DIGEST=$(sudo -u bareos podman inspect bareos-director \
-    --format '{{.Image}}' | \
-    xargs sudo -u bareos podman inspect --format '{{.Digest}}')
+# Get the ID of the running container's image
+RUNNING_ID=$(sudo -u bareos podman inspect bareos-director \
+    --format '{{.Image}}')
 
-echo "Running container image digest: ${RUNNING_DIGEST}"
-echo "Expected (from backup metadata): ${EXPECTED_DIGEST}"
+echo "Running container image ID: ${RUNNING_ID}"
+echo "Expected (from backup metadata): ${EXPECTED_ID}"
 ```
 
-The matching digests confirm you are running the exact image that was archived in the backup — bit-for-bit identical to the original.
+The matching image IDs confirm you are running the exact image that was archived in the backup — bit-for-bit identical to the original.
 
 ---
 
@@ -1788,17 +1814,17 @@ This chapter gave you a complete, practical understanding of how to include cont
 
 - **`podman save` vs `podman export`**: Always use `podman save` for backup. It preserves image layers, tags, and metadata. `podman export` produces a flat tar of a container's runtime filesystem — useful for file extraction, not for backup archival.
 
-- **OCI archive format**: Use `--format oci-archive` with `podman save` for maximum portability and long-term archival. The resulting tar file can be loaded on any OCI-compatible runtime.
+- **Archive format**: Standardize on **docker-archive** — the default of `podman save`. It supports multi-image archives, deduplicates shared layers, and preserves `repository:tag` across `podman load`, so Quadlet can reference images by name after a restore. Reach for `--format oci-archive` only for OCI-ecosystem interchange (single image only, may need a `podman tag` after load).
 
-- **Naming strategy**: Encode the image name, tag, date, and digest in archive filenames. Write companion `.meta` files to make archives self-documenting.
+- **Naming strategy**: Encode the image name, tag, date, and image-ID prefix in archive filenames. Write companion `.meta` files to make archives self-documenting.
 
-- **The `export-images.sh` script**: Enumerates all local images with `podman images --filter "dangling=false"`, generates safe filenames, exports each image with `podman save --format oci-archive`, writes metadata, and skips images already exported today.
+- **The `export-images.sh` script**: Enumerates all local images with `podman images --filter "dangling=false"`, generates safe filenames, exports each image with `podman save` (docker-archive default), writes metadata, and skips images already exported today.
 
 - **SELinux**: The export directory at `/var/tmp/bareos-image-exports/` inherits the `tmp_t` type from `/var/tmp/`. Use the `:Z` mount option for bind mounts in Quadlet container files.
 
 - **Restore workflow**: On a fresh host, create the `bareos` user (UID 1001) with correct sub-UID ranges, enable linger, restore the archive with `bconsole`, load it with `podman load`, restore Quadlet configs, run `systemctl --user daemon-reload`, and start the service. Podman will use the locally loaded image without a registry pull.
 
-- **Digest verification**: After loading a restored image, verify its SHA256 digest matches the metadata from the backup. This confirms image integrity through the backup/restore cycle.
+- **Integrity verification**: After loading a restored image, verify its image ID (`{{.Id}}`, the config digest) matches the metadata from the backup. The ID is stable across a save/load round-trip — unlike `{{.Digest}}`, the registry manifest digest, which is empty/different for a loaded archive.
 
 - **Complete backup strategy**: Combining the image archive (Chapter 11) + database dumps (Chapter 10) + Quadlet configuration files gives you three components of a complete container backup: the software, the data, and the runtime definition.
 

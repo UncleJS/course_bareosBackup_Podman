@@ -71,15 +71,15 @@ Restore Data Flow
 
 Director
   │
-  ├── Query Catalog: "Which jobs contain /home/alice/documents/?"
+  ├── Query Catalog: "Which jobs contain /hostfs/home/alice/documents/?"
   ├── Query Catalog: "Which Volumes contain those jobs?"
   ├── Instruct Storage Daemon: "Read from Volume Inc-0042, seek to offset 1,234,567"
   │
-  └── Instruct File Daemon: "Receive data and write to /tmp/bareos-restores/home/alice/"
+  └── Instruct File Daemon: "Receive data and write to /tmp/bareos-restores/hostfs/home/alice/"
 
 Storage Daemon (bareos-storage container)
   │
-  ├── Open Volume file: /srv/bareos-storage/volumes/Inc-0042
+  ├── Open Volume file: /var/lib/bareos/storage/Inc-0042 (host: /srv/bareos-storage/volumes/Inc-0042)
   ├── Seek to offset 1,234,567 (catalog provides exact position)
   └── Stream data directly to File Daemon
 
@@ -149,6 +149,8 @@ Defined Clients:
      1: bareos-fd
 Select the Client (1-1): 1
 ```
+
+> **Caveat — menu numbering is not guaranteed.** The numbers in this menu can differ between Bareos versions and as new selection modes are added. Do not hardcode them in scripts based on this walkthrough — read the live menu each time and match by the description text ("Select the most recent backup for a client"), not by a memorised number. The scripted labs later in this chapter avoid the menu entirely by using the non-interactive `restore ... select current all done` form.
 
 Bareos then builds a virtual filesystem representing the most recent state of all backed-up files:
 
@@ -249,9 +251,11 @@ Inside the `restore` file selection shell, use these commands to select files:
 
 ### Selecting by Directory (most common)
 
+Because the FD catalogs host files under the `/hostfs/` prefix (see Chapter 6), the virtual filesystem tree mirrors that prefix — the host's `/home/alice` appears as `/hostfs/home/alice`.
+
 ```bash
 # Navigate to the directory you want to restore
-$ cd /home/alice
+$ cd /hostfs/home/alice
 
 # Mark all files in this directory and all subdirectories
 $ mark *
@@ -270,7 +274,7 @@ $ done
 ### Selecting Specific Files
 
 ```bash
-$ cd /etc
+$ cd /hostfs/etc
 $ ls
 # Shows all files in /etc as of the backed-up state
 
@@ -280,9 +284,9 @@ $ mark shadow
 $ mark sudoers
 
 $ lsmark
-/etc/passwd
-/etc/shadow
-/etc/sudoers
+/hostfs/etc/passwd
+/hostfs/etc/shadow
+/hostfs/etc/sudoers
 ```
 
 ### Find Files by Pattern
@@ -300,7 +304,7 @@ $ mark *.conf
 
 ```bash
 # Mark everything (full restore)
-$ cd /
+$ cd /hostfs
 $ mark *
 $ count
 89,412 files marked
@@ -333,7 +337,7 @@ JobName:    RestoreFiles
 Bootstrap:  /var/lib/bareos/bareos.restore.1.bsr
 Where:      /tmp/bareos-restores     ← THIS is the restore destination
 Replace:    Always
-FileSet:    LinuxAll
+FileSet:    RHEL10-Standard
 Backup Client:  bareos-fd
 Restore Client: bareos-fd
 Storage:    File
@@ -372,10 +376,12 @@ Please enter the full path prefix for restore (/ for none): /mnt/restore-test
 
 ### Restore Options Explained
 
-**Where**: The path prefix. Bareos strips the original path and prepends this:
-- `Where = /tmp/bareos-restores` → `/etc/passwd` is restored to `/tmp/bareos-restores/etc/passwd`
-- `Where = /` → Restore to original path (live restore — use with extreme caution)
-- `Where = /mnt/restore-test` → Restore to an alternate mount
+**Where**: The path prefix. Bareos prepends this to the path **as stored in the catalog**. Because the FD catalogs host files under `/hostfs/...`, that prefix is part of the stored path and is recreated under `Where`:
+- `Where = /tmp/bareos-restores` → catalog path `/hostfs/etc/passwd` is restored to `/tmp/bareos-restores/hostfs/etc/passwd`
+- `Where = /` → Restore under `/hostfs/...` (i.e. into the FD container's read-only host view — effectively a no-op for the host; for a true live restore you instead use **File Relocation** to strip the `/hostfs` prefix). Use with extreme caution.
+- `Where = /mnt/restore-test` → catalog path `/hostfs/etc/passwd` is restored to `/mnt/restore-test/hostfs/etc/passwd`
+
+> **Note:** Every restored tree therefore contains an extra `hostfs/` level. When verifying restored files, look under `<Where>/hostfs/...`, not `<Where>/...`. To drop the `/hostfs` prefix on restore, use the **File Relocation** wizard option (parameter 10) with a regex such as `!^/hostfs!!`.
 
 **Replace**: What to do if the file already exists at the destination:
 - `Always` — Always overwrite (default for recovery situations)
@@ -407,10 +413,10 @@ Enter filename (no path): passwd
 # Select the JobId containing the version you want
 Enter the JobId(s), comma separated: 1
 
-$ find /etc/passwd
-/etc/passwd
+$ find /hostfs/etc/passwd
+/hostfs/etc/passwd
 
-$ mark /etc/passwd
+$ mark /hostfs/etc/passwd
 1 file marked.
 
 $ done
@@ -429,7 +435,7 @@ Enter date as YYYY-MM-DD HH:MM:SS: 2026-02-17 23:59:59
 # Bareos selects the most recent backup BEFORE the specified date
 # The virtual filesystem shows the state of files at that point in time
 
-$ cd /home/alice/documents
+$ cd /hostfs/home/alice/documents
 $ ls
 # Shows the directory as it existed on 2026-02-17
 
@@ -446,10 +452,10 @@ $ done
 When you select "most recent backup" and the most recent backup is an Incremental, Bareos automatically walks the backup chain:
 
 ```
-Full backup (Job 1, Sunday):    /home/alice/ — 1000 files
-Incremental (Job 2, Monday):    /home/alice/doc1.txt changed
-Incremental (Job 3, Tuesday):   /home/alice/doc2.txt changed
-Incremental (Job 4, Wednesday): /home/alice/doc3.txt changed
+Full backup (Job 1, Sunday):    /hostfs/home/alice/ — 1000 files
+Incremental (Job 2, Monday):    /hostfs/home/alice/doc1.txt changed
+Incremental (Job 3, Tuesday):   /hostfs/home/alice/doc2.txt changed
+Incremental (Job 4, Wednesday): /hostfs/home/alice/doc3.txt changed
 
 Restore as of Wednesday = Job1 (most files) + Job2 (doc1.txt) + Job3 (doc2.txt) + Job4 (doc3.txt)
 ```
@@ -480,7 +486,7 @@ Job {
   Type = Restore
   Client = bareos-fd
   Storage = File
-  FileSet = "LinuxAll"    # not actually used in restore — the bootstrap drives it
+  FileSet = "RHEL10-Standard"    # not actually used in restore — the bootstrap drives it
   Pool = Incremental      # not used; volumes are determined by bootstrap
   Messages = Standard
   Where = /tmp/bareos-restores    # default restore path
@@ -525,10 +531,11 @@ Select Restore Client: 2
 ### Non-Interactive (Scripted)
 
 ```
-*restore client=bareos-fd restoreclient=new-server-fd
-         where=/data/restored
-         select all done yes
+*restore client=bareos-fd restoreclient=new-server-fd \
+         select current all done where=/data/restored yes
 ```
+
+The `select current all done` clause is the non-interactive equivalent of choosing "most recent backup for this client" and marking everything — it never relies on menu numbers, so it is safe to script. Add `file=/hostfs/...` to restrict the marked set to a single path or subtree.
 
 ---
 
@@ -546,14 +553,15 @@ find /etc -type f | wc -l
 # Expected: e.g., 1,547
 
 # Compare restored directory file count
-find /tmp/bareos-restores/etc -type f | wc -l
+# (note the extra /hostfs/ level — the catalog path was /hostfs/etc/...)
+find /tmp/bareos-restores/hostfs/etc -type f | wc -l
 # Expected: same as source
 
 # Compare total sizes
 du -sh /etc
 # Expected: e.g., 45M
 
-du -sh /tmp/bareos-restores/etc
+du -sh /tmp/bareos-restores/hostfs/etc
 # Expected: approximately same (minor differences acceptable for /proc-derived files)
 ```
 
@@ -564,8 +572,9 @@ du -sh /tmp/bareos-restores/etc
 find /home/alice/documents -name "*.docx" -exec md5sum {} \; > /tmp/source-checksums.txt
 
 # Generate checksums of same files restored
-find /tmp/bareos-restores/home/alice/documents -name "*.docx" -exec md5sum {} \; \
-  | sed 's|/tmp/bareos-restores||' > /tmp/restored-checksums.txt
+# (strip both the Where prefix and the /hostfs level so paths line up with the source)
+find /tmp/bareos-restores/hostfs/home/alice/documents -name "*.docx" -exec md5sum {} \; \
+  | sed 's|/tmp/bareos-restores/hostfs||' > /tmp/restored-checksums.txt
 
 # Compare
 diff /tmp/source-checksums.txt /tmp/restored-checksums.txt
@@ -619,25 +628,30 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
     -n bareos \
     -u bareos \
     -p "CHANGEME_BAREOS_DB_PASSWORD" \
+    -h bareos-db \
     -m \
     -s \
     FileStorage
 ```
 
 `bscan` parameters:
-- `-c` — Config file path
+- `-c` — Config file path (`/etc/bareos` inside the container)
 - `-d 10` — Debug level (0-200; 10 gives informative output)
-- `-n` — Database name
-- `-u` — Database user
-- `-p` — Database password
+- `-n` — Database name (`bareos`)
+- `-u` — Database user (`bareos`)
+- `-p` — Database password — must match `MARIADB_PASSWORD` in `db.env`
+- `-h` — Database host (`bareos-db`, the catalog container)
 - `-m` — Update volume dates in Catalog
 - `-s` — Update Volume record in Catalog
+- `FileStorage` — the **device name** (as defined in the SD config), not a filesystem path
 
 This can take hours for large Volumes (it reads every byte) but reconstructs a complete Catalog. After it finishes, normal `restore` operations work again.
 
 ### bextract: Extracting Files Without the Catalog
 
 `bextract` reads Volume files and extracts data without needing the Catalog at all:
+
+All low-level SD tools run **inside the `bareos-storage` container**, take `-c /etc/bareos`, and use the **device name** `FileStorage` (defined in the SD config) as the positional device argument — never a filesystem path. The output directory is a path inside the container; mount or copy it out afterwards.
 
 ```bash
 # Extract all files from a Volume to a directory
@@ -646,15 +660,18 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   bextract \
     -c /etc/bareos \
     -V Full-0001 \
-    /srv/bareos-storage/volumes \
+    FileStorage \
     /tmp/emergency-restore
 
 # Extract only specific files using a bootstrap
-bextract \
-  -c /etc/bareos \
-  -b /var/lib/bareos/bareos-fd.bsr \
-  /srv/bareos-storage/volumes \
-  /tmp/emergency-restore
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman exec bareos-storage \
+  bextract \
+    -c /etc/bareos \
+    -b /tmp/restore.bsr \
+    -V Full-0001 \
+    FileStorage \
+    /tmp/emergency-restore
 ```
 
 `bextract` is the "break glass in emergency" tool. It works even with no Catalog, no bootstrap file — just the raw Volume files on disk.
@@ -669,7 +686,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   bls \
     -c /etc/bareos \
     -V Full-0001 \
-    /srv/bareos-storage/volumes
+    FileStorage
 
 # Output:
 # bls: butil.c:304 Using Device "FileStorage" to read.
@@ -699,9 +716,9 @@ This is test file 2 for restore lab
 Contains: important data
 EOF
 
-# Step 2: Modify the FileSet to include /tmp/restore-lab-source
-# (For this lab only — add to Include block)
-# Add: File = /tmp/restore-lab-source
+# Step 2: Modify the FileSet to include the host path via /hostfs
+# (For this lab only — add to the RHEL10-Standard Include block)
+# Add: File = /hostfs/tmp/restore-lab-source
 
 # Step 3: Run a Full backup including the test data
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'EOF'
@@ -720,20 +737,13 @@ sudo rm -rf /tmp/restore-lab-source
 echo "Source data deleted. Starting restore..."
 ```
 
-**Restore Option A — bconsole wizard:**
+**Restore Option A — bconsole (non-interactive):**
+
+This uses the scripted `restore` form (see Section 9) instead of piping literal menu numbers, so it does not break if the menu numbering changes between versions. `select current all done` selects the most recent backup for the client and marks every file; the `file=` argument restricts the marked set to one subtree.
 
 ```bash
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'EOF'
-restore
-5
-1
-cd /tmp/restore-lab-source
-mark *
-done
-mod
-9
-/tmp/restore-lab-destination
-yes
+restore client=bareos-fd file=/hostfs/tmp/restore-lab-source select current all done where=/tmp/restore-lab-destination yes
 wait
 messages
 quit
@@ -744,14 +754,15 @@ EOF
 
 1. Open `http://localhost:9100/bareos-webui` → **Restore**
 2. Select client `bareos-fd`, choose the most recent Full backup
-3. Navigate to `/tmp/restore-lab-source` and tick the directory checkbox
+3. Navigate to `/hostfs/tmp/restore-lab-source` and tick the directory checkbox
 4. Click **Restore**, set Restore Location to `/tmp/restore-lab-destination`, Replace = `never`
 5. Click **Run Restore** and wait for the job to complete in **Jobs → All Jobs**
 
 ```bash
-# Step 7: Verify restoration (same regardless of which method you used)
-ls -la /tmp/restore-lab-destination/tmp/restore-lab-source/
-cat /tmp/restore-lab-destination/tmp/restore-lab-source/testfile1.txt
+# Step 6: Verify restoration (same regardless of which method you used)
+# Note the extra /hostfs/ level in the restored tree.
+ls -la /tmp/restore-lab-destination/hostfs/tmp/restore-lab-source/
+cat /tmp/restore-lab-destination/hostfs/tmp/restore-lab-source/testfile1.txt
 
 echo ""
 echo "Restore lab complete!"
@@ -772,6 +783,7 @@ mkdir -p /tmp/selective-restore-test
 for i in $(seq 1 10); do
   echo "Content of file $i" > /tmp/selective-restore-test/file${i}.txt
 done
+# Ensure /hostfs/tmp/selective-restore-test is in the RHEL10-Standard FileSet, then:
 
 # Run a backup
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'EOF'
@@ -781,26 +793,13 @@ quit
 EOF
 ```
 
-**Restore Option A — bconsole wizard (restore only file5.txt):**
+**Restore Option A — bconsole (non-interactive, restore only file5.txt):**
+
+The scripted `restore` form marks a single file with `file=` pointing at the catalog path (`/hostfs/...`):
 
 ```bash
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'BEOF'
-restore
-5
-1
-
-cd /tmp/selective-restore-test
-ls
-
-mark file5.txt
-lsmark
-
-done
-mod
-9
-/tmp/selective-destination
-
-yes
+restore client=bareos-fd file=/hostfs/tmp/selective-restore-test/file5.txt select current all done where=/tmp/selective-destination yes
 wait
 messages
 quit
@@ -810,13 +809,13 @@ BEOF
 **Restore Option B — WebUI browser:**
 
 1. Open **Restore** → select client → select the Full backup job
-2. Navigate to `/tmp/selective-restore-test`
+2. Navigate to `/hostfs/tmp/selective-restore-test`
 3. Tick **only** `file5.txt` — leave all other files unticked
 4. Click **Restore**, set Restore Location to `/tmp/selective-destination`, Replace = `never`, click **Run Restore**
 
 ```bash
-# Verify: only file5.txt should be present
-ls -la /tmp/selective-destination/tmp/selective-restore-test/
+# Verify: only file5.txt should be present (note the /hostfs/ level)
+ls -la /tmp/selective-destination/hostfs/tmp/selective-restore-test/
 # Expected: only file5.txt
 
 # Cleanup
@@ -831,27 +830,11 @@ rm -rf /tmp/selective-restore-test /tmp/selective-destination
 
 This lab demonstrates recovering `/etc/hosts` to a test directory — safe because it does not overwrite the live file.
 
-**Restore Option A — bconsole wizard:**
+**Restore Option A — bconsole (non-interactive):**
 
 ```bash
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'BEOF'
-restore
-5
-1
-
-cd /etc
-ls hosts
-
-mark hosts
-lsmark
-# Shows: /etc/hosts
-
-done
-mod
-9
-/tmp/etc-recovery-test
-
-yes
+restore client=bareos-fd file=/hostfs/etc/hosts select current all done where=/tmp/etc-recovery-test yes
 wait
 messages
 quit
@@ -861,17 +844,17 @@ BEOF
 **Restore Option B — WebUI browser:**
 
 1. Open **Restore** → select client → select the most recent Full backup
-2. Navigate to `/etc` in the file tree
+2. Navigate to `/hostfs/etc` in the file tree
 3. Tick `hosts`
 4. Click **Restore**, set Restore Location to `/tmp/etc-recovery-test`, Replace = `never`, click **Run Restore**
 
 ```bash
-# Verify the file was restored (same for both methods)
-ls -la /tmp/etc-recovery-test/etc/hosts
-cat /tmp/etc-recovery-test/etc/hosts
+# Verify the file was restored (same for both methods; note the /hostfs/ level)
+ls -la /tmp/etc-recovery-test/hostfs/etc/hosts
+cat /tmp/etc-recovery-test/hostfs/etc/hosts
 
 # Compare with the live file
-diff /etc/hosts /tmp/etc-recovery-test/etc/hosts
+diff /etc/hosts /tmp/etc-recovery-test/hostfs/etc/hosts
 # Expected: no differences (assuming hosts hasn't changed since backup)
 
 echo "Restore to alternate path: SUCCESS"

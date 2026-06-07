@@ -38,7 +38,7 @@ Running Bareos inside Podman containers — rather than as native RPM-installed 
 - Protecting files, Podman volumes, database containers, and container images
 - TLS encryption between all Bareos daemons
 - Advanced scheduling, pool management, and retention policies
-- Monitoring, alerting, and disaster recovery (including the Bareos WebUI browser interface, deployed in Chapter 17)
+- Monitoring, alerting, and disaster recovery (including the Bareos WebUI browser interface, deployed in Chapter 6 and covered in depth in Chapter 17)
 - Performance tuning for large environments
 - Comprehensive troubleshooting with SELinux-aware diagnosis
 
@@ -190,17 +190,17 @@ Named Podman volume data is stored at:
 │  ┌──────────────────────────────────────────────┐      │
 │  │  bareos user namespace (rootless Podman)     │      │
 │  │                                              │      │
-│  │  ┌──────────────┐    ┌──────────────┐        │      │
-│  │  │ bareos-dir   │    │  bareos-db   │        │      │
-│  │  │ Director     │◄──►│  MariaDB     │        │      │
-│  │  │ :9101        │    │  :3306       │        │      │
-│  │  └──────┬───────┘    └──────────────┘        │      │
-│  │         │                                    │      │
-│  │  ┌──────▼───────┐    ┌──────────────┐        │      │
-│  │  │ bareos-sd    │    │  bareos-fd   │        │      │
-│  │  │ Storage      │    │  File Daemon │        │      │
-│  │  │ :9103        │    │  :9102       │        │      │
-│  │  └──────────────┘    └──────────────┘        │      │
+│  │  ┌───────────────┐   ┌──────────────┐        │      │
+│  │  │ bareos-director│   │  bareos-db   │        │      │
+│  │  │ Director       │◄─►│  MariaDB     │        │      │
+│  │  │ :9101          │   │  :3306       │        │      │
+│  │  └──────┬────────┘    └──────────────┘        │      │
+│  │         │                                     │      │
+│  │  ┌──────▼────────┐    ┌──────────────┐        │      │
+│  │  │ bareos-storage│    │  bareos-fd   │        │      │
+│  │  │ Storage        │   │  File Daemon │        │      │
+│  │  │ :9103          │   │  :9102       │        │      │
+│  │  └───────────────┘    └──────────────┘        │      │
 │  └──────────────────────────────────────────────┘      │
 │                                                         │
 │  /srv/bareos-storage/volumes  (backup data)             │
@@ -279,7 +279,7 @@ chmod 600 /home/bareos/.config/bareos/bareos.env
 | 3 | RHEL 10 Prerequisites and Setup | bareos user creation, sub-UIDs, SELinux contexts, firewalld rules, storage partitioning, NTP | Beginner |
 | 4 | Podman Primer for Backup Engineers | Rootless vs rootful, namespaces, volumes, networks, pasta, `podman run`, `podman exec`, `podman logs` | Beginner |
 | 5 | Bareos Architecture Deep Dive | Director, Storage Daemon, File Daemon, Catalog, Console; resource types; job lifecycle; data flow | Intermediate |
-| 6 | Running Bareos in Podman Containers | Quadlet `.container` files, MariaDB setup, database initialization, env files, named volumes, service dependencies | Intermediate |
+| 6 | Running Bareos in Podman Containers | Quadlet `.container` files, MariaDB setup, database initialization, env files, named volumes, service dependencies, Bareos WebUI deployment | Intermediate |
 | 7 | Your First Backup Job | FileSet, Schedule, Pool, Job resources; running a Full backup; reading job logs; verifying in catalog | Beginner |
 | 8 | Restoring Files and Directories | `restore` command in bconsole, restore wizard, `where` parameter, replace modes, restoring to alternate client | Beginner |
 | 9 | Backing Up Podman Volumes | Volume export patterns, `podman volume export`, bind-mounting volumes into FD, catalog tracking, restore strategy | Intermediate |
@@ -290,7 +290,7 @@ chmod 600 /home/bareos/.config/bareos/bareos.env
 | 14 | Backing Up Database Containers | MariaDB `mysqldump` in pre-job hooks, PostgreSQL `pg_dump`, MongoDB `mongodump`, verifying dump integrity | Advanced |
 | 15 | TLS Encryption and Certificates | Bareos TLS architecture, generating a CA + daemon certificates with `openssl`, configuring TLS in Director/SD/FD, verifying TLS | Advanced |
 | 16 | Advanced Schedules and Pools | Full/Differential/Incremental schedule design, pool definitions, volume retention, recycling, pool-per-client patterns | Advanced |
-| 17 | Monitoring and Alerting | `mail` command in Job resources, Bareos WebUI setup, Prometheus exporter, Grafana dashboard, failure alerting | Intermediate |
+| 17 | Monitoring and Alerting | `mail` command in Job resources, Bareos WebUI dashboards, Prometheus exporter, Grafana dashboard, failure alerting | Intermediate |
 | 18 | Disaster Recovery | Recovery scenarios (host failure, catalog loss, volume corruption), bootstrap files, bare-metal restore procedure, testing DR | Advanced |
 | 19 | Performance Tuning | Parallel jobs, spooling configuration, catalog query optimization, network bandwidth tuning, compression settings | Advanced |
 | 20 | Troubleshooting Guide | Job log analysis, daemon logs, SELinux AVC diagnosis, Quadlet failures, dbcheck, authorization errors, volume problems | All levels |
@@ -315,21 +315,21 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bash
 
 ```bash
 # Check status of all Bareos services
-systemctl --user status bareos-{dir,sd,fd,db}
+systemctl --user status bareos-{director,storage,fd,db}
 
 # Start all services
-systemctl --user start bareos-db bareos-dir bareos-sd bareos-fd
+systemctl --user start bareos-db bareos-director bareos-storage bareos-fd
 
 # Stop all services (reverse order)
-systemctl --user stop bareos-fd bareos-sd bareos-dir bareos-db
+systemctl --user stop bareos-fd bareos-storage bareos-director bareos-db
 
 # Restart a single service
-systemctl --user restart bareos-dir
+systemctl --user restart bareos-director
 
-# Enable a service to start at boot (linger must be enabled)
-systemctl --user enable bareos-dir
-
-# Reload Quadlet after editing .container files
+# Boot-start is NOT enabled with `systemctl --user enable` — Quadlet-generated
+# units cannot be enabled that way. It comes from the `[Install]` section
+# (WantedBy=default.target) inside each .container file. After editing a
+# .container file, reload Quadlet:
 systemctl --user daemon-reload
 
 # List all Bareos-related units
@@ -346,25 +346,25 @@ podman ps
 podman ps --all
 
 # View container logs
-podman logs bareos-dir
-podman logs -f bareos-dir          # Follow in real time
+podman logs bareos-director
+podman logs -f bareos-director     # Follow in real time
 
 # Execute a command inside a container
-podman exec bareos-dir bareos-dir -t   # Test Director config
-podman exec -it bareos-dir bash        # Interactive shell
+podman exec bareos-director bareos-dir -t   # Test Director config
+podman exec -it bareos-director bash        # Interactive shell
 
 # Check published ports
 podman port bareos-fd
 
 # Inspect a named volume
-podman volume inspect bareos-dir-config
+podman volume inspect bareos-fd-config
 
 # List all volumes
 podman volume ls
 
 # Check container networks
 podman network ls
-podman network inspect bareos-net
+podman network inspect bareos
 
 # Pull the latest Bareos images
 podman pull docker.io/bareos/bareos-director:24
@@ -377,15 +377,15 @@ podman pull docker.io/library/mariadb:10.11
 
 ```bash
 # Open bconsole
-podman exec -it bareos-dir bconsole
+podman exec -it bareos-director bconsole
 ```
 
 Inside bconsole:
 
 ```
 # === Job Operations ===
-*run job=BackupClient1 level=Full yes          # Run a Full backup immediately
-*run job=BackupClient1 level=Incremental yes   # Run Incremental
+*run job=BackupLocalHost level=Full yes        # Run a Full backup immediately
+*run job=BackupLocalHost level=Incremental yes # Run Incremental
 *cancel jobid=42                               # Cancel a running job
 *wait jobid=42                                 # Wait for a job to complete
 
@@ -396,7 +396,7 @@ Inside bconsole:
 *status all                                    # All daemons
 
 # === Catalog Queries ===
-*list jobs last=10                             # Last 10 jobs
+*list jobs limit=10                            # Last 10 jobs
 *list jobs jobstatus=E                         # Failed jobs
 *list jobs jobstatus=R                         # Running jobs
 *list joblog jobid=42                          # Full log for job 42
@@ -406,22 +406,22 @@ Inside bconsole:
 *list files jobid=42                           # Files in a job
 
 # === Configuration ===
-*show job=BackupClient1                        # Show job config
+*show job=BackupLocalHost                      # Show job config
 *show client=bareos-fd                         # Show client config
-*show storage=FileStorage                      # Show storage config
-*show fileset=LinuxAll                         # Show fileset config
+*show storage=File                             # Show storage config
+*show fileset=RHEL10-Standard                  # Show fileset config
 
 # === Volume Management ===
-*label storage=FileStorage volume=Vol-0001 pool=Full  # Label new volume
-*relabel storage=FileStorage oldvolume=V1 volume=V1   # Relabel existing
-*truncate storage=FileStorage volume=Vol-0001          # Truncate volume
+*label storage=File volume=Vol-0001 pool=Full          # Label new volume
+*relabel storage=File oldvolume=V1 volume=V1           # Relabel existing
+*truncate storage=File volume=Vol-0001                 # Truncate volume
 *update volume=Vol-0001 volstatus=Purged               # Update volume status
-*mount storage=FileStorage                             # Mount storage
-*unmount storage=FileStorage                           # Unmount storage
+*mount storage=File                                    # Mount storage
+*unmount storage=File                                  # Unmount storage
 
 # === Restore ===
 *restore                                       # Interactive restore wizard
-*estimate job=BackupClient1 level=Full listing # Dry-run estimate
+*estimate job=BackupLocalHost level=Full listing # Dry-run estimate
 
 # === Maintenance ===
 *messages                                      # Show pending messages
@@ -434,17 +434,17 @@ Inside bconsole:
 
 ```bash
 # Real-time Director log
-journalctl --user -u bareos-dir -f
+journalctl --user -u bareos-director -f
 
 # Last 100 lines of Storage Daemon log
-journalctl --user -u bareos-sd -n 100 --no-pager
+journalctl --user -u bareos-storage -n 100 --no-pager
 
 # All Bareos daemons since a timestamp
 journalctl --user -u 'bareos-*' --since "2026-02-24 08:00"
 
 # Show logs for a specific boot
-journalctl --user -u bareos-dir -b 0          # Current boot
-journalctl --user -u bareos-dir -b -1         # Previous boot
+journalctl --user -u bareos-director -b 0     # Current boot
+journalctl --user -u bareos-director -b -1    # Previous boot
 ```
 
 ### SELinux Diagnostics
@@ -530,7 +530,7 @@ Running Podman containers as a non-root user. Container processes are mapped to 
 A systemd integration layer for Podman, introduced in Podman 4.4. Quadlet reads `.container`, `.network`, and `.volume` files from standard systemd generator directories and translates them into systemd unit files at `daemon-reload` time. This is the preferred way to manage persistent Podman containers as system services.
 
 **Named Volume**  
-A Podman-managed storage volume identified by a name (e.g., `bareos-dir-config`). Podman stores named volume data at `~/.local/share/containers/storage/volumes/<name>/_data/` for rootless containers. Named volumes survive container removal and are the correct way to persist configuration and data.
+A Podman-managed storage volume identified by a name (e.g., `bareos-fd-config`). Podman stores named volume data at `~/.local/share/containers/storage/volumes/<name>/_data/` for rootless containers. Named volumes survive container removal and are the correct way to persist configuration and data.
 
 **sub-UID / sub-GID**  
 Ranges of host UIDs and GIDs assigned to a regular user, used by rootless Podman to create user namespaces. A container running as UID 0 inside the namespace appears as the owning user (UID 1001 for `bareos`) on the host. Configured in `/etc/subuid` and `/etc/subgid`.
@@ -547,7 +547,7 @@ An environment variable pointing to the user's runtime directory, typically `/ru
 ### SELinux Terms
 
 **SELinux Context (Label)**  
-A metadata tag attached to every file, process, and network port, consisting of `user:role:type:level`. The `type` component (e.g., `container_file_t`, `bareos_store_t`) is what most SELinux policy rules act on.
+A metadata tag attached to every file, process, and network port, consisting of `user:role:type:level`. The `type` component (e.g., `container_file_t`, `container_t`) is what most SELinux policy rules act on.
 
 **AVC Denial**  
 An Access Vector Cache denial — SELinux's record of a blocked operation. Logged to the audit log at `/var/log/audit/audit.log`. Use `ausearch -m avc` to find them and `audit2why` to interpret them.

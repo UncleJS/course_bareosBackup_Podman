@@ -284,19 +284,19 @@ For Bareos, the Director, Storage Daemon, and Catalog database containers must c
 
 ```bash
 # Create a named network for the Bareos stack
-podman network create bareos-net
+podman network create bareos
 
 # Containers on the same named network can reach each other by container name
-podman run -d --network bareos-net --name bareos-db mariadb:10.11
-podman run -d --network bareos-net --name bareos-dir \
+podman run -d --network bareos --name bareos-db docker.io/library/mariadb:10.11
+podman run -d --network bareos --name bareos-director \
   -e DB_HOST=bareos-db \     # resolve container name
-  bareos/bareos-director
+  docker.io/bareos/bareos-director:24
 
 # Verify network
-podman network inspect bareos-net
+podman network inspect bareos
 ```
 
-When containers are on the same named network, Podman provides automatic DNS resolution: a container named `bareos-db` is reachable at hostname `bareos-db` from other containers on the same network.
+When containers are on the same named network, Podman provides automatic DNS resolution: a container named `bareos-db` is reachable at hostname `bareos-db` from other containers on the same network. In Chapter 6 this same network is created declaratively as a Quadlet `bareos.network` file (see below).
 
 ### Pod Networking
 
@@ -307,20 +307,20 @@ A **Podman Pod** groups multiple containers that share a network namespace. This
 podman pod create --name bareos-pod -p 9101:9101 -p 9103:9103
 
 # Add containers to the pod
-podman run -d --pod bareos-pod --name bareos-db mariadb:10.11
-podman run -d --pod bareos-pod --name bareos-dir bareos/bareos-director
+podman run -d --pod bareos-pod --name bareos-db docker.io/library/mariadb:10.11
+podman run -d --pod bareos-pod --name bareos-director docker.io/bareos/bareos-director:24
 
-# Inside the pod, bareos-dir reaches bareos-db at 127.0.0.1:3306
+# Inside the pod, bareos-director reaches bareos-db at 127.0.0.1:3306
 ```
 
-We use Pods for the Bareos stack in [Chapter 6](./06-bareos-in-podman.md).
+Pods are a valid pattern, but the Bareos stack in [Chapter 6](./06-bareos-in-podman.md) does **not** use a pod — it uses a shared Quadlet network (`bareos.network`) so the containers reach each other by name rather than over `localhost`.
 
 ### Host Network Mode
 
 For maximum performance (no NAT overhead), containers can use the host's network directly:
 
 ```bash
-podman run --network host bareos/bareos-director
+podman run --network host docker.io/bareos/bareos-director:24
 ```
 
 In host network mode, the container shares the host's network namespace entirely. The container's port 9101 *is* the host's port 9101. This is the highest-performance option but reduces isolation.
@@ -343,7 +343,7 @@ This is one of the most important topics for running Bareos in containers. All B
 podman volume create bareos-config
 
 # Use it in a container
-podman run -v bareos-config:/etc/bareos bareos/bareos-director
+podman run -v bareos-config:/etc/bareos docker.io/bareos/bareos-director:24
 
 # Inspect where the data lives on the host
 podman volume inspect bareos-config
@@ -356,7 +356,7 @@ Named volumes are managed by Podman. They persist even after the container is re
 ```bash
 # Mount a specific host directory into the container
 podman run -v /srv/bareos-storage/volumes:/var/lib/bareos/storage:Z \
-  bareos/bareos-storage
+  docker.io/bareos/bareos-storage:24
 ```
 
 Bind mounts are the correct choice for Bareos Volume storage because:
@@ -394,8 +394,8 @@ For Bareos backup Volumes stored at `/srv/bareos-storage`:
 # Option 1: Pre-create the directory owned by bareos (UID 1001)
 # and use --userns=keep-id so container UID matches host UID
 podman run --userns=keep-id \
-  -v /srv/bareos-storage/volumes:/var/lib/bareos:Z \
-  bareos/bareos-storage
+  -v /srv/bareos-storage/volumes:/var/lib/bareos/storage:Z \
+  docker.io/bareos/bareos-storage:24
 
 # Option 2: Let the container run as its default UID and
 # chown the host directory to the mapped sub-UID
@@ -431,13 +431,14 @@ When a container accesses a bind-mounted host directory, SELinux checks if `cont
 The solution is the `:z` and `:Z` volume options:
 
 ```bash
-# :z — Relabel to shared container label (container_file_t)
+# :z — shared label: relabels container_file_t with no MCS category
 # Use when: multiple containers need to access the same bind mount
-podman run -v /srv/bareos-storage/volumes:/var/lib/bareos:z bareos/bareos-storage
+podman run -v /srv/bareos-storage/volumes:/var/lib/bareos/storage:z docker.io/bareos/bareos-storage:24
 
-# :Z — Relabel to private container label (container_file_t with unique MCS pair)
+# :Z — private label: relabels container_file_t AND adds this container's
+#      unique MCS category pair
 # Use when: only one container accesses this bind mount
-podman run -v /srv/bareos-storage/volumes:/var/lib/bareos:Z bareos/bareos-storage
+podman run -v /srv/bareos-storage/volumes:/var/lib/bareos/storage:Z docker.io/bareos/bareos-storage:24
 ```
 
 > **Warning:** `:Z` relabeling is permanent. If you later want the host to access that directory with non-container tools, you must manually restore the SELinux context with `restorecon`.
@@ -521,10 +522,9 @@ journalctl --user -u hello.service -f
 
 # Stop
 systemctl --user stop hello.service
-
-# Enable at boot
-systemctl --user enable hello.service
 ```
+
+> **Quadlet units cannot be `enable`d/`disable`d.** Because `hello.service` is *generated* by the Quadlet generator, it has no on-disk unit to symlink — `systemctl --user enable hello.service` fails with "Unit file does not exist." Boot-start is instead controlled by the `[Install] WantedBy=default.target` section *inside* the `.container` file: after `systemctl --user daemon-reload` regenerates the unit, it is wired into `default.target` and starts at boot (with lingering enabled). To stop a unit starting at boot, remove or comment out its `[Install]` section and run `daemon-reload`. You still `start`/`stop`/`restart` the generated `.service` normally.
 
 ### Available Quadlet Directives
 
@@ -541,8 +541,10 @@ Environment=MARIADB_ROOT_PASSWORD=secret
 EnvironmentFile=/home/bareos/.config/bareos/db.env
 
 # Volumes
-Volume=bareos-db-data.volume:/var/lib/mysql:Z
-Volume=/srv/bareos-storage/volumes:/var/lib/bareos:z
+# Named volume (.volume reference) — takes NO :z/:Z
+Volume=bareos-db-data.volume:/var/lib/mysql
+# Host bind mount — gets a relabel option (:z shared / :Z private)
+Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
 
 # Network
 Network=bareos.network
@@ -562,7 +564,8 @@ ReadOnlyRootfs=true
 Label=app=bareos
 Label=component=database
 
-# User
+# User (in-container UID:GID — under rootless Quadlet this is mapped
+# through the user namespace to a host sub-UID, NOT a host UID of 999)
 User=999:999
 ```
 
@@ -580,13 +583,25 @@ Label=app=bareos
 ```ini
 # bareos.network
 [Network]
+# Without NetworkName=, a file named bareos.network would create a runtime
+# network literally called "systemd-bareos". Setting NetworkName=bareos makes
+# the runtime network simply "bareos" — the name manual podman commands use.
+NetworkName=bareos
 Driver=bridge
 Subnet=10.89.0.0/24
 Gateway=10.89.0.1
 Label=app=bareos
 ```
 
-These are referenced by name in `.container` files (without the `.volume` or `.network` extension).
+These are referenced from `.container` files **with** their file extension — Quadlet resolves the reference to the generated network/volume:
+
+```ini
+[Container]
+Network=bareos.network                       # the bareos.network Quadlet file
+Volume=bareos-db-data.volume:/var/lib/mysql  # the bareos-db-data.volume Quadlet file
+```
+
+Once the network exists at runtime (named `bareos` because of `NetworkName=`), manual `podman` commands attach to it with `--network bareos` — note: the runtime name `bareos`, not the file name `bareos.network`.
 
 ---
 
@@ -651,17 +666,18 @@ The official Bareos images are hosted on Docker Hub:
 # As the bareos user
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bash
 
-# Pull the main Bareos images
-podman pull docker.io/bareos/bareos-director:latest
-podman pull docker.io/bareos/bareos-storage:latest
-podman pull docker.io/bareos/bareos-client:latest
+# Pull the main Bareos images — always pinned to :24 in this course
+# (never :latest — see "Pinning Image Versions" below)
+podman pull docker.io/bareos/bareos-director:24
+podman pull docker.io/bareos/bareos-storage:24
+podman pull docker.io/bareos/bareos-client:24
 podman pull docker.io/library/mariadb:10.11
 
 # List local images
 podman images
 
 # Inspect an image (useful for seeing entry points, exposed ports, default env vars)
-podman inspect docker.io/bareos/bareos-director:latest | jq '.[0].Config'
+podman inspect docker.io/bareos/bareos-director:24 | jq '.[0].Config'
 ```
 
 ### Pinning Image Versions
@@ -796,13 +812,18 @@ curl http://localhost:8080
 cat ~/.config/systemd/user/test-nginx.service
 # Note: this file is GENERATED — never edit it directly
 
-# Stop and disable
+# Stop the service. (There is no `systemctl --user disable test-nginx.service`
+# here — the unit is GENERATED by Quadlet, so it can't be enabled/disabled.
+# Boot-start is controlled by the [Install] section in the .container file;
+# removing the file and running daemon-reload is what "un-installs" it.)
 systemctl --user stop test-nginx.service
-systemctl --user disable test-nginx.service
 
 # Remove the test files
 rm ~/.config/containers/systemd/test-nginx.container
 rm ~/.config/containers/systemd/nginx-html.volume
+
+# daemon-reload regenerates units — the now-deleted .container disappears,
+# so test-nginx.service no longer exists and will not start at boot
 systemctl --user daemon-reload
 
 exit

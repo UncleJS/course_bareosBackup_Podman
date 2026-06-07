@@ -47,11 +47,6 @@
   - [Quarterly DR Drill Checklist](#quarterly-dr-drill-checklist)
 - [12. Documenting Your Recovery Runbook](#12-documenting-your-recovery-runbook)
   - [Runbook Template](#runbook-template)
-- [Contact Information](#contact-information)
-- [System Inventory](#system-inventory)
-- [Credential Locations](#credential-locations)
-- [Recovery Steps](#recovery-steps)
-- [Verification Checklist](#verification-checklist)
   - [Where to Store the Runbook](#where-to-store-the-runbook)
 - [13. Offsite Storage: Syncing Volumes with rsync and rclone](#13-offsite-storage-syncing-volumes-with-rsync-and-rclone)
   - [rsync to a Remote Server](#rsync-to-a-remote-server)
@@ -126,7 +121,7 @@ When you run `restore` in bconsole and browse a file tree from six months ago, y
 
 ### Leg 3: The Bareos Configuration
 
-This includes everything under `/home/bareos/.config/bareos/` and `/home/bareos/.config/containers/systemd/` — your Director configuration, Storage Daemon configuration, Client (File Daemon) configuration, Pool definitions, Job definitions, FileSet definitions, and Schedule definitions. Without the configuration, you cannot reconnect a new Director to your existing storage volumes.
+This includes the Director and Storage Daemon configuration host directories (`/etc/bareos/bareos-dir.d/` and `/etc/bareos/bareos-sd.d/`), the shared scripts directory (`/etc/bareos/scripts/`), the File Daemon and WebUI config named volumes, the env files under `/home/bareos/.config/bareos/`, and the Quadlet units under `/home/bareos/.config/containers/systemd/` — your Pool, Job, FileSet, Schedule, Client, and Storage definitions all live here. Without the configuration, you cannot reconnect a new Director to your existing storage volumes.
 
 The configuration is usually the smallest and easiest piece to protect — a few kilobytes of text files that can be committed to a git repository or emailed to yourself. Do not neglect it.
 
@@ -136,7 +131,10 @@ The configuration is usually the smallest and easiest piece to protect — a few
 |---|---|---|---|
 | Storage volumes | `/srv/bareos-storage/volumes/` | GBs to TBs | Cannot restore data without them |
 | Catalog database | MariaDB volume `bareos-db-data` | MBs to GBs | Cannot run standard restore without it |
-| Bareos config | `/home/bareos/.config/bareos/` | KBs | Cannot reconnect Director without it |
+| Director config | host dir `/etc/bareos/bareos-dir.d/` | KBs | Cannot reconnect Director without it |
+| Storage Daemon config | host dir `/etc/bareos/bareos-sd.d/` | KBs | Needed for the Storage Daemon |
+| Shared scripts | host dir `/etc/bareos/scripts/` | KBs | Catalog dump/cleanup scripts |
+| FD / WebUI config | volumes `bareos-fd-config`, `bareos-webui-config` | KBs | Client + WebUI config |
 | Quadlet files | `/home/bareos/.config/containers/systemd/` | KBs | Needed to restart containers |
 | Env/secret files | `/home/bareos/.config/bareos/*.env` | Bytes | Needed for DB passwords |
 
@@ -150,12 +148,14 @@ The Catalog is the most fragile piece of your backup system because it lives in 
 
 ### The BackupCatalog Job
 
-Bareos ships with a built-in job definition called `BackupCatalog`. This job uses the `MakeBootstrapFile` directive and a pre-script that calls `mysqldump` (or the Bareos-provided `make_catalog_backup.pl` script) to dump the Catalog to a file, then backs up that file as a regular Bareos job.
+The `BackupCatalog` job dumps the Catalog database to a flat SQL file and then backs that file up as a regular Bareos job. We use the same catalog-backup mechanism established in Chapter 7: a `dump-catalog.sh` script runs inside the **Director container** as a `Before` RunScript, a `delete-catalog-dump.sh` script cleans up afterward, and the `Catalog` FileSet picks up the dump file.
 
-Here is a complete, annotated Director configuration for catalog protection:
+The stock RPM packages ship `make_catalog_backup.pl` and `delete_catalog_backup` for the same purpose; in our containerized stack we replace them with the two shell scripts below.
+
+Here is the Director job definition:
 
 ```
-# /home/bareos/.config/bareos/bareos-dir.d/job/BackupCatalog.conf
+# /etc/bareos/bareos-dir.d/job/BackupCatalog.conf
 #
 # This job backs up the Bareos catalog database.
 # It MUST run after all other backup jobs complete each day.
@@ -168,92 +168,94 @@ Job {
   Level = Full                    # Always Full — the catalog changes every day
   FileSet = "Catalog"             # Special FileSet that includes the dump file
   Schedule = "WeeklyCycleAfterBackup"
-  Storage = File1
+  Storage = File
   Messages = Daemon
   Pool = Default
   Priority = 11                   # Run AFTER all other jobs
-  # This directive tells Bareos to write a bootstrap file for THIS job.
-  # That bootstrap file is then mailed to the admin (see Messages resource).
-  # With this bootstrap file you can restore the catalog even without a
-  # running Director.
-  Write Bootstrap = "/var/lib/bareos/%n.bsr"
-  # The RunScript runs BEFORE the job to dump the database to a flat file.
-  # The File Daemon on the Director host will then pick up that file.
+  # Write a bootstrap file for THIS job so the catalog backup can be
+  # restored even without a running Director (see Section 4).
+  Write Bootstrap = "/var/lib/bareos/bareos-catalog.bsr"
+  # Dump the database to a flat file BEFORE the job runs.
+  # The script executes inside the Director container, not on a client.
   RunScript {
     Options = "Fail Job on Error"
-    RunsOnClient = no             # Run on the Director host, not a remote client
+    RunsOnClient = no             # Run on the Director, not a remote client
     RunsWhen = Before
-    # make_catalog_backup.pl is provided by the bareos-tools package.
-    # It calls mysqldump internally using the credentials from /etc/bareos/
-    Command = "/usr/lib/bareos/scripts/make_catalog_backup.pl MyCatalog"
+    Command = "/etc/bareos/scripts/dump-catalog.sh"
   }
-  # After the backup completes, clean up the temporary dump file.
+  # After the backup completes (success OR failure), clean up the dump file.
   RunScript {
     RunsOnSuccess = yes
-    RunsOnFailure = no
+    RunsOnFailure = yes
     RunsOnClient  = no
     RunsWhen = After
-    Command = "/usr/lib/bareos/scripts/delete_catalog_backup MyCatalog"
+    Command = "/etc/bareos/scripts/delete-catalog-dump.sh"
   }
 }
 ```
 
-Because we are running inside a container, the `make_catalog_backup.pl` script needs to connect to MariaDB. The simplest approach is to run the dump *from inside the Director container* using environment variables already present there.
-
-Here is the preferred containerized approach — a shell wrapper script you mount into the Director container:
+The dump script connects to the `bareos-db` container over the `bareos` network. It reads the MariaDB credentials from the environment variables injected via `db.env` (`MARIADB_USER`, `MARIADB_PASSWORD`, `MARIADB_DATABASE`):
 
 ```bash
 #!/bin/bash
-# /home/bareos/.config/bareos/scripts/dump-catalog.sh
+# /etc/bareos/scripts/dump-catalog.sh
 #
 # Dumps the Bareos MariaDB catalog to a flat SQL file.
-# This script runs inside the bareos-director container.
-# It reads credentials from environment variables injected
-# via the bareos.env file (see Quadlet configuration).
+# This script runs inside the bareos-director container as a Before RunScript.
+# Credentials come from the env vars injected via db.env.
 #
-# The output file is written to the bareos-dir-config volume
-# so the File Daemon can pick it up.
+# The output is written under /var/lib/bareos/catalog-dump (the
+# bareos-working volume) so it lands inside the Catalog FileSet.
 
 set -euo pipefail
 
-DUMP_DIR="/etc/bareos/catalog-backup"
-DUMP_FILE="${DUMP_DIR}/bareos-catalog-$(date +%Y%m%d-%H%M%S).sql.gz"
+DUMP_DIR="/var/lib/bareos/catalog-dump"
+DUMP_FILE="${DUMP_DIR}/bareos-catalog.sql.gz"
 
 mkdir -p "${DUMP_DIR}"
 
-# Use the variables injected from the env file:
-# DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
 echo "Dumping catalog to ${DUMP_FILE} ..."
-mysqldump \
-  --host="${DB_HOST:-bareos-db}" \
-  --port="${DB_PORT:-3306}" \
-  --user="${DB_USER:-bareos}" \
-  --password="${DB_PASSWORD}" \
-  --single-transaction \   # Consistent snapshot without locking tables
-  --routines \             # Include stored procedures
-  --triggers \             # Include triggers
-  "${DB_NAME:-bareos}" \
-  | gzip -6 > "${DUMP_FILE}"
+# mariadb-dump is the MariaDB-native client; on MariaDB images the legacy
+# mysqldump name is a symlink to it.
+mariadb-dump \
+  --host=bareos-db \
+  --user="${MARIADB_USER}" \
+  --password="${MARIADB_PASSWORD}" \
+  --single-transaction \
+  "${MARIADB_DATABASE}" \
+  | gzip > "${DUMP_FILE}"
 
 echo "Catalog dump complete: ${DUMP_FILE}"
-
-# Keep only the last 7 daily dumps to avoid filling the volume
-find "${DUMP_DIR}" -name "bareos-catalog-*.sql.gz" \
-  -mtime +7 -delete
-
-echo "Old dumps pruned."
 ```
 
-Make the script executable and mount it into the container via the Quadlet file:
+The cleanup script removes the dump after the job has captured it:
 
 ```bash
-chmod 750 /home/bareos/.config/bareos/scripts/dump-catalog.sh
+#!/bin/bash
+# /etc/bareos/scripts/delete-catalog-dump.sh
+#
+# Removes the catalog dump after the BackupCatalog job has backed it up.
+# Runs inside the bareos-director container as an After RunScript.
+
+set -euo pipefail
+
+rm -f /var/lib/bareos/catalog-dump/bareos-catalog.sql.gz
+echo "Catalog dump removed."
+```
+
+Both scripts live in `/etc/bareos/scripts` on the host (mounted read-only into the Director container). Make them executable:
+
+```bash
+chmod 750 /etc/bareos/scripts/dump-catalog.sh
+chmod 750 /etc/bareos/scripts/delete-catalog-dump.sh
 ```
 
 ### Catalog FileSet
 
+The `Catalog` FileSet points at the dump directory the script writes to:
+
 ```
-# /home/bareos/.config/bareos/bareos-dir.d/fileset/Catalog.conf
+# /etc/bareos/bareos-dir.d/fileset/Catalog.conf
 #
 # This FileSet tells Bareos which files constitute the "catalog backup."
 # It points to the dump directory where dump-catalog.sh writes its output.
@@ -263,38 +265,32 @@ FileSet {
   Include {
     Options {
       Signature = MD5         # Checksums for integrity verification
-      Compression = GZIP      # Compress the (already gzipped) SQL — small gain
     }
-    # The dump directory inside the Director container, which is backed by
-    # the bareos-dir-config named volume on the host.
-    File = "/etc/bareos/catalog-backup"
+    # The dump directory inside the Director container, backed by the
+    # bareos-working named volume mounted at /var/lib/bareos.
+    File = "/var/lib/bareos/catalog-dump"
   }
 }
 ```
 
 ### Where the Catalog Dump Lands on the Host
 
-Because the Director container mounts the `bareos-dir-config` named volume at `/etc/bareos/`, and that volume's data lives at:
+The Director container mounts the `bareos-working` named volume at `/var/lib/bareos`, so the dump written to `/var/lib/bareos/catalog-dump/bareos-catalog.sql.gz` lives on the host at:
 
 ```
-~/.local/share/containers/storage/volumes/bareos-dir-config/_data/
+/home/bareos/.local/share/containers/storage/volumes/bareos-working/_data/catalog-dump/bareos-catalog.sql.gz
 ```
 
-The dump file is accessible on the host at:
-
-```
-/home/bareos/.local/share/containers/storage/volumes/bareos-dir-config/_data/catalog-backup/bareos-catalog-YYYYMMDD-HHMMSS.sql.gz
-```
-
-This means you can also copy it manually at any time without entering the container:
+Note that the cleanup RunScript deletes this file once the `BackupCatalog` job has captured it into a Bareos volume — the long-term copy lives inside the storage volumes (and, ideally, offsite). If you want a standalone copy on the host, take a manual dump before the job's cleanup runs:
 
 ```bash
-# Copy the latest catalog dump to a safe location (run as bareos user)
+# Take a manual catalog dump and copy it to a safe location (run as bareos user)
 sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
-  LATEST=$(ls -t ~/.local/share/containers/storage/volumes/bareos-dir-config/_data/catalog-backup/*.sql.gz | head -1)
-  cp "$LATEST" /srv/bareos-storage/catalog-backup/
-  echo "Copied: $LATEST"
+  podman exec bareos-director /etc/bareos/scripts/dump-catalog.sh
+  cp ~/.local/share/containers/storage/volumes/bareos-working/_data/catalog-dump/bareos-catalog.sql.gz \
+     /srv/bareos-storage/catalog-backup/
+  echo "Manual catalog dump copied."
 '
 ```
 
@@ -311,10 +307,10 @@ Think of it as a physical address book: instead of looking up a name in a direct
 ### What a Bootstrap File Looks Like
 
 ```
-# Example bootstrap file for a Full backup job
-# Generated by Bareos Director automatically after each job
-# Location in container: /var/lib/bareos/BackupCatalog.bsr
-# Location on host: ~/.local/share/containers/storage/volumes/bareos-dir-state/_data/BackupCatalog.bsr
+# ILLUSTRATIVE example only — your real .bsr values will differ.
+# Generated by Bareos Director automatically after each job.
+# Location in container: /var/lib/bareos/bareos-catalog.bsr
+# Location on host: ~/.local/share/containers/storage/volumes/bareos-working/_data/bareos-catalog.bsr
 
 Volume="Full-0001"
 MediaType="File"
@@ -335,10 +331,10 @@ Each line means:
 
 ### Where Bareos Writes Bootstrap Files
 
-Bareos writes bootstrap files for jobs that include `Write Bootstrap = "/var/lib/bareos/%n.bsr"` in the Job definition (where `%n` is the job name). The default location inside the Director container is `/var/lib/bareos/`. On the host, that maps to the `bareos-dir-state` named volume:
+Bareos writes bootstrap files for jobs that include a `Write Bootstrap` directive in the Job definition (for example `Write Bootstrap = "/var/lib/bareos/%n.bsr"`, where `%n` is the job name). The default location inside the Director container is `/var/lib/bareos/`. On the host, that maps to the `bareos-working` named volume:
 
 ```
-~/.local/share/containers/storage/volumes/bareos-dir-state/_data/
+~/.local/share/containers/storage/volumes/bareos-working/_data/
 ```
 
 You should configure Bareos to email the bootstrap file to an administrator after each important job. This way, even if the entire host is destroyed, you have the bootstrap files in your inbox and can perform a catalog-less restore on any new host.
@@ -352,16 +348,17 @@ Messages {
   Name = Standard
   # ... other directives ...
 
-  # Mail the bootstrap file to the admin after every successful job.
-  # The %b macro expands to the bootstrap file path.
+  # Mail the job report to the admin. The Mail Command below emails the
+  # job summary; the bootstrap file written by the job's "Write Bootstrap"
+  # directive remains on disk (see Section 4) for catalog-less restore.
   Mail Command = "/usr/sbin/bsmtp -h localhost -f \"\(Bareos\) %r\" -s \"Bareos: %t %e of %c %l\" %r"
-  Mail On Success = yes
+  # "Mail On Error = yes" is the saner default for routine jobs — it emails
+  # only on failure. Use "Mail On Success = yes" instead only if you truly
+  # want a message after every successful job (it is noisy at scale).
+  Mail On Error = yes
   Operator Command = "/usr/sbin/bsmtp -h localhost -f \"\(Bareos\) %r\" -s \"Bareos: Intervention needed for %j\" %r"
   Operator = "bareos-admin@example.com"
   Mail = "bareos-admin@example.com"
-
-  # Attach the bootstrap file to the completion email
-  # (set in Job definition with: Write Bootstrap = ...)
 }
 ```
 
@@ -423,7 +420,7 @@ $ done                   # proceed
 You can also define a dedicated restore job in the Director config:
 
 ```
-# /home/bareos/.config/bareos/bareos-dir.d/job/RestoreFiles.conf
+# /etc/bareos/bareos-dir.d/job/RestoreFiles.conf
 #
 # This job definition is used for all file restore operations.
 # It is normally triggered interactively via bconsole, not scheduled.
@@ -432,8 +429,8 @@ Job {
   Name = "RestoreFiles"
   Type = Restore
   Client = bareos-fd                  # The client where files will be restored
-  Storage = File1
-  FileSet = "Full Set"                # Must match the FileSet used during backup
+  Storage = File
+  FileSet = "RHEL10-Standard"         # Must match the FileSet used during backup
   Pool = Default
   Messages = Standard
   # Where= overrides the restore path. Leaving it blank restores to original paths.
@@ -473,17 +470,34 @@ This scenario covers a partial disaster: the RHEL 10 host is intact and RHEL is 
 
 ### Identifying What Needs to Be Restored
 
-The named volumes in your Bareos setup are:
+Our stack stores **persistent data in named volumes** but keeps **all Bareos configuration as host directories** that are bind-mounted into the containers. You must restore both.
+
+The named volumes are:
 
 | Volume Name | Contents | Mount Point in Container |
 |---|---|---|
 | `bareos-db-data` | MariaDB database files | `/var/lib/mysql` |
-| `bareos-dir-config` | Director config + catalog dumps | `/etc/bareos` |
-| `bareos-dir-state` | Director state + bootstrap files | `/var/lib/bareos` |
-| `bareos-sd-config` | Storage Daemon config | `/etc/bareos` |
-| `bareos-fd-config` | File Daemon config | `/etc/bareos` |
+| `bareos-working` | Director/SD/FD working state + bootstrap files + catalog dump | `/var/lib/bareos` |
+| `bareos-fd-config` | File Daemon config | `/etc/bareos` (in `bareos-fd`) |
+| `bareos-webui-config` | WebUI config (directors.ini, configuration.ini) | `/etc/bareos-webui` |
 
-The storage volumes at `/srv/bareos-storage/volumes/` are on a separate disk mount and may or may not have survived. If they survived, you only need to restore the named volumes. If they are also lost, proceed to Scenario 3.
+The configuration host directories (bind-mounted read-only) are:
+
+| Host Directory | Bind target | Mounted into |
+|---|---|---|
+| `/etc/bareos/bareos-dir.d` | `/etc/bareos/bareos-dir.d` (ro,Z) | `bareos-director` |
+| `/etc/bareos/bareos-sd.d` | `/etc/bareos/bareos-sd.d` (ro,Z) | `bareos-storage` |
+| `/etc/bareos/scripts` | `/etc/bareos/scripts` (ro,z) | `bareos-director`, `bareos-fd` |
+
+And the env files plus the Quadlet directory:
+
+| Host Path | Contents |
+|---|---|
+| `/home/bareos/.config/bareos/db.env` | MariaDB credentials |
+| `/home/bareos/.config/bareos/bareos.env` | Director/Bareos env |
+| `/home/bareos/.config/containers/systemd/` | Quadlet units (10 files) |
+
+The storage volumes at `/srv/bareos-storage/volumes/` are on a separate disk mount and may or may not have survived. If they survived, you only need to restore the named volumes, the config host directories, and the env/Quadlet files. If they are also lost, proceed to Scenario 3.
 
 ### Step-by-Step: Restoring Named Volumes
 
@@ -495,7 +509,7 @@ The storage volumes at `/srv/bareos-storage/volumes/` are on a separate disk mou
 # 1. Re-create the Podman volumes (this creates the directory structure)
 sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
-  for vol in bareos-db-data bareos-dir-config bareos-dir-state bareos-sd-config bareos-fd-config; do
+  for vol in bareos-db-data bareos-working bareos-fd-config bareos-webui-config; do
     podman volume create "$vol"
     echo "Created volume: $vol"
   done
@@ -507,7 +521,7 @@ sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
   BACKUP_SOURCE="/mnt/backup-drive/bareos-volumes"
 
-  for vol in bareos-db-data bareos-dir-config bareos-dir-state bareos-sd-config bareos-fd-config; do
+  for vol in bareos-db-data bareos-working bareos-fd-config bareos-webui-config; do
     DATA_DIR=$(podman volume inspect "$vol" --format "{{.Mountpoint}}")
     echo "Restoring $vol to $DATA_DIR ..."
     tar -xzf "${BACKUP_SOURCE}/${vol}.tar.gz" -C "$DATA_DIR"
@@ -523,37 +537,46 @@ sudo chown -R 1001:1001 \
 sudo restorecon -Rv \
   /home/bareos/.local/share/containers/storage/volumes/
 
-# 5. Restore the Quadlet files
+# 5. Restore the Bareos config host directories (bind-mount sources)
+sudo cp -a /mnt/backup-drive/bareos-config/etc-bareos/bareos-dir.d /etc/bareos/
+sudo cp -a /mnt/backup-drive/bareos-config/etc-bareos/bareos-sd.d  /etc/bareos/
+sudo cp -a /mnt/backup-drive/bareos-config/etc-bareos/scripts      /etc/bareos/
+sudo restorecon -Rv /etc/bareos/
+
+# 6. Restore the Quadlet files (10 units: network, volumes, containers)
 sudo -u bareos bash -c '
-  cp /mnt/backup-drive/bareos-config/quadlet/*.container \
-     ~/.config/containers/systemd/
   cp /mnt/backup-drive/bareos-config/quadlet/*.network \
+     ~/.config/containers/systemd/
+  cp /mnt/backup-drive/bareos-config/quadlet/*.volume \
+     ~/.config/containers/systemd/
+  cp /mnt/backup-drive/bareos-config/quadlet/*.container \
      ~/.config/containers/systemd/
 '
 
-# 6. Restore env/secret files
+# 7. Restore env/secret files
 sudo -u bareos bash -c '
   cp /mnt/backup-drive/bareos-config/env/db.env ~/.config/bareos/db.env
   cp /mnt/backup-drive/bareos-config/env/bareos.env ~/.config/bareos/bareos.env
   chmod 600 ~/.config/bareos/db.env ~/.config/bareos/bareos.env
 '
 
-# 7. Reload systemd and start services
+# 8. Reload systemd and start services
 sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
   systemctl --user daemon-reload
   systemctl --user start bareos-db.service
   sleep 15  # Give MariaDB time to initialize from restored data
-  systemctl --user start bareos-director.service
   systemctl --user start bareos-storage.service
+  systemctl --user start bareos-director.service
   systemctl --user start bareos-fd.service
+  systemctl --user start bareos-webui.service
 '
 
-# 8. Verify services
+# 9. Verify services
 sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
   systemctl --user status bareos-db.service bareos-director.service \
-    bareos-storage.service bareos-fd.service
+    bareos-storage.service bareos-fd.service bareos-webui.service
 '
 ```
 
@@ -580,6 +603,8 @@ The detailed procedure follows in Section 8.
 
 This is the most important section of this chapter. Read it carefully, then follow the steps in order. Every command is copy-paste ready.
 
+The target stack is the same five-container setup built in Chapter 6: `bareos-db` (MariaDB catalog), `bareos-director`, `bareos-storage`, `bareos-fd` (File Daemon), and `bareos-webui` — all running rootless under the `bareos` user and wired together on the `bareos` Podman network.
+
 ### 8a. Install RHEL 10, Create bareos User, Enable Lingering
 
 ```bash
@@ -598,12 +623,12 @@ dnf install -y \
   tar \             # For extracting volume archives
   gzip
 
-# 3. Create the bareos system user with UID 1001.
-#    The --system flag creates a system account (no home dir by default,
-#    no aging). We explicitly set a home directory because rootless Podman
-#    needs one for its configuration and storage.
+# 3. Create the bareos user with UID 1001.
+#    UID 1001 is a regular (non-system) UID, so we do NOT pass --system —
+#    a system account would be allocated from the low system UID range.
+#    We give it a real home directory because rootless Podman needs one
+#    for its configuration and storage.
 sudo useradd \
-  --system \
   --uid 1001 \
   --create-home \
   --home-dir /home/bareos \
@@ -659,11 +684,12 @@ mkdir -p /srv/bareos-storage/volumes
 chown bareos:bareos /srv/bareos-storage
 chown bareos:bareos /srv/bareos-storage/volumes
 
-# 10. Set SELinux context on the storage directory.
-#     bareos_store_t is the correct type for Bareos storage volumes.
-#     If this type is not available in your policy, use container_file_t
-#     as a fallback, but bareos_store_t is preferred for tighter confinement.
-semanage fcontext -a -t bareos_store_t "/srv/bareos-storage/volumes(/.*)?"
+# 10. Set the SELinux context on the storage directory.
+#     The Storage Daemon runs as a rootless container, so the directory
+#     must carry container_file_t — the same label the :z mount applies.
+#     Setting it persistently here means the label and the bind mount agree,
+#     so there is no relabel conflict when the container starts.
+semanage fcontext -a -t container_file_t "/srv/bareos-storage(/.*)?"
 restorecon -Rv /srv/bareos-storage/volumes/
 
 # Verify
@@ -716,7 +742,7 @@ restorecon -Rv /srv/bareos-storage/volumes/
 
 # Verify the label
 ls -laZ /srv/bareos-storage/volumes/ | head -5
-# Expect: system_u:object_r:bareos_store_t:s0
+# Expect: system_u:object_r:container_file_t:s0
 ```
 
 ### 8c. Restore the Catalog Database
@@ -729,7 +755,7 @@ sudo -u bareos mkdir -p /home/bareos/.config/bareos
 sudo -u bareos mkdir -p /home/bareos/.config/containers/systemd
 
 # 2. Restore secret/env files from backup.
-#    These contain DB_PASSWORD and other credentials.
+#    These contain MARIADB_PASSWORD and other credentials.
 #    They MUST have mode 600 — MariaDB and Bareos will refuse to start
 #    if these files are world-readable.
 cp /mnt/backup-drive/bareos-config/env/db.env /home/bareos/.config/bareos/db.env
@@ -760,18 +786,18 @@ Image=docker.io/library/mariadb:10.11
 
 # The named volume that stores the database files.
 # On a fresh host this volume is empty; we will import the dump below.
-Volume=bareos-db-data.volume:/var/lib/mysql:z
+# Named-volume mounts take no :z/:Z suffix — Podman manages their labels.
+Volume=bareos-db-data.volume:/var/lib/mysql
 
 # Inject database credentials from the mode-600 env file.
-# The :z suffix tells Podman to set the SELinux label automatically.
 EnvironmentFile=/home/bareos/.config/bareos/db.env
 
 # Expose MariaDB only on the container network, not on the host.
-  # Other Bareos containers reach it via the 'bareos' network.
+# Other Bareos containers reach it via the 'bareos' network by name.
 Network=bareos.network
 
 # Health check: verify MariaDB is accepting connections.
-HealthCmd=mysqladmin --user=root --password=${MARIADB_ROOT_PASSWORD} ping --silent
+HealthCmd=mariadb-admin --user=root --password=${MARIADB_ROOT_PASSWORD} ping --silent
 HealthInterval=30s
 HealthRetries=5
 HealthStartPeriod=60s
@@ -789,6 +815,8 @@ cat > /home/bareos/.config/containers/systemd/bareos.network << 'EOF'
 [Network]
 # An isolated bridge network for all Bareos containers.
 # Containers on this network can reach each other by container name.
+# NetworkName pins the actual Podman network name to "bareos".
+NetworkName=bareos
 Driver=bridge
 Subnet=172.20.0.0/24
 Gateway=172.20.0.1
@@ -798,8 +826,9 @@ EOF
 cat > /home/bareos/.config/containers/systemd/bareos-db-data.volume << 'EOF'
 [Volume]
 # This declares the named volume. Podman creates it if it doesn't exist.
-# The actual data lives at:
-# ~/.local/share/containers/storage/volumes/bareos-db-data/_data/
+# VolumeName pins the actual volume name to "bareos-db-data". The data
+# lives at: ~/.local/share/containers/storage/volumes/bareos-db-data/_data/
+VolumeName=bareos-db-data
 Label=app=bareos
 Label=component=database
 EOF
@@ -820,7 +849,7 @@ sudo -u bareos bash -c '
 # 8. Verify MariaDB is running
 sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
-  podman exec bareos-db mysqladmin \
+  podman exec bareos-db mariadb-admin \
     --user=root \
     --password=$(grep MARIADB_ROOT_PASSWORD ~/.config/bareos/db.env | cut -d= -f2) \
     ping
@@ -835,18 +864,22 @@ CATALOG_DUMP="/mnt/backup-drive/catalog/bareos-catalog-YYYYMMDD-HHMMSS.sql.gz"
 DB_PASS=$(sudo -u bareos grep MARIADB_PASSWORD /home/bareos/.config/bareos/db.env | cut -d= -f2)
 ROOT_PASS=$(sudo -u bareos grep MARIADB_ROOT_PASSWORD /home/bareos/.config/bareos/db.env | cut -d= -f2)
 
-# Copy the dump into the container (or pipe it directly)
+# Copy the dump into the container (or pipe it directly).
+# NOTE: the CREATE DATABASE charset below is only the database default.
+# The dump's own per-table CREATE TABLE statements carry their own charset
+# and take precedence, so the catalog tables end up with whatever charset
+# they had on the source system regardless of this default.
 sudo -u bareos bash -c "
   XDG_RUNTIME_DIR=/run/user/1001
   # Create the bareos database if it doesn't exist yet
-  podman exec bareos-db mysql \
+  podman exec bareos-db mariadb \
     --user=root \
     --password='${ROOT_PASS}' \
     -e 'CREATE DATABASE IF NOT EXISTS bareos CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'
 
   # Import the dump
   echo 'Importing catalog dump — this may take several minutes...'
-  zcat '${CATALOG_DUMP}' | podman exec -i bareos-db mysql \
+  zcat '${CATALOG_DUMP}' | podman exec -i bareos-db mariadb \
     --user=bareos \
     --password='${DB_PASS}' \
     bareos
@@ -857,7 +890,7 @@ sudo -u bareos bash -c "
 # 10. Verify the import
 sudo -u bareos bash -c "
   XDG_RUNTIME_DIR=/run/user/1001
-  podman exec bareos-db mysql \
+  podman exec bareos-db mariadb \
     --user=bareos \
     --password='${DB_PASS}' \
     bareos \
@@ -890,15 +923,20 @@ Requires=bareos-db.service
 
 [Container]
 Image=docker.io/bareos/bareos-director:24
+ContainerName=bareos-director
 
-# Configuration volume — restored from backup in the previous steps.
-# Contains bareos-dir.conf and all .d/ subdirectories.
-Volume=bareos-dir-config.volume:/etc/bareos:z
+# Director config — a HOST DIRECTORY bind-mounted read-only.
+# Contains bareos-dir.conf and all bareos-dir.d/ subdirectories.
+Volume=/etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z
 
-# State volume — contains bootstrap files and Director internal state.
-Volume=bareos-dir-state.volume:/var/lib/bareos:z
+# Shared scripts (dump-catalog.sh, delete-catalog-dump.sh) — host dir, ro.
+Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,z
 
-# Inject credentials
+# Working state — named volume holding bootstrap files, catalog dump, etc.
+Volume=bareos-working.volume:/var/lib/bareos
+
+# Inject credentials (DB user/password/database for the dump script)
+EnvironmentFile=/home/bareos/.config/bareos/db.env
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 
 # Connect to the bareos network so it can reach bareos-db by hostname
@@ -923,13 +961,18 @@ After=network-online.target
 
 [Container]
 Image=docker.io/bareos/bareos-storage:24
+ContainerName=bareos-storage
 
-# Storage Daemon configuration volume
-Volume=bareos-sd-config.volume:/etc/bareos:z
+# Storage Daemon config — a HOST DIRECTORY bind-mounted read-only.
+Volume=/etc/bareos/bareos-sd.d:/etc/bareos/bareos-sd.d:ro,Z
+
+# Working state — named volume shared with the Director's state.
+Volume=bareos-working.volume:/var/lib/bareos
 
 # The storage volumes directory — this is where backup data lives.
 # This bind-mount points to the directory we restored in step 8b.
-# The :z suffix relabels the directory for SELinux container access.
+# The :z suffix applies container_file_t — the same label we set
+# persistently with semanage in step 8a, so there is no relabel conflict.
 Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
 
 Network=bareos.network
@@ -954,13 +997,24 @@ After=network-online.target
 Image=docker.io/bareos/bareos-client:24
 ContainerName=bareos-fd
 
-Volume=bareos-fd-config:/etc/bareos:Z
+# File Daemon config — named volume (NOTE the .volume suffix).
+Volume=bareos-fd-config.volume:/etc/bareos
 
-# Host filesystem — read-only; FileSet paths use /hostfs/ prefix
-Volume=/:/hostfs:ro,z
+# Working state — shared named volume.
+Volume=bareos-working.volume:/var/lib/bareos
+
+# Shared scripts — host dir, read-only.
+Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,z
+
+# Host filesystem — read-only; FileSet paths use the /hostfs/ prefix.
+# SecurityLabelDisable=true because relabeling the entire host (:z/:Z)
+# is neither safe nor desirable; we mount it as-is and disable SELinux
+# label confinement for this mount only.
+SecurityLabelDisable=true
+Volume=/:/hostfs:ro
 
 # Podman socket — allows hook scripts to manage containers
-Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock:z
+Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock
 
 Network=bareos.network
 
@@ -984,7 +1038,7 @@ Image=docker.io/bareos/bareos-webui:24
 ContainerName=bareos-webui
 
 # WebUI config volume — restored from backup below (directors.ini, configuration.ini)
-Volume=bareos-webui-config.volume:/etc/bareos-webui:Z
+Volume=bareos-webui-config.volume:/etc/bareos-webui
 
 # Bind to loopback only; use nginx for HTTPS remote access (see Chapter 17)
 PublishPort=127.0.0.1:9100:80
@@ -1000,25 +1054,25 @@ Environment=XDG_RUNTIME_DIR=/run/user/1001
 WantedBy=default.target
 EOF
 
-# 6. Restore the Bareos configuration from backup into the named volumes.
-#    If the volumes were already restored in step 8b, skip this.
-#    If you are working from a config backup (e.g., git repo):
+# 6. Restore the Bareos configuration from backup.
+#    Director and Storage Daemon config are HOST DIRECTORIES (bind-mount
+#    sources); File Daemon and WebUI config are NAMED VOLUMES.
 
+# 6a. Restore the host config directories (Director + SD + shared scripts)
+sudo cp -a /mnt/backup-drive/bareos-config/etc-bareos/bareos-dir.d /etc/bareos/
+sudo cp -a /mnt/backup-drive/bareos-config/etc-bareos/bareos-sd.d  /etc/bareos/
+sudo cp -a /mnt/backup-drive/bareos-config/etc-bareos/scripts      /etc/bareos/
+sudo chmod 750 /etc/bareos/scripts/*.sh
+sudo restorecon -Rv /etc/bareos/
+
+# 6b. Restore the File Daemon and WebUI config named volumes
 sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
 
   # Create volumes if they do not exist
-  for vol in bareos-dir-config bareos-dir-state bareos-sd-config bareos-fd-config bareos-webui-config; do
+  for vol in bareos-working bareos-fd-config bareos-webui-config; do
     podman volume create "$vol" 2>/dev/null || true
   done
-
-  # Restore Director config
-  DIR_CONFIG=$(podman volume inspect bareos-dir-config --format "{{.Mountpoint}}")
-  cp -r /mnt/backup-drive/bareos-config/director/* "$DIR_CONFIG/"
-
-  # Restore Storage Daemon config
-  SD_CONFIG=$(podman volume inspect bareos-sd-config --format "{{.Mountpoint}}")
-  cp -r /mnt/backup-drive/bareos-config/storage/* "$SD_CONFIG/"
 
   # Restore File Daemon config
   FD_CONFIG=$(podman volume inspect bareos-fd-config --format "{{.Mountpoint}}")
@@ -1033,13 +1087,13 @@ sudo -u bareos bash -c '
   else
     echo "WARNING: No webui config backup found at /mnt/backup-drive/bareos-config/webui"
     echo "You will need to recreate directors.ini and configuration.ini manually."
-    echo "See Chapter 6, Section 12 for the correct content."
+    echo "See Chapter 6 for the correct content."
   fi
 
   echo "Configuration restored."
 '
 
-# 6. Fix ownership of all restored configs inside volumes
+# 6c. Fix ownership of all restored configs inside the named volumes
 sudo chown -R 1001:1001 \
   /home/bareos/.local/share/containers/storage/volumes/
 
@@ -1137,16 +1191,12 @@ Run these commands inside bconsole:
 # Check a specific client's most recent backup
 *list joblog jobid=<most_recent_full_job_id>
 
-# Verify a specific volume is readable by the Storage Daemon
-*label barcodes
-# (Skip this — we are using existing volumes, not labeling new ones)
-
 # Update the volume catalog status based on what is actually on disk.
-# This is important after moving storage to a new host.
+# This is useful after moving storage to a new host.
 *update volume=Full-0001 volstatus=Used
 
-# Or update all volumes in a pool at once:
-*update slots storage=File1 drive=0
+# (Note: "label barcodes" and "update slots" exist only for tape
+# autochangers — they do not apply to our File device.)
 ```
 
 If `list volumes` shows volumes with status `Error`, it means the Storage Daemon cannot find the physical file. Verify:
@@ -1216,7 +1266,7 @@ A successful test restore confirms:
 
 When the Catalog is unavailable or corrupted, bootstrap files are your lifeline. The `bextract` and `bscan` utilities work directly with volume files, bypassing the Director entirely.
 
-> **Container context:** `bextract` and `bscan` are part of the `bareos-storage` container image. You run them via `podman exec bareos-storage bextract …`. All paths in these commands are **paths inside the container** — for example `/var/lib/bareos/storage` is the container's bind-mounted storage volume, and `/tmp/bextract-output` is a path inside the container's filesystem.
+> **Container context:** `bextract` and `bscan` are part of the `bareos-storage` container image. You run them via `podman exec bareos-storage bextract …`. All paths in these commands are **paths inside the container** — for example `/var/lib/bareos/storage` is the directory where the volume files live (the bind-mounted storage volume), and `/tmp/bextract-output` is a path inside the container's filesystem. Note that these tools take the SD **Device name** (`FileStorage`) as the device argument, not a filesystem path; the device's `Archive Device` in `bareos-sd.d` is what points at `/var/lib/bareos/storage`.
 >
 > Before running `bextract`, stop the Director to ensure no jobs are active, but **keep the `bareos-storage` container running** so you can exec into it. If you want to run `bextract` with the SD fully stopped (e.g., to avoid any file locking), start a one-shot container with the same volume mounts instead of `podman exec`.
 
@@ -1230,16 +1280,20 @@ When the Catalog is unavailable or corrupted, bootstrap files are your lifeline.
 # Copy the bootstrap file to the host (from email, git, or offsite backup)
 cp /mnt/backup-drive/bootstrap/BackupCatalog.bsr /tmp/
 
-# Run bextract inside the Storage Daemon container
+# Run bextract inside the Storage Daemon container.
+# -c: config directory (the SD config dir inside the container)
 # -b: bootstrap file
 # -V: volume name (the file in /var/lib/bareos/storage/)
-# The last two arguments are: storage_device output_directory
+# The last two arguments are: device-name output-directory.
+# Use the Device NAME (FileStorage), not a filesystem path.
+# Confirm the exact flags with `podman exec bareos-storage bextract --help`.
 sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
   podman exec bareos-storage bextract \
+    -c /etc/bareos \
     -b /tmp/BackupCatalog.bsr \
     -V Full-0001 \
-    /var/lib/bareos/storage \
+    FileStorage \
     /tmp/bextract-output
 '
 
@@ -1266,24 +1320,27 @@ sudo -u bareos bash -c '
   # Read the DB password from the env file
   DB_PASS=$(grep MARIADB_PASSWORD ~/.config/bareos/db.env | cut -d= -f2)
 
-  # Scan a single volume
+  # Scan a single volume.
+  # -c: config dir, -n/-u/-p/-h: catalog database name/user/password/host,
+  # -V: volume name, final arg: the Device NAME (FileStorage).
+  # Confirm flags with `podman exec bareos-storage bscan --help`.
   podman exec bareos-storage bscan \
-    -B \
+    -c /etc/bareos \
+    -n bareos \
     -u bareos \
     -p "${DB_PASS}" \
-    -n bareos \
     -h bareos-db \
     -V Full-0001 \
     FileStorage
 
-  # To scan ALL volumes in the storage directory:
-  for vol in $(ls /srv/bareos-storage/volumes/); do
+  # To scan ALL volumes in the storage directory (list inside the container):
+  for vol in $(podman exec bareos-storage ls /var/lib/bareos/storage/); do
     echo "Scanning volume: $vol"
     podman exec bareos-storage bscan \
-      -B \
+      -c /etc/bareos \
+      -n bareos \
       -u bareos \
       -p "${DB_PASS}" \
-      -n bareos \
       -h bareos-db \
       -V "$vol" \
       FileStorage
@@ -1353,7 +1410,7 @@ sudo -u bareos bash -c '
 # Follow the interactive prompts to select the client and update its name.
 
 # Alternatively, use SQL directly (use with extreme caution):
-# podman exec bareos-db mysql --user=bareos --password=... bareos \
+# podman exec bareos-db mariadb --user=bareos --password=... bareos \
 #   -e "UPDATE Client SET Name='new-client-fd' WHERE Name='old-client-fd';"
 ```
 
@@ -1445,14 +1502,10 @@ A runbook is a step-by-step guide written *before* a disaster, stored *outside* 
 Last updated: YYYY-MM-DD
 Tested: YYYY-MM-DD (DR drill result: RTO=Xh Xm)
 
-[↑ Back to Table of Contents](#table-of-contents)
-
 ## Contact Information
 - Primary admin: Name, phone, email
 - Secondary admin: Name, phone, email
 - Offsite storage contact: Name, phone
-
-[↑ Back to Table of Contents](#table-of-contents)
 
 ## System Inventory
 - Director hostname: bareos.example.com
@@ -1465,20 +1518,14 @@ Tested: YYYY-MM-DD (DR drill result: RTO=Xh Xm)
 - File Daemon image: docker.io/bareos/bareos-client:24
 - MariaDB image: docker.io/library/mariadb:10.11
 
-[↑ Back to Table of Contents](#table-of-contents)
-
 ## Credential Locations
 - DB env file: /home/bareos/.config/bareos/db.env (encrypted backup at: ...)
 - Bareos env file: /home/bareos/.config/bareos/bareos.env (encrypted backup at: ...)
 - Configuration backup: git repo at git@github.com:org/bareos-config.git
 
-[↑ Back to Table of Contents](#table-of-contents)
-
 ## Recovery Steps
 1. (Reference Section 8 of Chapter 18)
 2. ...
-
-[↑ Back to Table of Contents](#table-of-contents)
 
 ## Verification Checklist
 - [ ] All services running: systemctl --user status bareos-*.service
@@ -1566,7 +1613,7 @@ rclone sync \
 # Also sync the catalog dump
 sudo -u bareos bash -c '
 rclone sync \
-  ~/.local/share/containers/storage/volumes/bareos-dir-config/_data/catalog-backup/ \
+  ~/.local/share/containers/storage/volumes/bareos-working/_data/catalog-dump/ \
   bareos-offsite:my-bucket/bareos-catalog/ \
   --include="*.sql.gz" \
   --log-file=/var/log/bareos-rclone.log \
@@ -1661,9 +1708,13 @@ Verify the job completed with status `T` (Terminated OK).
 
 ```bash
 sudo -u bareos bash -c '
-  ls -la ~/.local/share/containers/storage/volumes/bareos-dir-config/_data/catalog-backup/
+  ls -la ~/.local/share/containers/storage/volumes/bareos-working/_data/catalog-dump/
 '
-# You should see a file like: bareos-catalog-20260224-030000.sql.gz
+# You should see the file: bareos-catalog.sql.gz
+# NOTE: the BackupCatalog job's After RunScript deletes this dump once the
+# job has captured it. To keep it for this lab, either take a manual dump
+# (podman exec bareos-director /etc/bareos/scripts/dump-catalog.sh) or
+# temporarily disable the delete-catalog-dump.sh RunScript.
 ```
 
 ### Step 3: Simulate Catalog Loss
@@ -1694,15 +1745,17 @@ sudo -u bareos bash -c '
 ### Step 4: Restore the Catalog
 
 ```bash
-CATALOG_DUMP=$(sudo -u bareos ls ~/.local/share/containers/storage/volumes/bareos-dir-config/_data/catalog-backup/*.sql.gz | tail -1)
+CATALOG_DUMP=$(sudo -u bareos ls ~/.local/share/containers/storage/volumes/bareos-working/_data/catalog-dump/*.sql.gz | tail -1)
 DB_PASS=$(sudo -u bareos grep MARIADB_PASSWORD /home/bareos/.config/bareos/db.env | cut -d= -f2)
 ROOT_PASS=$(sudo -u bareos grep MARIADB_ROOT_PASSWORD /home/bareos/.config/bareos/db.env | cut -d= -f2)
 
 sudo -u bareos bash -c "
   XDG_RUNTIME_DIR=/run/user/1001
-  podman exec bareos-db mysql --user=root --password='${ROOT_PASS}' \
+  # The charset below is only the database default; the dump's per-table
+  # CREATE TABLE charsets take precedence for the catalog tables themselves.
+  podman exec bareos-db mariadb --user=root --password='${ROOT_PASS}' \
     -e 'CREATE DATABASE IF NOT EXISTS bareos CHARACTER SET utf8mb4;'
-  zcat '${CATALOG_DUMP}' | podman exec -i bareos-db mysql \
+  zcat '${CATALOG_DUMP}' | podman exec -i bareos-db mariadb \
     --user=bareos --password='${DB_PASS}' bareos
   echo 'Catalog restored.'
 "
@@ -1744,13 +1797,21 @@ sudo mkdir -p /mnt/lab-backup/{volumes,catalog,config/env,config/quadlet}
 # Copy storage volumes
 sudo rsync -av /srv/bareos-storage/volumes/ /mnt/lab-backup/volumes/
 
-# Copy catalog dump
+# Take and copy a fresh catalog dump (the scheduled job deletes its own dump)
 sudo -u bareos bash -c '
-  cp ~/.local/share/containers/storage/volumes/bareos-dir-config/_data/catalog-backup/*.sql.gz \
+  XDG_RUNTIME_DIR=/run/user/1001
+  podman exec bareos-director /etc/bareos/scripts/dump-catalog.sh
+  cp ~/.local/share/containers/storage/volumes/bareos-working/_data/catalog-dump/*.sql.gz \
      /mnt/lab-backup/catalog/
 '
 
-# Copy config
+# Copy the host config directories (Director + SD + shared scripts)
+sudo mkdir -p /mnt/lab-backup/config/etc-bareos
+sudo cp -a /etc/bareos/bareos-dir.d /mnt/lab-backup/config/etc-bareos/
+sudo cp -a /etc/bareos/bareos-sd.d  /mnt/lab-backup/config/etc-bareos/
+sudo cp -a /etc/bareos/scripts      /mnt/lab-backup/config/etc-bareos/
+
+# Copy env files and Quadlet units
 sudo -u bareos bash -c '
   cp ~/.config/bareos/db.env /mnt/lab-backup/config/env/
   cp ~/.config/bareos/bareos.env /mnt/lab-backup/config/env/
@@ -1765,14 +1826,14 @@ echo "Assets backed up to /mnt/lab-backup/"
 sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
   echo "Stopping all services..."
-  systemctl --user stop bareos-director.service bareos-storage.service \
-    bareos-fd.service bareos-db.service 2>/dev/null || true
+  systemctl --user stop bareos-webui.service bareos-director.service \
+    bareos-storage.service bareos-fd.service bareos-db.service 2>/dev/null || true
 
   echo "Removing all containers..."
-  podman rm -f bareos-director bareos-storage bareos-fd bareos-db 2>/dev/null || true
+  podman rm -f bareos-webui bareos-director bareos-storage bareos-fd bareos-db 2>/dev/null || true
 
   echo "Removing all named volumes..."
-  for vol in bareos-db-data bareos-dir-config bareos-dir-state bareos-sd-config bareos-fd-config; do
+  for vol in bareos-db-data bareos-working bareos-fd-config bareos-webui-config; do
     podman volume rm "$vol" 2>/dev/null || true
   done
 
@@ -1795,7 +1856,7 @@ echo "Storage volumes wiped."
 # 8a: User already exists, lingering already enabled. Re-create storage dir:
 sudo mkdir -p /srv/bareos-storage/volumes
 sudo chown bareos:bareos /srv/bareos-storage/volumes
-sudo semanage fcontext -a -t bareos_store_t "/srv/bareos-storage/volumes(/.*)?" 2>/dev/null || true
+sudo semanage fcontext -a -t container_file_t "/srv/bareos-storage(/.*)?" 2>/dev/null || true
 sudo restorecon -Rv /srv/bareos-storage/volumes/
 
 # 8b: Restore storage volumes
@@ -1811,11 +1872,17 @@ sudo chown bareos:bareos /home/bareos/.config/bareos/db.env \
 sudo chmod 600 /home/bareos/.config/bareos/db.env \
   /home/bareos/.config/bareos/bareos.env
 
-# 8d: Restore Quadlet files
+# 8d: Restore the host config directories and the Quadlet files
+sudo cp -a /mnt/lab-backup/config/etc-bareos/bareos-dir.d /etc/bareos/
+sudo cp -a /mnt/lab-backup/config/etc-bareos/bareos-sd.d  /etc/bareos/
+sudo cp -a /mnt/lab-backup/config/etc-bareos/scripts      /etc/bareos/
+sudo chmod 750 /etc/bareos/scripts/*.sh
+sudo restorecon -Rv /etc/bareos/
+
 sudo -u bareos bash -c '
-  cp /mnt/lab-backup/config/quadlet/*.container ~/.config/containers/systemd/
   cp /mnt/lab-backup/config/quadlet/*.network ~/.config/containers/systemd/
   cp /mnt/lab-backup/config/quadlet/*.volume ~/.config/containers/systemd/
+  cp /mnt/lab-backup/config/quadlet/*.container ~/.config/containers/systemd/
   XDG_RUNTIME_DIR=/run/user/1001
   systemctl --user daemon-reload
   systemctl --user start bareos-db.service
@@ -1828,16 +1895,17 @@ DB_PASS=$(sudo -u bareos grep MARIADB_PASSWORD /home/bareos/.config/bareos/db.en
 ROOT_PASS=$(sudo -u bareos grep MARIADB_ROOT_PASSWORD /home/bareos/.config/bareos/db.env | cut -d= -f2)
 sudo -u bareos bash -c "
   XDG_RUNTIME_DIR=/run/user/1001
-  podman exec bareos-db mysql --user=root --password='${ROOT_PASS}' \
+  podman exec bareos-db mariadb --user=root --password='${ROOT_PASS}' \
     -e 'CREATE DATABASE IF NOT EXISTS bareos CHARACTER SET utf8mb4;'
-  zcat '${CATALOG_DUMP}' | podman exec -i bareos-db mysql \
+  zcat '${CATALOG_DUMP}' | podman exec -i bareos-db mariadb \
     --user=bareos --password='${DB_PASS}' bareos
 "
 
 # Start remaining services
 sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
-  systemctl --user start bareos-storage.service bareos-fd.service bareos-director.service
+  systemctl --user start bareos-storage.service bareos-fd.service \
+    bareos-director.service bareos-webui.service
   sleep 10
   echo "Services status:"
   systemctl --user status bareos-director.service --no-pager
@@ -1859,18 +1927,18 @@ echo "Rebuild complete. Verify all jobs are visible above."
 
 **Objective**: Restore a file from a Bareos volume using only a bootstrap file — no running Director or Catalog required.
 
-**Prerequisites**: You have a `.bsr` file (from email, git, or `~/.local/share/containers/storage/volumes/bareos-dir-state/_data/`), and the corresponding volume file exists in `/srv/bareos-storage/volumes/`.
+**Prerequisites**: You have a `.bsr` file (from email, git, or `~/.local/share/containers/storage/volumes/bareos-working/_data/`), and the corresponding volume file exists in `/srv/bareos-storage/volumes/`.
 
 ```bash
 # 1. Identify the bootstrap file for the job you want to restore
 sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
-  ls ~/.local/share/containers/storage/volumes/bareos-dir-state/_data/*.bsr
+  ls ~/.local/share/containers/storage/volumes/bareos-working/_data/*.bsr
 '
-# Example output: /home/bareos/.local/.../bareos-dir-state/_data/BackupClient1.bsr
+# Example output: /home/bareos/.local/.../bareos-working/_data/BackupLocalHost.bsr
 
 # 2. View the bootstrap file to understand what volume and files it references
-sudo -u bareos cat ~/.local/share/containers/storage/volumes/bareos-dir-state/_data/BackupClient1.bsr
+sudo -u bareos cat ~/.local/share/containers/storage/volumes/bareos-working/_data/BackupLocalHost.bsr
 
 # 3. Verify the referenced volume file exists
 ls -la /srv/bareos-storage/volumes/Full-0001
@@ -1879,7 +1947,7 @@ ls -la /srv/bareos-storage/volumes/Full-0001
 sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
   podman cp \
-    ~/.local/share/containers/storage/volumes/bareos-dir-state/_data/BackupClient1.bsr \
+    ~/.local/share/containers/storage/volumes/bareos-working/_data/BackupLocalHost.bsr \
     bareos-storage:/tmp/restore.bsr
 '
 
@@ -1889,17 +1957,21 @@ sudo -u bareos bash -c '
   podman exec bareos-storage mkdir -p /tmp/bsr-restore
 '
 
-# 6. Run bextract using the bootstrap file
+# 6. Run bextract using the bootstrap file.
+# Match Section 9: -c config dir, -b bootstrap, -V volume, FileStorage device.
+# Confirm the exact flags with `podman exec bareos-storage bextract --help`.
 sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
   podman exec bareos-storage bextract \
+    -c /etc/bareos \
     -b /tmp/restore.bsr \
-    /var/lib/bareos/storage \
+    -V Full-0001 \
+    FileStorage \
     /tmp/bsr-restore
 '
 # bextract will print each file as it extracts it.
-# Expected output:
-# bextract: butil.c:304 Using device: "/var/lib/bareos/storage" for reading.
+# Expected output (abbreviated):
+# bextract: Using device "FileStorage" for reading.
 # 1 file(s) restored.
 
 # 7. View the extracted files

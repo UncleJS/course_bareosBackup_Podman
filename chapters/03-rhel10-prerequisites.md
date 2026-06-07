@@ -173,7 +173,7 @@ SELinux adds a second question: *"Even if you have permission, is this type of p
 
 Every process runs with a **context** (label), and every file has a **context**. SELinux enforces a policy that defines which process contexts can access which file contexts with which operations.
 
-Example:
+Example (RPM-install background only):
 ```bash
 # See the SELinux context of a process
 ps -eZ | grep bareos
@@ -184,7 +184,9 @@ ls -Z /etc/bareos/bareos-dir.conf
 # Output: system_u:object_r:bareos_etc_t:s0  ...
 ```
 
-The `bareos_t` process context is only allowed to read files labeled `bareos_etc_t`. If a Bareos config file is accidentally created with the wrong label (e.g., `unlabeled_t`), Bareos will fail to read it even though POSIX permissions appear correct.
+The `bareos_t` process context is only allowed to read files labeled `bareos_etc_t`. If a Bareos config file is accidentally created with the wrong label (e.g., `unlabeled_t`), Bareos would fail to read it even though POSIX permissions appear correct.
+
+> **Important — these labels apply only to a native RPM install of Bareos.** In *this* course Bareos runs entirely in Podman containers, so every Bareos process runs as `container_t` and every file it touches must be labeled `container_file_t`, not `bareos_t`/`bareos_etc_t`/`bareos_store_t`. The Bareos-specific SELinux types are shown here purely as RPM-install background; no container workflow in this course depends on them.
 
 ### SELinux Modes
 
@@ -217,13 +219,13 @@ sudo setenforce 1
 
 When Podman mounts a volume into a container, the files inside the container are accessed under the container's SELinux context (`container_t` by default). Host files that are labeled `user_home_t` or other non-container types will be denied.
 
-The solution is volume mount options:
-- `:z` — Relabels the volume to a shared container label (`container_file_t`). Multiple containers can access it.
-- `:Z` — Relabels the volume to a private container label. Only one container can access it.
+The solution is volume mount options (both apply the `container_file_t` type):
+- `:z` — shared label: relabels the volume `container_file_t` with no MCS category, so multiple containers can access it.
+- `:Z` — private label: relabels the volume `container_file_t` *and* adds the container's unique MCS category pair, so only that single container can access it.
 
 ```bash
 # Example: mount a host directory with correct SELinux relabeling
-podman run -v /opt/bareos-data:/data:Z bareos/bareos-director
+podman run -v /opt/bareos-data:/data:Z docker.io/bareos/bareos-director:24
 ```
 
 > **Warning:** Do not use `:z` or `:Z` on directories that other non-container processes need to access with their original labels. The relabeling is persistent.
@@ -248,15 +250,14 @@ We will use these tools throughout the course whenever SELinux is involved.
 
 ### SELinux Booleans for Bareos
 
-Some SELinux behaviors can be toggled without writing custom policies:
+Some SELinux behaviors can be toggled without writing custom policies. SELinux booleans are listed and set like this:
 
 ```bash
-# Allow network connections from bareos daemons
-sudo setsebool -P bareos_use_network on
-
-# List all bareos-related booleans
+# List all bareos-related booleans (only present if the RPM policy is installed)
 sudo getsebool -a | grep bareos
 ```
+
+> **RPM-only aside.** The `bareos_use_network` boolean (`setsebool -P bareos_use_network on`) belongs to the SELinux policy shipped with the *native RPM* Bareos packages — it governs the `bareos_t` domain. In this course Bareos runs in containers as `container_t`, so this boolean is irrelevant: container network access is governed by the container policy, not the Bareos RPM policy. You would only ever touch `bareos_use_network` if you ran the Bareos daemons natively from RPM on the host.
 
 ---
 
@@ -363,10 +364,11 @@ Running rootless Podman services under a dedicated system user provides:
 ### Creating the User
 
 ```bash
-# Create a system user 'bareos' with a home directory but no login shell
-# UID 1001 is chosen for clarity; adjust for your environment
+# Create a dedicated 'bareos' user with a home directory but no login shell
+# UID 1001 is chosen explicitly for clarity; adjust for your environment.
+# (No --system here: UID 1001 is in the regular-user range, and pinning an
+#  explicit UID already makes --system redundant.)
 sudo useradd \
-  --system \
   --uid 1001 \
   --create-home \
   --home-dir /home/bareos \
@@ -518,15 +520,17 @@ sudo chown -R bareos:bareos /srv/bareos-storage
 sudo chmod 750 /srv/bareos-storage
 sudo chmod 750 /srv/bareos-storage/{volumes,archive}
 
-# Set the correct SELinux context for Bareos storage
-# bareos_store_t is the correct type for Bareos Volume storage
-sudo semanage fcontext -a -t bareos_store_t "/srv/bareos-storage(/.*)?"
+# Set the correct SELinux context for Bareos storage.
+# Because this directory is bind-mounted into the Storage Daemon CONTAINER,
+# it must be labeled container_file_t (the type container_t is allowed to
+# access) — NOT the RPM-only bareos_store_t type.
+sudo semanage fcontext -a -t container_file_t "/srv/bareos-storage(/.*)?"
 sudo restorecon -Rv /srv/bareos-storage
 
 # Verify the context
 ls -Z /srv/bareos-storage/
-# Output: unconfined_u:object_r:bareos_store_t:s0 volumes
-#         unconfined_u:object_r:bareos_store_t:s0 archive
+# Output: unconfined_u:object_r:container_file_t:s0 volumes
+#         unconfined_u:object_r:container_file_t:s0 archive
 ```
 
 ### Setting Up Podman Volume Root for the Bareos User
@@ -726,9 +730,11 @@ podman --version
 ### Verifying Rootless Podman Functionality
 
 ```bash
-# Test rootless Podman works for the bareos user
+# Test rootless Podman works for the bareos user.
+# Use the fully-qualified name — short-name resolution may not be
+# configured yet at this point in the course.
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman run --rm hello-world
+  podman run --rm docker.io/library/hello-world
 
 # Expected: "Hello from Docker!" message (it's the same image, don't worry about the Docker branding)
 ```
@@ -775,8 +781,8 @@ sudo dnf install -y \
   policycoreutils-python-utils setools-console audit \
   firewalld chrony xfsprogs vim curl wget jq openssl nmap-ncat
 
-echo "=== Step 5: Create bareos system user ==="
-sudo useradd --system --uid 1001 --create-home \
+echo "=== Step 5: Create bareos user ==="
+sudo useradd --uid 1001 --create-home \
   --home-dir /home/bareos \
   --shell /sbin/nologin \
   --comment "Bareos Backup Service Account" \
@@ -798,8 +804,8 @@ sudo mkdir -p /srv/bareos-storage/{volumes,archive}
 sudo chown -R bareos:bareos /srv/bareos-storage
 sudo chmod 750 /srv/bareos-storage /srv/bareos-storage/{volumes,archive}
 
-echo "=== Step 9: SELinux context for storage ==="
-sudo semanage fcontext -a -t bareos_store_t "/srv/bareos-storage(/.*)?"
+echo "=== Step 9: SELinux context for storage (container_file_t — bind-mounted into the SD container) ==="
+sudo semanage fcontext -a -t container_file_t "/srv/bareos-storage(/.*)?"
 sudo restorecon -Rv /srv/bareos-storage
 
 echo "=== Step 10: Configure firewall ==="
@@ -923,7 +929,7 @@ OWNER=$(stat -c '%U' /srv/bareos-storage 2>/dev/null)
 
 # 10. SELinux context on storage
 FCTX=$(ls -Zd /srv/bareos-storage 2>/dev/null | awk '{print $1}')
-echo "$FCTX" | grep -q "bareos_store_t" && check "SELinux context bareos_store_t on storage" PASS || check "SELinux context bareos_store_t on storage (got: $FCTX)" FAIL
+echo "$FCTX" | grep -q "container_file_t" && check "SELinux context container_file_t on storage" PASS || check "SELinux context container_file_t on storage (got: $FCTX)" FAIL
 
 # 11. Podman available
 podman --version >/dev/null 2>&1 && check "Podman is installed" PASS || check "Podman is installed" FAIL
@@ -968,7 +974,7 @@ In this chapter you prepared the RHEL 10 host for the Bareos deployment:
 - **SELinux** understood: enforcing mode always, volume mount labels (`:z`/`:Z`), audit log reading with `ausearch` and `audit2allow`.
 - **Firewall** configured: custom `bareos` service definition in firewalld with ports 9101, 9102, and 9103 open on the internal zone.
 - **Dedicated `bareos` system user** created with subuid/subgid ranges and lingering enabled for rootless Podman.
-- **Storage disk** formatted (XFS), mounted (`/srv/bareos-storage`), owned by `bareos`, and labeled `bareos_store_t` for SELinux.
+- **Storage disk** formatted (XFS), mounted (`/srv/bareos-storage`), owned by `bareos`, and labeled `container_file_t` for SELinux (so the Storage Daemon container can access it).
 - **Time synchronization** enforced via chrony — critical for all Bareos components.
 - **Kernel tuning** applied: file descriptor limits, VM swappiness, network buffer sizes.
 - **Verification script** confirms all 14 prerequisites are in place.

@@ -17,7 +17,6 @@
 - [4. The UID Mapping Problem](#4-the-uid-mapping-problem)
   - [Understanding the Mapping](#understanding-the-mapping)
   - [How bareos-fd Gets Access](#how-bareos-fd-gets-access)
-  - [Granting SELinux Access to Named Volume Files](#granting-selinux-access-to-named-volume-files)
 - [5. Strategy 1: Back Up Named Volume Data Directly](#5-strategy-1-back-up-named-volume-data-directly)
   - [Pros and Cons](#pros-and-cons)
   - [When to Use](#when-to-use)
@@ -123,12 +122,7 @@ ls -Zd /home/bareos/.local/share/containers/storage/volumes/myapp-data/_data
 # Output: system_u:object_r:container_file_t:s0  _data/
 ```
 
-The Bareos File Daemon runs as the `bareos` user inside its container (`container_t` SELinux context). Because the container FD itself also runs under `container_t`, it already has access to files labeled `container_file_t` — **no custom SELinux policy is required**. The host filesystem is bind-mounted read-only at `/hostfs` inside the container, so volume paths are accessed as `/hostfs/home/bareos/.local/share/containers/storage/volumes/...`
-
-```bash
-ls -Zd /home/bareos/.local/share/containers/storage/volumes/myapp-data/_data
-# Output: system_u:object_r:container_file_t:s0  _data/
-```
+The `container_file_t` label is how containers normally reach volume data: a container running under `container_t` can read `container_file_t` files. Our File Daemon is a container too, but it does not rely on that category match — it is started with `SecurityLabelDisable=true` (set in [Chapter 6](./06-installing-bareos-podman.md)), which turns off SELinux label separation for the FD container so it can read the host's `/hostfs` view regardless of the label on each file. The host filesystem is bind-mounted read-only at `/hostfs` inside the FD container, so volume paths are accessed as `/hostfs/home/bareos/.local/share/containers/storage/volumes/...`. **No custom SELinux policy module is required.**
 
 ---
 
@@ -143,7 +137,7 @@ Bind mounts are host directories that are mounted into a container. They live at
 podman run -d \
   --name webapp \
   -v /opt/webapp-data:/app/data:Z \
-  docker.io/myapp:latest
+  docker.io/example/myapp:1.0   # hypothetical application image
 ```
 
 The application data lives at `/opt/webapp-data/` on the host — a completely normal host directory. Back it up exactly as you would any other directory:
@@ -153,7 +147,9 @@ FileSet {
   Name = "WebApp-BindMount"
   Include {
     Options { Signature = SHA256; Compression = ZSTD }
-    File = /opt/webapp-data
+    # FD sees the host read-only under /hostfs, so the host path /opt/webapp-data
+    # is catalogued as /hostfs/opt/webapp-data.
+    File = /hostfs/opt/webapp-data
   }
 }
 ```
@@ -216,15 +212,15 @@ ls -lan /home/bareos/.local/share/containers/storage/volumes/myapp-data/_data/
 #          -rw-r--r--. 1 100000 100000  ...  config.json
 ```
 
-The Bareos File Daemon runs as the `bareos` user (UID 1001) **inside its container**. It tries to read files owned by UID 100000. Since 100000 ≠ 1001, the FD must rely on:
-- **Other permissions** (the world-readable bit on the files), or
-- **Container SELinux access**: the FD container runs as `container_t`, which can already read `container_file_t` labeled files — no special configuration needed
+The Bareos File Daemon runs as the `bareos` user (UID 1001) **inside its container**. Through the read-only `/hostfs` bind-mount it reads files owned by UID 100000 on the host. Two things make this work:
+- **File mode bits**: the world-readable bit on the files lets a non-owning UID read them
+- **SELinux is not in the way**: the FD container is started with `SecurityLabelDisable=true` (Chapter 6), so SELinux label separation does not constrain its host reads — the `container_file_t` label on each volume file is irrelevant to the FD
 
 ### How bareos-fd Gets Access
 
-The `bareos-fd` container runs with the host filesystem bind-mounted read-only at `/hostfs`. The container process runs as the `bareos` user under the `container_t` SELinux context, which by default has read access to `container_file_t` volumes (both use the same SELinux category). **No custom SELinux policy module is required** — this is a key advantage of running the FD as a container rather than a host RPM service.
+The `bareos-fd` container runs with the host filesystem bind-mounted read-only at `/hostfs`, and is launched with `SecurityLabelDisable=true` (set when the FD container was created in [Chapter 6](./06-installing-bareos-podman.md)). With label separation disabled, the FD reads everything under `/hostfs` — bind mounts and `container_file_t`-labeled named-volume data alike — without any custom SELinux policy. **No custom SELinux module is required.**
 
-> **Note for host RPM FD users:** If you ever deploy a host-installed `bareos-fd` RPM service (e.g., for a non-containerized client), the `bareos_t` process context may need an explicit SELinux allow rule to read `container_file_t` files. See [Chapter 13](./13-rootless-podman-specifics.md) for details.
+> **Note for host RPM FD users:** This advantage is specific to the *containerized* FD. A host-installed `bareos-fd` RPM service runs in the `bareos_t` domain and *would* need an explicit SELinux allow rule to read `container_file_t` volume files — that is the only scenario where a custom policy module enters the picture. See [Chapter 13](./13-rootless-podman-specifics.md) for details.
 
 ---
 
@@ -549,16 +545,9 @@ After restoring volume data from a backup, you need to put it back into the name
 ```bash
 # Step 1: Restore using bconsole to a temporary location
 bconsole <<'EOF'
-restore
-5
-1
-cd /home/bareos/.local/share/containers/storage/volumes/myapp-data/_data
-mark *
-done
-mod
-9
-/tmp/volume-restore-temp
-yes
+restore client=bareos-fd \
+  file=/hostfs/home/bareos/.local/share/containers/storage/volumes/myapp-data/_data \
+  select current all done where=/tmp/volume-restore-temp yes
 wait
 quit
 EOF
@@ -571,8 +560,8 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman run --rm \
     -v myapp-data:/target:Z \
-    -v /tmp/volume-restore-temp/home/bareos/.local/share/containers/storage/volumes/myapp-data/_data:/source:ro,Z \
-    alpine sh -c "rm -rf /target/* && cp -a /source/. /target/"
+    -v /tmp/volume-restore-temp/hostfs/home/bareos/.local/share/containers/storage/volumes/myapp-data/_data:/source:ro,Z \
+    docker.io/library/alpine:3.19 sh -c "rm -rf /target/* && cp -a /source/. /target/"
 
 # Step 4: Restart the container
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
@@ -593,16 +582,9 @@ If you used the `podman volume export` strategy, restore is simpler:
 ```bash
 # Restore the archive from Bareos to a temp path
 bconsole <<'EOF'
-restore
-5
-1
-cd /var/lib/bareos/volume-exports
-mark myapp-data.tar
-done
-mod
-9
-/tmp/volume-tar-restore
-yes
+restore client=bareos-fd \
+  file=/hostfs/var/lib/bareos/volume-exports/myapp-data.tar \
+  select current all done where=/tmp/volume-tar-restore yes
 wait
 quit
 EOF
@@ -613,7 +595,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman stop myapp
 # Import the tar back into the volume
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman volume import myapp-data \
-  /tmp/volume-tar-restore/var/lib/bareos/volume-exports/myapp-data.tar
+  /tmp/volume-tar-restore/hostfs/var/lib/bareos/volume-exports/myapp-data.tar
 
 # Restart
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman start myapp
@@ -637,7 +619,7 @@ podman volume create testapp-data
 # Run a container that writes data to the volume
 podman run --rm \
   -v testapp-data:/data:Z \
-  alpine sh -c "
+  docker.io/library/alpine:3.19 sh -c "
     mkdir -p /data/config /data/uploads
     echo '{\"key\":\"value\"}' > /data/config/app.json
     echo 'important document content' > /data/uploads/doc1.txt
@@ -651,7 +633,9 @@ VOLUME_PATH=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman volume inspect testapp-data --format '{{.Mountpoint}}')
 echo "Volume data path: ${VOLUME_PATH}"
 
-# Step 3: Verify FD can read the files (must be running as root)
+# Step 3: Inspect ownership — files are owned by sub-UID 100000.
+# The containerized FD reads them through /hostfs with SecurityLabelDisable (Ch6),
+# so no host-side privilege or SELinux module is needed.
 ls -lan "${VOLUME_PATH}"
 
 # Step 4: Create a FileSet for this volume
@@ -663,7 +647,9 @@ FileSet {
       Signature = SHA256
       Compression = ZSTD
     }
-    File = ${VOLUME_PATH}
+    # The FD sees the host read-only under /hostfs, so prefix the host
+    # mountpoint with /hostfs to reach the volume data inside the container.
+    File = /hostfs${VOLUME_PATH}
   }
 }
 FEOF
@@ -716,7 +702,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   --name testwebapp \
   -v /srv/testwebapp/config:/app/config:Z \
   -v /srv/testwebapp/data:/app/data:Z \
-  alpine sleep infinity
+  docker.io/library/alpine:3.19 sleep infinity
 
 # Step 3: Create the FileSet (simple — it's just host paths)
 sudo -u bareos tee /etc/bareos/bareos-dir.d/fileset/BindMountApp.conf > /dev/null <<'FEOF'
@@ -748,7 +734,12 @@ quit
 EOF
 
 # Step 5: Verify backed-up files
-echo "list files jobid=latest" | bconsole | grep testwebapp
+# Capture the JobId of the backup we just ran, then list its files by number
+# (`jobid=latest` is not a valid selector for `list files`).
+JOBID=$(echo "list jobs job=BackupLocalHost" | bconsole \
+  | awk -F'|' '/BackupLocalHost/ {gsub(/ /,"",$2); id=$2} END {print id}')
+echo "Backup JobId: ${JOBID}"
+echo "list files jobid=${JOBID}" | bconsole | grep testwebapp
 
 # Cleanup
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman rm -f testwebapp
@@ -781,33 +772,31 @@ NEW_VOLUME_PATH=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 echo "New (empty) volume path: ${NEW_VOLUME_PATH}"
 ls -la "${NEW_VOLUME_PATH}"
 
-# Step 3: Restore the backup
-bconsole <<'BEOF'
-restore
-5
-1
-
-cd ${VOLUME_PATH}
-mark *
-lsmark
-
-done
-mod
-9
-/tmp/volume-restore-lab
-
-yes
+# Step 3: Restore the backup (scripted, non-interactive form — no menu numbers).
+# The catalog path carries the /hostfs prefix, so prepend it to ${VOLUME_PATH}.
+# Note the heredoc terminator is UNQUOTED (BEOF, not 'BEOF') so ${VOLUME_PATH}
+# expands; a single-quoted <<'BEOF' would pass the literal string to bconsole.
+bconsole <<BEOF
+restore client=bareos-fd file=/hostfs${VOLUME_PATH} select current all done where=/tmp/volume-restore-lab yes
 wait
 messages
 quit
 BEOF
 
-# Step 4: Copy restored data into the volume
+# Step 4: Copy restored data into the volume.
+# The restored tree contains the extra /hostfs level, so it lives under
+# /tmp/volume-restore-lab/hostfs${VOLUME_PATH}.
 sudo cp -a \
-  "/tmp/volume-restore-lab${VOLUME_PATH}/." \
+  "/tmp/volume-restore-lab/hostfs${VOLUME_PATH}/." \
   "${NEW_VOLUME_PATH}/"
 
-# Step 5: Fix ownership (must be owned by sub-UID 100000 for rootless container access)
+# Step 5: Fix ownership.
+# This lab's files were all written as container-root, which maps to the first
+# sub-UID (100000). Flattening every file to that single sub-UID is therefore
+# correct HERE. If the volume held files owned by *several* container UIDs
+# (e.g. an appuser at UID 1000 -> sub-UID 101000), a blanket chown would corrupt
+# ownership — in that case restore preserving the stored owners, or use the
+# export/`podman volume import` strategy which round-trips ownership faithfully.
 BAREOS_SUBUID=$(grep bareos /etc/subuid | cut -d: -f2)
 sudo chown -R ${BAREOS_SUBUID}:${BAREOS_SUBUID} "${NEW_VOLUME_PATH}"
 
@@ -815,7 +804,7 @@ sudo chown -R ${BAREOS_SUBUID}:${BAREOS_SUBUID} "${NEW_VOLUME_PATH}"
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman run --rm \
   -v testapp-data:/data:ro,Z \
-  alpine sh -c "echo '=== Restored volume contents ==='; find /data -type f -exec echo {} \;"
+  docker.io/library/alpine:3.19 sh -c "echo '=== Restored volume contents ==='; find /data -type f -exec echo {} \;"
 
 echo ""
 echo "Restore of named volume complete!"
@@ -834,13 +823,13 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman volume rm testapp-data
 In this chapter you learned the full spectrum of Podman volume backup strategies:
 
 - **Named volumes vs. bind mounts**: Named volumes live in `~/.local/share/containers/storage/volumes/<name>/_data/`. Bind mounts live at explicit host paths and are simplest to back up.
-- **The UID mapping problem**: Files in named volumes are owned by subordinate UIDs (100000+). The `bareos-fd` service running as root can read them, but SELinux policy may block access. A custom SELinux module grants `bareos_t` read access to `container_file_t` files.
+- **The UID mapping problem**: Files in named volumes are owned by subordinate UIDs (100000+). The containerized `bareos-fd` reads them through its read-only `/hostfs` view; because the FD container runs with `SecurityLabelDisable=true` (Chapter 6), SELinux label separation does not constrain those reads and **no custom SELinux module is needed**. The `bareos_t`/custom-policy story applies only to a host-installed FD RPM, not to our container.
 - **Strategy 1 (direct path backup)**: Add `_data` paths to the FileSet. Simple, works for live backups of stateless applications.
 - **Strategy 2 (sidecar export)**: A temporary container exports the volume to a tar file, which is then backed up. Good for complex, stateful applications.
 - **Strategy 3 (`podman volume export`)**: Podman's built-in export command creates a portable tar archive. Simplest restore path via `podman volume import`.
 - **FileSet design**: Include `_data` subdirectories and volume export directories; exclude `locks/` and `overlay/` subdirectories.
 - **Consistency**: Use pre/post hooks for databases, enable SQLite WAL mode for live-safe backups, or use application-provided maintenance mode.
-- **Restore**: Restore to a temp path, then copy into the volume with correct UID ownership (subordinate UID range), or use `podman volume import` for the export strategy.
+- **Restore**: Restore to a temp path (remember the extra `/hostfs/` level in the restored tree), then copy into the volume. Re-apply ownership in the subordinate UID range — flattening to a single sub-UID is only correct when every file was container-root; otherwise preserve the stored owners or use `podman volume import` for the export strategy, which round-trips ownership faithfully.
 
 ---
 

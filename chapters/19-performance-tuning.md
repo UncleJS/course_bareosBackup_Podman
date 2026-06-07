@@ -62,6 +62,7 @@
 - [12. Network: TCP Tuning for Large Backup Transfers](#12-network-tcp-tuning-for-large-backup-transfers)
   - [Checking Current TCP Buffer Sizes](#checking-current-tcp-buffer-sizes)
   - [Applying TCP Tuning for Backup Workloads](#applying-tcp-tuning-for-backup-workloads)
+  - [Bareos-Level Network Buffer Size](#bareos-level-network-buffer-size)
   - [Jumbo Frames (9000 MTU)](#jumbo-frames-9000-mtu)
 - [13. Volume Auto-labeling and Pre-labeling](#13-volume-auto-labeling-and-pre-labeling)
   - [Auto-labeling Configuration](#auto-labeling-configuration)
@@ -157,24 +158,44 @@ sudo -u bareos bash -c '
 # In bconsole, list recent jobs with their byte counts and durations:
 *list jobs
 
-# For detailed stats on a specific job:
+# For detailed stats on a specific job (the job log prints a "Rate:" line
+# in KB/s at the end — the simplest per-job throughput figure):
 *list joblog jobid=<job_id>
 
-# For a summary of all jobs, including throughput (bytes/sec):
-*list statistics
+# For aggregate totals across all jobs:
+*list jobtotals
 
-# Show jobs with duration and rate (requires Bareos 23+):
-*select jobid, name, jobbytes, jobfiles,
-  (jobbytes / NULLIF(realendtime - realstarttime, 0)) as bytes_per_sec
-  from Job where JobStatus='T' order by realendtime desc limit 20;
+# The bconsole "*" prompt does NOT accept bare SQL. To run a raw query,
+# use the sqlquery command (interactive) or the dot form:
+*sqlquery
+SELECT JobId, Name, JobBytes, JobFiles,
+  (JobBytes / NULLIF(UNIX_TIMESTAMP(RealEndTime) - UNIX_TIMESTAMP(RealStartTime), 0)) AS bytes_per_sec
+FROM Job WHERE JobStatus='T' ORDER BY RealEndTime DESC LIMIT 20;
+
+# Single-line form:
+*.sql query="SELECT JobId, Name, JobBytes FROM Job WHERE JobStatus='T' ORDER BY RealEndTime DESC LIMIT 20;"
 ```
 
-The `jobbytes` column divided by the job duration (in seconds) gives you bytes per second. Convert to MB/s by dividing by 1,048,576.
+You can also run the same query directly against the catalog from the host
+shell (no bconsole), reading the password from `db.env`:
+
+```bash
+sudo -u bareos bash -c '
+  XDG_RUNTIME_DIR=/run/user/1001
+  source ~/.config/bareos/db.env
+  podman exec bareos-db mariadb -u bareos -p"$MARIADB_PASSWORD" bareos -e "
+    SELECT JobId, Name, JobBytes, JobFiles,
+      (JobBytes / NULLIF(UNIX_TIMESTAMP(RealEndTime) - UNIX_TIMESTAMP(RealStartTime), 0)) AS bytes_per_sec
+    FROM Job WHERE JobStatus=\"T\" ORDER BY RealEndTime DESC LIMIT 20;"
+'
+```
+
+The `JobBytes` column divided by the job duration (in seconds) gives you bytes per second. Convert to MB/s by dividing by 1,048,576. The `Rate:` line in the job log gives the same figure directly in KB/s.
 
 ### Step 2: Measure Disk I/O During a Backup
 
 ```bash
-# Install sysstat for iostat and iotop
+# Install sysstat for iostat and iotop (both are in the RHEL 10 base repos)
 dnf install -y sysstat iotop-ng
 
 # Watch disk I/O every second during a running backup job
@@ -202,13 +223,17 @@ sudo -u bareos bash -c '
 ### Step 3: Measure Network Throughput
 
 ```bash
+# iftop, nload, and nethogs are NOT in the RHEL 10 base repos — they live
+# in EPEL. Enable EPEL first:
+dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm
+
 # Install iftop for real-time bandwidth monitoring
 dnf install -y iftop
 
 # Monitor the primary network interface during a backup
 sudo iftop -i eth0
 
-# Or use nload for a simpler graph
+# Or use nload for a simpler graph (also from EPEL)
 dnf install -y nload
 nload eth0
 
@@ -222,7 +247,7 @@ sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
   podman inspect bareos-storage --format "{{.State.Pid}}"
 '
-# Use nethogs to see per-process bandwidth:
+# Use nethogs to see per-process bandwidth (also an EPEL package):
 sudo nethogs
 ```
 
@@ -234,7 +259,7 @@ Create a simple benchmark record before any tuning:
 # Record current performance metrics
 cat >> /home/bareos/.config/bareos/performance-log.txt << EOF
 Date: $(date)
-Test job: BackupClient1 Full
+Test job: BackupLocalHost Full
 Job bytes: X GB
 Job duration: X minutes
 Throughput: X MB/s
@@ -267,7 +292,8 @@ Think of `Maximum Concurrent Jobs` as a set of independent gates. All three gate
 
 ```
 # /etc/bareos/bareos-dir.conf (inside the director container)
-# ~/.local/share/containers/storage/volumes/bareos-dir-config/_data/bareos-dir.conf
+# (the Director config lives in the host directory /etc/bareos/bareos-dir.d,
+#  bind-mounted read-only into the container — see Chapter 6)
 
 Director {
   Name = bareos-dir
@@ -276,13 +302,17 @@ Director {
   WorkingDirectory = "/var/lib/bareos"
   PidDirectory = "/var/run/bareos"
 
-  # Allow the Director to run up to 20 jobs simultaneously.
+  # Maximum Concurrent Jobs controls JOB PARALLELISM: how many backup/restore
+  # jobs the Director will run at the same time. This is the directive that
+  # actually limits parallel backups.
   # Start conservatively (5–10) and increase once you have verified
   # the system is not resource-constrained at lower levels.
   Maximum Concurrent Jobs = 20
 
-  # Allow up to 50 client connections at once.
-  # Each running job holds one connection to a File Daemon.
+  # Maximum Connections is a DIFFERENT thing: it caps the number of network
+  # connections (consoles, bconsole sessions, and daemon-to-daemon control
+  # connections) the Director will accept — not the number of jobs. Raise it
+  # if you have many simultaneous bconsole/Web UI sessions plus running jobs.
   Maximum Connections = 50
 
   Password = "DIRECTOR-PASSWORD"
@@ -296,7 +326,8 @@ Director {
 
 ```
 # /etc/bareos/bareos-sd.conf (inside the storage container)
-# ~/.local/share/containers/storage/volumes/bareos-sd-config/_data/bareos-sd.conf
+# (the SD config lives in the host directory /etc/bareos/bareos-sd.d,
+#  bind-mounted read-only into the container — see Chapter 6)
 
 Storage {
   Name = bareos-sd
@@ -349,7 +380,10 @@ FileDaemon {
 
 ### Per-Job Concurrent Job Limits
 
-You can also set per-job limits at the Job Definition level:
+You can also set per-job limits at the Job Definition level. Our lab has a
+single client, `bareos-fd`, backed up by the `BackupLocalHost` job; the
+`BackupClient1` example below illustrates a multi-client environment with
+its own client (`client1-fd`) and is not meant to be run as-is:
 
 ```
 # /etc/bareos/bareos-dir.d/job/BackupClient1.conf
@@ -360,7 +394,7 @@ Job {
   Client = client1-fd
   FileSet = "Full Set"
   Schedule = "WeeklyCycle"
-  Storage = File1
+  Storage = File        # the Storage resource defined in Chapter 6
   Messages = Standard
   Pool = Full
 
@@ -505,22 +539,28 @@ Schedule {
 
 Use historical job data to predict how long jobs will take:
 
+This is a raw catalog query, so run it directly against MariaDB rather than
+at the bconsole `*` prompt (which does not accept bare SQL):
+
 ```bash
 sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
-  podman exec bareos-director bconsole <<EOF
-select
-  name,
-  avg(jobbytes / 1048576) as avg_mb,
-  avg(timestampdiff(second, realstarttime, realendtime)) as avg_seconds,
-  avg((jobbytes / 1048576) / nullif(timestampdiff(second, realstarttime, realendtime), 0)) as avg_mb_per_sec
-from Job
-where JobStatus = "T" and Type = "B" and Level = "F"
-group by name
-order by avg_mb desc;
-EOF
+  source ~/.config/bareos/db.env
+  podman exec bareos-db mariadb -u bareos -p"$MARIADB_PASSWORD" bareos -e "
+    SELECT
+      Name,
+      AVG(JobBytes / 1048576) AS avg_mb,
+      AVG(TIMESTAMPDIFF(SECOND, RealStartTime, RealEndTime)) AS avg_seconds,
+      AVG((JobBytes / 1048576) / NULLIF(TIMESTAMPDIFF(SECOND, RealStartTime, RealEndTime), 0)) AS avg_mb_per_sec
+    FROM Job
+    WHERE JobStatus = \"T\" AND Type = \"B\" AND Level = \"F\"
+    GROUP BY Name
+    ORDER BY avg_mb DESC;"
 '
 ```
+
+(Inside bconsole you could run the same query with `sqlquery` or
+`.sql query="…"`.)
 
 ---
 
@@ -549,10 +589,15 @@ Compression hurts when your data is already compressed or is inherently incompre
 
 ### LZ4 vs GZIP
 
+The throughput figures below are approximate, order-of-magnitude numbers
+for typical modern CPUs and mixed data — actual rates vary widely with CPU,
+data type, and core count. The relationship (LZ4 is roughly an order of
+magnitude faster than GZIP) is what matters, not the exact numbers.
+
 | Property | LZ4 | GZIP (level 6) |
 |---|---|---|
-| Speed (compression) | ~500 MB/s per core | ~50 MB/s per core |
-| Speed (decompression) | ~2000 MB/s per core | ~200 MB/s per core |
+| Speed (compression) | ~500 MB/s per core (approx.) | ~50 MB/s per core (approx.) |
+| Speed (decompression) | ~2000 MB/s per core (approx.) | ~200 MB/s per core (approx.) |
 | Compression ratio (text) | 2–4× | 3–6× |
 | CPU cost | Very low | Moderate–High |
 | Best for | All workloads as default | Archival, maximum space savings |
@@ -622,35 +667,33 @@ FileSet {
 
 ### Testing Compression Ratios
 
-After a backup job completes, check the compression effectiveness:
+After a backup job completes, you want to know how much space compression
+actually saved. Bareos does not store a "compression ratio" column, so any
+SQL that derives one from `JobBytes` alone is just multiplying by a constant
+— it tells you nothing. The honest method is to compare `JobBytes` (the
+amount of data read from the client) against the actual volume file size
+growth on disk:
 
 ```bash
+# Note the JobBytes for the job (from "list jobs" in bconsole)
 sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
   podman exec bareos-director bconsole <<EOF
-select
-  name,
-  jobbytes / 1048576 as actual_mb,
-  jobfiles,
-  (jobbytes / nullif(jobbytes - (jobbytes * 0.3), 0)) as estimated_ratio
-from Job
-where JobStatus = "T" and Type = "B"
-order by realendtime desc limit 5;
+list jobs
 EOF
 '
-```
 
-A more accurate method is to compare `jobbytes` (bytes read from the client) against the actual volume file size growth on disk:
-
-```bash
-# Check the volume file size on disk
+# Then check how much the volume files grew on disk
 ls -la /srv/bareos-storage/volumes/
 
-# Compare with jobbytes from bconsole list jobs
-# compression_ratio = jobbytes / (volume_bytes_written)
+# compression_ratio = JobBytes / (volume_bytes_written)
 # ratio > 1.0 means compression saved space
 # ratio < 1.0 means compression made things worse (rare, but possible)
 ```
+
+`JobBytes` is the uncompressed size read from the client; the on-disk volume
+holds the compressed (and deduplicated, if any) result, so the difference is
+the real saving.
 
 ---
 
@@ -763,7 +806,8 @@ The `Device` resource inside `bareos-sd.conf` controls how the Storage Daemon in
 
 ```
 # /etc/bareos/bareos-sd.conf (inside the storage container)
-# ~/.local/share/containers/storage/volumes/bareos-sd-config/_data/bareos-sd.conf
+# (the SD config lives in the host directory /etc/bareos/bareos-sd.d,
+#  bind-mounted read-only into the container — see Chapter 6)
 
 Device {
   Name = FileStorage
@@ -779,14 +823,18 @@ Device {
   # sequential write throughput on spinning HDDs and network storage.
   # For SSDs and NVMe, the impact is smaller but still positive.
   # The value must be a multiple of 512 bytes.
-  # IMPORTANT: All volumes must use the same block size as the device
-  # they were created with. Do not change this for existing volumes.
+  #
+  # CRITICAL: Block size is baked into the volume format. A volume written
+  # with one block size can only be read back by a device configured with a
+  # compatible block size. NEVER change Maximum Block Size on a device that
+  # already has labelled/written volumes — doing so makes those volumes
+  # unreadable (restores fail). Only set this on a fresh device/pool before
+  # any volume is written, and keep it consistent for the life of that pool.
   Maximum Block Size = 1048576         # 1 MB block size
 
-  # MinimumBlockSize sets the smallest block. Leaving it at 512 (default)
-  # is fine. Setting it equal to MaximumBlockSize forces all blocks to
-  # the same size, which benefits some RAID configurations.
-  Minimum Block Size = 65536           # 64 KB minimum
+  # Leave Minimum Block Size at its default. There is no general benefit to
+  # raising it for disk-based File devices, and (like the maximum) changing
+  # it breaks compatibility with existing volumes.
 
   # === Volume Size Limits ===
   #
@@ -870,44 +918,86 @@ Device {
 
 ## 9. Spooling: What It Is and When to Use It
 
-Spooling is one of the most powerful performance techniques in Bareos. Understanding it fully is key to getting the most out of a slow-storage environment.
+Spooling is widely misunderstood. It is a powerful technique in the *right*
+scenario, but it does **not** universally speed up backups — and for the
+single-job disk-to-disk setup in this course it usually does not speed up
+the job at all. Understand what it actually does before enabling it.
 
-### The Problem Spooling Solves
+There are two independent kinds of spooling in Bareos, and they help in
+different situations:
 
-Without spooling, data flows directly from the File Daemon to the Storage Daemon's volume file. This works well when both are on fast storage. But if the backup volume is on a slow HDD (or a network-attached storage device with high latency), the write speed of the volume becomes the bottleneck for the entire pipeline:
+- **Data spooling** (`Spool Data = yes`): the Storage Daemon writes the job's
+  data to a spool file first, then de-spools it to the final volume.
+- **Attribute spooling** (`Spool Attributes = yes`): the file metadata
+  records are buffered and inserted into the catalog in one batch at the end
+  of the job instead of trickling in during the backup.
+
+### The Problem Data Spooling Solves (Tape and Concurrency)
+
+Data spooling exists primarily for **tape** and for **interleaving
+concurrent jobs onto a single sequential device**:
+
+- **Tape shoe-shining.** A tape drive must stream continuously. If the data
+  source can't keep the drive fed, the drive stops, rewinds, and repositions
+  ("shoe-shining"), which is slow and wears the tape. Spooling to disk first,
+  then de-spooling at full speed, keeps the tape streaming.
+- **Interleaving / fragmentation.** When several jobs write to one device at
+  the same time, their blocks interleave on the volume. Spooling each job to
+  its own spool file and de-spooling them one at a time keeps each job's data
+  contiguous on the volume, which makes later restores faster.
 
 ```
-Without spooling (slow path):
-  FD reads at 400 MB/s
-  → Network delivers at 120 MB/s  (bottleneck: network)
-  → SD writes to HDD at 100 MB/s  (bottleneck: HDD)
-  Effective throughput: 100 MB/s (limited by HDD)
-  FD sits idle waiting for HDD writes to complete
+Tape without spooling (shoe-shining):
+  FD/network deliver in bursts → tape drive starves, stops, repositions
+  Effective tape throughput collapses far below the drive's rated speed
+
+Tape with data spooling:
+  Job data lands on disk spool first
+  → de-spool streams to tape at full rated speed, no repositioning
 ```
 
-### How Spooling Works
+### Why Data Spooling Usually Does NOT Help Single-Job Disk-to-Disk
 
-With spooling enabled, the Storage Daemon first writes the incoming data to a fast spool disk (typically an SSD), then *de-spools* (copies) from the SSD to the final HDD volume in the background:
+For a single job writing to a **disk** volume (this course's setup), data
+spooling generally does **not** make the job faster, and can make it slower:
 
-```
-With spooling (fast path):
-  FD reads at 400 MB/s
-  → Network delivers at 120 MB/s
-  → SD writes to SSD spool at 500 MB/s  (no bottleneck here)
-  Effective throughput during backup: 120 MB/s (limited only by network)
+- The data is written **twice** (once to the spool, once to the final volume)
+  and read back once during de-spool. That is extra I/O, not less.
+- De-spooling happens **inside the job** — the job is not reported complete,
+  and `wait` does not return, until de-spooling finishes. So the wall-clock
+  time of `run` + `wait` *includes* the de-spool. Spooling does not let the
+  next job start "early"; that is a tape/concurrency benefit, not a
+  disk-single-job one.
+- If your final volume is on the same disk as the spool, you have simply
+  doubled the write load on one device.
 
-  After backup completes:
-  → SD copies from SSD spool to HDD at 100 MB/s (in background)
-  FD is free to start the next job immediately
-```
+The honest expectation for the disk-to-disk lab later in this chapter is:
+spooling will likely be **neutral or slightly slower** for a single job,
+unless you are observing interleaving with concurrent jobs.
 
-Spooling *decouples* the backup phase from the storage phase. The backup window shrinks because jobs finish as soon as the spool is full, not when the final volume write completes.
+### What Genuinely Helps Disk-to-Disk: Spool Attributes
 
-### When NOT to Use Spooling
+The knob that reliably helps disk-to-disk catalog performance is
+**`Spool Attributes = yes`**. Instead of inserting file records into MariaDB
+one stream at a time during the backup, the File Daemon's attribute records
+are spooled and then **batch-inserted** at the end of the job. For jobs with
+many files this dramatically cuts the catalog-update phase (the time a job
+spends "finishing" after the data is already written). Attribute spooling is
+also enabled automatically when `Spool Data = yes`, but you can — and for
+disk-to-disk should — enable it on its own.
 
-- When your backup storage is already faster than your network
-- When you do not have sufficient fast storage for the spool (spool must be large enough to hold the largest job's data)
-- When you are near disk capacity on the spool device
+### When NOT to Use Data Spooling
+
+- For single-job disk-to-disk backups (it adds an extra write + read).
+- When your final backup storage is already as fast as, or faster than, the
+  spool device.
+- When you do not have sufficient fast storage for the spool (the spool must
+  be large enough to hold a job's data, bounded by `Maximum Job Spool Size`).
+- When you are near disk capacity on the spool device.
+
+Reach for data spooling when you are writing to tape, or interleaving many
+concurrent jobs onto one device. Otherwise, enable `Spool Attributes` and
+skip data spooling.
 
 ### Storage Daemon Spooling Configuration
 
@@ -922,9 +1012,20 @@ Device {
 
   # SpoolDirectory is where the spool files are written.
   # Point this to your fastest storage (SSD, NVMe).
-  # The spool directory must have enough free space for the largest concurrent
-  # job's data. Rule of thumb: SpoolSize × Maximum Concurrent Jobs.
+  # The spool directory must have enough free space for the concurrent
+  # jobs' data. Rule of thumb: Maximum Job Spool Size × Maximum Concurrent Jobs.
   Spool Directory = /var/lib/bareos/spool    # Map to fast SSD via volume mount
+
+  # Maximum Spool Size caps the TOTAL spool space this device may use across
+  # all jobs at once. It is the device-level guard rail that stops a busy
+  # night from filling the spool disk.
+  Maximum Spool Size = 40G
+
+  # Maximum Job Spool Size caps how much spool space a SINGLE job may use.
+  # When a job hits this limit, the SD de-spools that job's data to the
+  # volume to free space, then continues spooling. (The Director's
+  # per-job "Spool Size" directive does the same thing from the Job side.)
+  Maximum Job Spool Size = 20G
 
   Maximum Block Size = 1048576
   Maximum Concurrent Jobs = 4
@@ -945,7 +1046,8 @@ After=network-online.target
 [Container]
 Image=docker.io/bareos/bareos-storage:24
 
-Volume=bareos-sd-config.volume:/etc/bareos:z
+Volume=/etc/bareos/bareos-sd.d:/etc/bareos/bareos-sd.d:ro,Z
+Volume=bareos-working.volume:/var/lib/bareos
 
 # Slow HDD storage — final destination for volumes
 Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
@@ -955,7 +1057,7 @@ Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
 # The :z suffix applies the correct SELinux label for container access.
 Volume=/srv/bareos-spool:/var/lib/bareos/spool:z
 
-Network=bareos-net.network
+Network=bareos.network
 PublishPort=9103:9103
 
 [Service]
@@ -967,7 +1069,10 @@ WantedBy=default.target
 
 ### Director Job-Level Spooling
 
-You can also enable or disable spooling per-job in the Director:
+You can also enable or disable spooling per-job in the Director. This
+`BackupClient1` example illustrates a multi-client environment (client
+`client1-fd`); in our single-client lab the equivalent job is
+`BackupLocalHost` against `bareos-fd`:
 
 ```
 # /etc/bareos/bareos-dir.d/job/BackupClient1.conf
@@ -977,24 +1082,29 @@ Job {
   Type = Backup
   Client = client1-fd
   FileSet = "Full Set"
-  Storage = File1
+  Storage = File          # the Storage resource defined in Chapter 6
   Pool = Full
   Messages = Standard
   Schedule = "WeeklyCycle"
 
-  # SpoolData = yes enables spooling for this specific job.
-  # When enabled, the Storage Daemon writes to the spool first,
-  # then commits to the volume.
+  # SpoolAttributes = yes batches the file attribute records and inserts
+  # them into the catalog in one pass at the end of the job. This is the
+  # setting that reliably helps disk-to-disk jobs with many files — enable
+  # it on its own, even when you are NOT using data spooling.
+  Spool Attributes = yes
+
+  # SpoolData = yes enables DATA spooling for this job: the SD writes the
+  # job's data to the spool first, then de-spools to the volume.
+  # Only worthwhile for tape, or for interleaving concurrent jobs onto one
+  # device. For single-job disk-to-disk it adds an extra write + read and
+  # de-spooling happens before the job completes, so it usually does NOT
+  # speed the job up (see "When NOT to Use Data Spooling" above).
   Spool Data = yes
 
   # SpoolSize limits how much spool space this single job can use.
-  # If the job exceeds this size, Bareos starts writing directly to
-  # the final volume (committing what's in the spool first).
+  # If the job exceeds this size, Bareos de-spools what is buffered to the
+  # final volume to free space, then continues spooling.
   Spool Size = 20G
-
-  # SpoolAttributes = yes spools the file attribute records as well.
-  # This reduces load on the Director during the backup phase.
-  Spool Attributes = yes
 }
 ```
 
@@ -1007,7 +1117,7 @@ mkdir -p /srv/bareos-spool
 # Set ownership
 chown bareos:bareos /srv/bareos-spool
 
-# Set SELinux context (use container_file_t if bareos_store_t is not available)
+# Set SELinux context (container_file_t — same type as the storage directory)
 semanage fcontext -a -t container_file_t "/srv/bareos-spool(/.*)?"
 restorecon -Rv /srv/bareos-spool/
 
@@ -1047,6 +1157,19 @@ Without limits, a Full backup job that reads a large filesystem can:
 
 Setting limits is a trade-off: lower limits protect other workloads but extend the backup window.
 
+> **Rootless caveat — swap limits may be unenforced.** Setting a memory *and*
+> swap limit (`--memory-swap` / `MemorySwap=`) for a **rootless** container
+> requires the `memory` controller — and on some setups the `memory.swap.max`
+> file — to be delegated to your user slice under cgroup v2. If your user
+> slice does not have the memory controller delegated, Podman accepts the
+> flag but the swap limit is silently **not enforced** (you may see a warning
+> like "Your kernel does not support swap limit capabilities"). Check what is
+> delegated with `cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/cgroup.controllers`;
+> if `memory` is missing, enable delegation (e.g. a drop-in for
+> `user@<uid>.service` with `Delegate=memory pids cpu`) or simply set
+> `Memory=` alone and leave swap at the host default. Plain `--memory` /
+> `Memory=` (without a swap value) is far more widely enforced.
+
 ### Applying Limits via Podman CLI (Temporary, for Testing)
 
 ```bash
@@ -1080,11 +1203,12 @@ After=network-online.target
 [Container]
 Image=docker.io/bareos/bareos-storage:24
 
-Volume=bareos-sd-config.volume:/etc/bareos:z
+Volume=/etc/bareos/bareos-sd.d:/etc/bareos/bareos-sd.d:ro,Z
+Volume=bareos-working.volume:/var/lib/bareos
 Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
 Volume=/srv/bareos-spool:/var/lib/bareos/spool:z
 
-Network=bareos-net.network
+Network=bareos.network
 PublishPort=9103:9103
 
 # === Resource Limits ===
@@ -1098,12 +1222,14 @@ Memory=2G
 # disables swap for this container (recommended for predictable performance).
 MemorySwap=2G
 
-# CPUShares: Relative CPU weight. Default is 1024.
-# Setting it to 512 means this container gets half the CPU time of
-# a container with the default 1024 shares when CPU is contested.
-# During off-peak hours when nothing else is running, it still gets
-# 100% of the CPU.
-CPUShares=512
+# CPUWeight: Relative CPU weight on cgroup v2. Default is 100, range 1-10000.
+# Setting it to 50 means this container gets half the CPU time of a container
+# at the default 100 when the CPU is contested. During off-peak hours when
+# nothing else is running, it still gets 100% of the CPU.
+# (CPUShares is the legacy cgroup v1 directive — default 1024 — which Podman
+# maps onto CPUWeight for compatibility; since this host is cgroup v2, use
+# CPUWeight directly.)
+CPUWeight=50
 
 # CPUQuota: Hard CPU cap as a percentage of one core.
 # "200%" means this container can use at most 2 full CPU cores.
@@ -1128,18 +1254,18 @@ Requires=bareos-db.service
 [Container]
 Image=docker.io/bareos/bareos-director:24
 
-Volume=bareos-dir-config.volume:/etc/bareos:z
-Volume=bareos-dir-state.volume:/var/lib/bareos:z
+Volume=/etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z
+Volume=bareos-working.volume:/var/lib/bareos
 
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 
-Network=bareos-net.network
+Network=bareos.network
 PublishPort=127.0.0.1:9101:9101
 
 # Director is mostly idle (coordinator), so modest limits are fine
 Memory=512M
 MemorySwap=512M
-CPUShares=256
+CPUWeight=25
 
 [Service]
 Restart=always
@@ -1158,16 +1284,16 @@ After=network-online.target
 [Container]
 Image=docker.io/library/mariadb:10.11
 
-Volume=bareos-db-data.volume:/var/lib/mysql:z
+Volume=bareos-db-data.volume:/var/lib/mysql
 EnvironmentFile=/home/bareos/.config/bareos/db.env
-Network=bareos-net.network
+Network=bareos.network
 
 # MariaDB benefits most from generous memory allocation.
 # The InnoDB buffer pool (configured below) should fit within this limit.
 # A good rule: Memory = InnoDB buffer pool size × 1.3 (for overhead).
 Memory=2G
 MemorySwap=2G
-CPUShares=512
+CPUWeight=50
 
 [Service]
 Restart=always
@@ -1231,10 +1357,21 @@ innodb_buffer_pool_instances = 1
 # === InnoDB Log File Size ===
 #
 # The InnoDB redo log (transaction log) records changes before committing
-# to the data files. A larger log file means fewer log flushes, improving
-# write throughput for bulk INSERT operations (like catalog updates).
-# Set to 25% of innodb_buffer_pool_size.
-innodb_log_file_size = 256M
+# to the data files. A larger log file means fewer checkpoint flushes,
+# improving write throughput for bulk INSERT operations (like catalog
+# updates with millions of file records).
+#
+# Size it to your WRITE workload, not as a fixed fraction of the buffer pool.
+# The redo log needs to be large enough to absorb the writes generated
+# between checkpoints without forcing aggressive flushing. For Bareos's
+# write-heavy, bulk-insert catalog workload, larger is better — a few hundred
+# MB to a couple of GB is typical; the trade-off is longer crash recovery and
+# more disk space. (MariaDB 10.11 still uses innodb_log_file_size; on some
+# newer engines this was folded into a single innodb_redo_log_capacity, but
+# 10.11 — the version used in this course — keeps innodb_log_file_size.)
+# Start at 512M for a busy catalog and raise it if you still see frequent
+# checkpoint flushing under load.
+innodb_log_file_size = 512M
 
 # === InnoDB Flush Method ===
 #
@@ -1318,7 +1455,7 @@ After=network-online.target
 [Container]
 Image=docker.io/library/mariadb:10.11
 
-Volume=bareos-db-data.volume:/var/lib/mysql:z
+Volume=bareos-db-data.volume:/var/lib/mysql
 
 # Mount the custom tuning configuration read-only.
 # :ro means the container cannot modify it.
@@ -1326,11 +1463,11 @@ Volume=bareos-db-data.volume:/var/lib/mysql:z
 Volume=/home/bareos/.config/bareos/mysql-conf.d:/etc/mysql/conf.d:ro,z
 
 EnvironmentFile=/home/bareos/.config/bareos/db.env
-Network=bareos-net.network
+Network=bareos.network
 
 Memory=2G
 MemorySwap=2G
-CPUShares=512
+CPUWeight=50
 
 HealthCmd=mysqladmin --user=root --password=${MARIADB_ROOT_PASSWORD} ping --silent
 HealthInterval=30s
@@ -1433,6 +1570,36 @@ sudo sysctl --load /etc/sysctl.d/80-bareos-network.conf
 sysctl net.core.rmem_max
 ```
 
+### Bareos-Level Network Buffer Size
+
+The sysctl settings above raise the *kernel's* TCP buffer ceilings. Bareos
+has its own application-level companion directive, **`Maximum Network Buffer
+Size`**, which sets the size of the read/write buffer the daemon uses for its
+socket I/O. Raising it lets each transfer move larger chunks per system call,
+which complements the larger TCP windows. Set it on **both** the File Daemon
+and the Storage Daemon — the two sides negotiate and use the smaller of the
+two values, so a large value on only one end has no effect.
+
+```
+# /etc/bareos/bareos-fd.conf  (Client resource — the connection to the Director)
+Client {
+  Name = bareos-fd
+  # ... other directives ...
+  Maximum Network Buffer Size = 1048576   # 1 MB
+}
+
+# /etc/bareos/bareos-sd.conf  (Storage resource)
+Storage {
+  Name = bareos-sd
+  # ... other directives ...
+  Maximum Network Buffer Size = 1048576   # 1 MB
+}
+```
+
+The default (64 KB) is fine for most LANs; raise it together with the TCP
+sysctls only when you are pushing large streams over a fast (10 GbE+) link
+and have confirmed the network — not disk or CPU — is the bottleneck.
+
 ### Jumbo Frames (9000 MTU)
 
 If your network infrastructure supports jumbo frames (MTU 9000), enabling them reduces CPU overhead for large transfers by putting more data per packet:
@@ -1534,12 +1701,13 @@ sudo -u bareos bash -c '
 '
 
 # In bconsole, label 10 new volumes in the Full pool:
-*label storage=File1 pool=Full
+# (File is the Storage resource defined in Chapter 6.)
+*label storage=File pool=Full
 # Bareos prompts for a volume name. Type: Full-0001
 # Repeat for Full-0002 through Full-0010
 
 # Or use the "label barcodes" command with a list file for bulk labeling:
-*label barcodes storage=File1 pool=Full
+*label barcodes storage=File pool=Full
 
 # After labeling, verify:
 *list volumes pool=Full
@@ -1644,11 +1812,13 @@ FileSet {
       Check File Changes = yes
 
       # Accurate = yes enables accurate mode for incremental backups.
-      # In accurate mode, Bareos builds a complete in-memory list of all
-      # files from the previous backup and compares it to the current scan.
-      # This catches renamed and deleted files, which normal mode misses.
-      # WARNING: Accurate mode uses significant memory on the Director for
-      # large FileSets (millions of files). Monitor memory usage after enabling.
+      # In accurate mode, the File Daemon receives the file list from the
+      # previous backup and holds it in memory to compare against the current
+      # scan. This catches renamed and deleted files, which normal mode misses.
+      # WARNING: the in-memory accurate list lives on the FILE DAEMON (the
+      # client), not the Director. For FileSets with millions of files this
+      # can consume significant RAM on the client being backed up — size the
+      # bareos-fd container's Memory= accordingly and monitor it after enabling.
       # Accurate = yes  (set this at the Job level, not FileSet level)
     }
     File = /home
@@ -1667,41 +1837,55 @@ Job {
   Type = Backup
   Client = client1-fd
   FileSet = "Full Set"
-  Storage = File1
+  Storage = File          # the Storage resource defined in Chapter 6
   Pool = Full
   Messages = Standard
   Schedule = "WeeklyCycle"
 
   # Accurate = yes enables accurate incremental/differential backups.
-  # Bareos queries the Catalog for the file list from the previous backup
-  # and compares it to the current scan. Files that were deleted on the
-  # client are marked as deleted in the Catalog (important for bare-metal
-  # and full system restores).
+  # Bareos sends the previous backup's file list to the File Daemon, which
+  # compares it (in memory, on the client) against the current scan. Files
+  # that were deleted on the client are marked as deleted in the Catalog
+  # (important for bare-metal and full system restores).
+  # Remember the memory cost lands on the client (bareos-fd), not the Director.
   Accurate = yes
 }
 ```
 
 ### I/O Priority for the File Daemon
 
-On production servers, set the File Daemon backup process to use low I/O priority to avoid impacting applications:
+Bareos has no configuration directive for the File Daemon's I/O priority — you
+control it at the **OS level** instead, using the Linux I/O scheduler
+(`ionice`). On production servers, run the File Daemon process in the *idle*
+I/O class so it only consumes disk bandwidth when no application needs it.
 
-```
-# /etc/bareos/bareos-fd.conf
-FileDaemon {
-  Name = bareos-fd
-  FDport = 9102
-  WorkingDirectory = /var/lib/bareos
-  PidDirectory = /var/run/bareos
-  Maximum Concurrent Jobs = 4
+The clean way to do this for our containerised, systemd-managed FD is a
+**drop-in** on the `bareos-fd` service that wraps the container's main process
+with an idle I/O scheduling class:
 
-  # FDFilePriority sets the file I/O priority for the File Daemon process.
-  # 10 = lowest priority (idle I/O). The FD uses I/O bandwidth only
-  # when no other process needs it.
-  # 0  = normal priority (default).
-  # Use 7-10 on production servers to minimize impact.
-  FD File Priority = 7
-}
+```bash
+sudo -u bareos bash -c '
+  XDG_RUNTIME_DIR=/run/user/1001
+  mkdir -p ~/.config/systemd/user/bareos-fd.service.d
+  cat > ~/.config/systemd/user/bareos-fd.service.d/10-ioprio.conf <<EOF
+[Service]
+# Run the File Daemon in the idle I/O class (class 3): it gets disk I/O
+# only when no other process on the host wants it. This keeps backups
+# from impacting production application latency.
+IOSchedulingClass=idle
+EOF
+  systemctl --user daemon-reload
+  systemctl --user restart bareos-fd.service
+'
 ```
+
+`IOSchedulingClass=idle` maps to `ionice -c3`. If you want a "best-effort but
+low" priority instead of fully idle, use `IOSchedulingClass=best-effort` with
+`IOSchedulingPriority=7` (7 is the lowest best-effort level).
+
+> Note: I/O priority is only honoured by I/O schedulers that support it (e.g.
+> BFQ). On a host using the `none`/`mq-deadline` scheduler the idle class has
+> little effect — verify with `cat /sys/block/<dev>/queue/scheduler`.
 
 ---
 
@@ -1720,20 +1904,26 @@ Director {
   QueryFile = "/usr/lib/bareos/scripts/query.sql"
   WorkingDirectory = "/var/lib/bareos"
   PidDirectory = "/var/run/bareos"
+
+  # Maximum Concurrent Jobs caps JOB PARALLELISM (how many jobs run at once).
   Maximum Concurrent Jobs = 20
+
+  # Maximum Connections caps incoming network CONNECTIONS (consoles, Web UI,
+  # daemon control connections) — not jobs. These two limit different things;
+  # raise both if you run many parallel jobs alongside several open consoles.
   Maximum Connections = 50
+
   Password = "DIRECTOR-PASSWORD"
   Messages = Daemon
 
-  # === DB Max Connections ===
+  # === Catalog database connections ===
   #
-  # The Director opens multiple database connections — one for each
-  # running job (to update job status), plus connections for scheduling
-  # and statistics. DB Max Connections limits how many concurrent database
-  # connections the Director maintains. Set this to
-  # (Maximum Concurrent Jobs × 2) to be safe.
-  # This value must be lower than MariaDB's max_connections setting.
-  DB Max Connections = 40
+  # There is no "DB Max Connections" directive on the Director resource.
+  # The Director manages a small internal connection pool per Catalog and
+  # opens connections to MariaDB as jobs need them. You do not size this from
+  # the Director; instead make sure MariaDB's own max_connections (set in the
+  # bareos-tuning.cnf in Section 11) is comfortably higher than your peak
+  # concurrent job count so the Director never gets refused a connection.
 
   # === Statistics Retention ===
   #
@@ -1797,14 +1987,15 @@ Client {
 }
 ```
 
-Run manual catalog pruning from bconsole when needed:
+Run manual catalog pruning from bconsole when needed. In our single-client
+lab the client is `bareos-fd`:
 
 ```bash
 sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
   podman exec bareos-director bconsole <<EOF
-prune files client=client1-fd yes
-prune jobs client=client1-fd yes
+prune files client=bareos-fd yes
+prune jobs client=bareos-fd yes
 prune volume pool=Full yes
 EOF
 '
@@ -1827,10 +2018,10 @@ Wants=network-online.target
 
 [Container]
 Image=docker.io/library/mariadb:10.11
-Volume=bareos-db-data.volume:/var/lib/mysql:z
+Volume=bareos-db-data.volume:/var/lib/mysql
 Volume=/home/bareos/.config/bareos/mysql-conf.d:/etc/mysql/conf.d:ro,z
 EnvironmentFile=/home/bareos/.config/bareos/db.env
-Network=bareos-net.network
+Network=bareos.network
 HealthCmd=mysqladmin --user=root --password=${MARIADB_ROOT_PASSWORD} ping --silent
 HealthInterval=30s
 HealthRetries=5
@@ -1840,7 +2031,7 @@ HealthStartPeriod=60s
 Memory=3G
 MemorySwap=3G
 # Give the DB high CPU priority during catalog update bursts
-CPUShares=1024
+CPUWeight=100
 
 [Service]
 Restart=always
@@ -1859,16 +2050,16 @@ Requires=bareos-db.service
 
 [Container]
 Image=docker.io/bareos/bareos-director:24
-Volume=bareos-dir-config.volume:/etc/bareos:z
-Volume=bareos-dir-state.volume:/var/lib/bareos:z
+Volume=/etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z
+Volume=bareos-working.volume:/var/lib/bareos
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
-Network=bareos-net.network
+Network=bareos.network
 PublishPort=127.0.0.1:9101:9101
 
 # Director is mostly I/O wait and coordination — needs less CPU/RAM
 Memory=1G
 MemorySwap=1G
-CPUShares=512
+CPUWeight=50
 
 [Service]
 Restart=always
@@ -1886,17 +2077,18 @@ After=network-online.target
 
 [Container]
 Image=docker.io/bareos/bareos-storage:24
-Volume=bareos-sd-config.volume:/etc/bareos:z
+Volume=/etc/bareos/bareos-sd.d:/etc/bareos/bareos-sd.d:ro,Z
+Volume=bareos-working.volume:/var/lib/bareos
 Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
 Volume=/srv/bareos-spool:/var/lib/bareos/spool:z
-Network=bareos-net.network
+Network=bareos.network
 PublishPort=9103:9103
 
 # Storage Daemon needs memory for spool buffers and block I/O
 Memory=2G
 MemorySwap=2G
 # Relatively high CPU share for compression during de-spooling
-CPUShares=768
+CPUWeight=75
 
 [Service]
 Restart=always
@@ -1913,14 +2105,14 @@ After=network-online.target
 
 [Container]
 Image=docker.io/bareos/bareos-client:24
-Volume=bareos-fd-config.volume:/etc/bareos:z
-Network=bareos-net.network
+Volume=bareos-fd-config.volume:/etc/bareos
+Network=bareos.network
 PublishPort=9102:9102
 
 # File Daemon reads client data — needs enough memory for compression buffers
 Memory=512M
 MemorySwap=512M
-CPUShares=256
+CPUWeight=25
 
 [Service]
 Restart=always
@@ -1955,23 +2147,36 @@ sudo -u bareos bash -c '
 
 Create a FileSet of known data for reproducible measurements:
 
+The benchmark directory is created on the host at `/tmp/bareos-bench`. The
+File Daemon runs as the `bareos-fd` container with the host mounted read-only
+at `/hostfs`, so the FileSet in Step 2 references it as `/hostfs/tmp/bareos-bench`.
+
 ```bash
 # Create a benchmark directory with known content
 sudo -u bareos bash -c '
   mkdir -p /tmp/bareos-bench/text
   mkdir -p /tmp/bareos-bench/binary
 
-  # Generate 1 GB of compressible text data
-  echo "Generating 1 GB text benchmark data..."
-  for i in $(seq 1 1000); do
-    dd if=/dev/urandom bs=1K count=1 2>/dev/null | base64 > /tmp/bareos-bench/text/file-${i}.txt
+  # Generate ~1 GB of COMPRESSIBLE text data.
+  # /dev/urandom is incompressible, so we build highly compressible text:
+  # repeat a "log line" until each file is ~64 MB, across 16 files = ~1 GB.
+  echo "Generating ~1 GB compressible text benchmark data..."
+  line="2026-01-01 00:00:00 INFO  request handled ok user=alice path=/api/v1/items status=200 latency_ms=12 "
+  block=""
+  # Build a ~1 MB block in memory first (fast), then write it 64x per file.
+  for n in $(seq 1 8000); do block="${block}${line}"; done
+  for i in $(seq 1 16); do
+    : > /tmp/bareos-bench/text/file-${i}.log
+    for j in $(seq 1 64); do
+      printf "%s" "${block}" >> /tmp/bareos-bench/text/file-${i}.log
+    done
   done
 
   # Generate 100 MB of incompressible binary data
   echo "Generating 100 MB binary benchmark data..."
   dd if=/dev/urandom bs=1M count=100 of=/tmp/bareos-bench/binary/random.bin 2>&1
   echo "Benchmark data ready."
-  du -sh /tmp/bareos-bench/
+  du -sh /tmp/bareos-bench/      # expect ~1.1 GB total
 '
 ```
 
@@ -1986,7 +2191,8 @@ FileSet {
       Signature = SHA1
       # NO compression for baseline — we add it in Lab 19-2
     }
-    File = /tmp/bareos-bench
+    # /hostfs prefix: the FD container sees the host at /hostfs (Chapter 6)
+    File = /hostfs/tmp/bareos-bench
   }
 }
 ```
@@ -1999,7 +2205,7 @@ Job {
   Level = Full
   Client = bareos-fd
   FileSet = "BenchmarkSet"
-  Storage = File1
+  Storage = File          # the Storage resource defined in Chapter 6
   Pool = Default
   Messages = Standard
   # No Schedule — run manually from bconsole
@@ -2067,10 +2273,8 @@ EOF
 
 ```bash
 # Edit the BenchmarkSet FileSet to add LZ4 compression
-sudo -u bareos bash -c '
-  XDG_RUNTIME_DIR=/run/user/1001
-  DATA=$(podman volume inspect bareos-dir-config --format "{{.Mountpoint}}")
-  cat > "${DATA}/bareos-dir.d/fileset/BenchmarkSet.conf" << EOF
+# (the Director config lives in the host directory /etc/bareos/bareos-dir.d)
+sudo tee /etc/bareos/bareos-dir.d/fileset/BenchmarkSet.conf > /dev/null << EOF
 FileSet {
   Name = "BenchmarkSet"
   Include {
@@ -2079,11 +2283,10 @@ FileSet {
       Compression = LZ4       # Enable LZ4 compression
       NoAtime = yes           # Do not update file access times during backup
     }
-    File = /tmp/bareos-bench
+    File = /hostfs/tmp/bareos-bench
   }
 }
 EOF
-'
 ```
 
 ### Step 2: Reload the Director and Run the Benchmark Again
@@ -2153,7 +2356,13 @@ EOF
 
 ## 20. Lab 19-3: Configure Spooling and Measure Improvement
 
-**Objective**: Enable spooling and measure how it changes backup completion time vs. volume write time.
+**Objective**: Enable data spooling and attribute spooling on a single
+disk-to-disk job and measure what each actually does. The goal here is to
+*correct a common misconception*: for a single disk-to-disk job, data
+spooling does not shorten the job — de-spooling happens before the job ends,
+so `wait` already includes it. You should expect data spooling to be neutral
+or slightly slower, while `Spool Attributes = yes` is what actually trims the
+catalog-update phase.
 
 ### Step 1: Create the Spool Directory
 
@@ -2174,20 +2383,17 @@ ls -laZ /srv/bareos-spool/
 ### Step 2: Update the Storage Daemon Configuration
 
 ```bash
-sudo -u bareos bash -c '
-  XDG_RUNTIME_DIR=/run/user/1001
-  DATA=$(podman volume inspect bareos-sd-config --format "{{.Mountpoint}}")
-
-  # Update the Device resource to add spooling
-  cat > "${DATA}/bareos-sd.d/device/FileStorage.conf" << EOF
+# Update the Device resource to add spooling
+# (the SD config lives in the host directory /etc/bareos/bareos-sd.d)
+sudo tee /etc/bareos/bareos-sd.d/device/FileStorage.conf > /dev/null << EOF
 Device {
   Name = FileStorage
   DeviceType = File
   MediaType = File
   ArchiveDevice = /var/lib/bareos/storage
 
-  # Enable spooling: spool writes go to the fast spool directory first,
-  # then get moved to the final storage location in the background.
+  # Enable spooling: job data is written to the fast spool directory first,
+  # then de-spooled to the final storage location as part of the job.
   Spool Directory = /var/lib/bareos/spool
 
   Maximum Block Size = 1048576
@@ -2195,7 +2401,6 @@ Device {
   Always Open = yes
 }
 EOF
-'
 ```
 
 ### Step 3: Update the Quadlet to Mount the Spool Directory
@@ -2218,27 +2423,29 @@ sudo -u bareos bash -c "
 ### Step 4: Update the Job to Enable Spooling
 
 ```bash
-sudo -u bareos bash -c '
-  XDG_RUNTIME_DIR=/run/user/1001
-  DATA=$(podman volume inspect bareos-dir-config --format "{{.Mountpoint}}")
-  cat > "${DATA}/bareos-dir.d/job/BenchmarkJob.conf" << EOF
+# (the Director config lives in the host directory /etc/bareos/bareos-dir.d)
+sudo tee /etc/bareos/bareos-dir.d/job/BenchmarkJob.conf > /dev/null << EOF
 Job {
   Name = "BenchmarkJob"
   Type = Backup
   Level = Full
   Client = bareos-fd
   FileSet = "BenchmarkSet"
-  Storage = File1
+  Storage = File          # the Storage resource defined in Chapter 6
   Pool = Default
   Messages = Standard
 
-  # Enable spooling for this job
+  # Spool Attributes batches the catalog inserts — this is the part that
+  # genuinely helps a disk-to-disk job with many files.
+  Spool Attributes = yes
+
+  # Spool Data is included here so you can OBSERVE its effect. For this
+  # single-job disk-to-disk benchmark expect it to be neutral or slightly
+  # slower (extra write + read, and de-spool happens before the job ends).
   Spool Data = yes
   Spool Size = 10G
-  Spool Attributes = yes
 }
 EOF
-'
 ```
 
 ### Step 5: Restart Services and Run the Benchmark
@@ -2265,23 +2472,54 @@ EOF
 '
 ```
 
-### Step 6: Compare
+### Step 6: Compare (and interpret honestly)
 
-With spooling enabled, the `time` command should show a shorter wall-clock duration for the `run` + `wait` sequence compared to without spooling — because "wait" now completes when the spool is written (fast SSD speed), not when the volume is written (potentially slower HDD speed). The actual de-spool to final storage happens asynchronously.
+Compare the `time` wall-clock for the `run` + `wait` sequence against your
+baseline (Lab 19-1). For this **single job writing to disk**, do **not**
+expect data spooling to be faster:
+
+- De-spooling runs **inside** the job. The job is not reported terminated —
+  and `wait` does not return — until the spool has been flushed to the final
+  volume. So the `run` + `wait` time *includes* the de-spool. There is no
+  "finish early, de-spool in the background" effect for a single disk job.
+- Because the data is written twice (to spool, then to volume) and read back
+  once, the total time is typically **equal to or slightly longer** than the
+  no-spool baseline. If your spool and final volume share the same physical
+  disk, expect it to be slower.
+
+Check the job log for the two phases — you will see the data phase, then a
+separate de-spool ("Committing spooled data") phase, then attribute spooling:
 
 ```bash
+sudo -u bareos bash -c '
+  XDG_RUNTIME_DIR=/run/user/1001
+  podman exec bareos-director bconsole <<EOF
+list joblog jobid=<the-benchmark-jobid>
+EOF
+'
+# Look for: "Spooling data ...", "Committing spooled data to Volume ...",
+# and a final attribute-insert/"Sending spooled attrs" line.
+
+# Where spooling DOES help on disk-to-disk: the catalog phase.
+# With Spool Attributes = yes the file records are batch-inserted at the end
+# instead of trickling in, which shortens the time a many-file job spends
+# "finishing". To see the data-spool benefit for real, you would write to
+# TAPE, or run several BenchmarkJob copies concurrently and observe that each
+# job's blocks stay contiguous on the volume (better restore performance).
+
 # Record results
 cat >> /home/bareos/.config/bareos/performance-log.txt << EOF
 Date: $(date)
 Test: Lab 19-3 Spooling Enabled
-Spooling: Enabled (spool to /srv/bareos-spool)
-Notes: Compare "time to completion" vs baseline and LZ4 labs
+Spooling: Data + Attributes (spool to /srv/bareos-spool)
+Notes: Expect data-spool neutral/slower for single disk job; attr spooling
+       trims the catalog phase. Compare run+wait time vs Lab 19-1 baseline.
 EOF
 
 # Check spool usage after the job
 ls -la /srv/bareos-spool/
-# The spool files should be gone (de-spooled to final volume)
-# If they are still there, de-spooling is still in progress.
+# The spool files should be gone (de-spooled into the final volume already,
+# since de-spooling completed before the job — and "wait" — returned).
 ```
 
 ---
@@ -2297,11 +2535,11 @@ Performance tuning Bareos is a systematic process: measure first, identify the b
 - **LZ4 compression** is the best default: extremely fast, low CPU overhead, meaningful space savings on text and log data. Use GZIP only for archival where maximum compression ratio matters more than speed.
 - **FileSet options** — `Sparse`, `NoAtime`, `CheckFileChanges` — have immediate impact on backup time with no infrastructure changes required.
 - **MaximumBlockSize = 1 MB** on the Storage Daemon Device resource dramatically improves sequential write throughput on spinning HDDs.
-- **Spooling** decouples the backup phase from the storage write phase. When final storage is slower than your network, spooling can cut your effective backup window by 50% or more.
-- **cgroup v2 resource limits** in Quadlet files protect other workloads on shared hosts without requiring any kernel-level changes — `Memory=`, `MemorySwap=`, and `CPUShares=` are all you need.
+- **Data spooling** primarily benefits tape (it keeps the drive streaming and avoids shoe-shining) and interleaving concurrent jobs onto one device (it keeps each job contiguous). For a single disk-to-disk job it adds an extra write + read and de-spools before the job ends, so it is usually neutral or slightly slower — not a speed-up. The spooling knob that *does* reliably help disk-to-disk is **`Spool Attributes = yes`**, which batches catalog inserts and shortens the catalog-update phase.
+- **cgroup v2 resource limits** in Quadlet files protect other workloads on shared hosts without requiring any kernel-level changes — `Memory=`, `MemorySwap=` (subject to the rootless swap-delegation caveat), and the cgroup-v2-native `CPUWeight=` are all you need.
 - **MariaDB tuning** — `innodb_buffer_pool_size`, `innodb_flush_log_at_trx_commit = 2`, and `innodb_log_file_size` — transforms catalog update performance for jobs with millions of files.
 - **Auto-labeling** (`AutoLabel = File` in the Pool) eliminates manual intervention and backup window interruptions caused by unlabeled volumes.
-- **TCP buffer tuning** and optionally jumbo frames improve network throughput for large backup streams across a LAN.
+- **TCP buffer tuning** (host sysctls), the Bareos-level `Maximum Network Buffer Size` on both FD and SD, and optionally jumbo frames improve network throughput for large backup streams across a LAN.
 
 The three labs give you a repeatable measurement framework. Run Lab 19-1 first, record the baseline, then apply each optimization from subsequent sections and re-run the benchmark. Keep the performance log updated — after six months of incremental tuning, you will have a clear record of what worked, what did not, and by how much.
 

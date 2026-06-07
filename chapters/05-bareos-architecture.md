@@ -146,9 +146,9 @@ The Director's main configuration is `/etc/bareos/bareos-dir.conf` (or the inclu
 ├── director/
 │   └── bareos-dir.conf         ← Director's own identity and global settings
 ├── fileset/
-│   └── LinuxAll.conf           ← FileSet definitions (what to back up)
+│   └── RHEL10-Standard.conf    ← FileSet definitions (what to back up)
 ├── job/
-│   ├── BackupClient1.conf      ← Job definitions
+│   ├── BackupLocalHost.conf    ← Job definitions
 │   └── RestoreFiles.conf       ← Restore job template
 ├── jobdefs/
 │   └── DefaultJob.conf         ← Shared job settings templates
@@ -300,10 +300,11 @@ The Catalog is a relational database that serves as the index and inventory of e
 
 ### Catalog Database Choice
 
-Bareos supports:
-- **MariaDB / MySQL** — our choice; best performance, most features
-- **PostgreSQL** — excellent alternative, slightly more complex setup
-- **SQLite** — only for testing; never use in production (locks under concurrent access)
+Bareos supports two catalog database backends:
+- **PostgreSQL** — the upstream default; mature and fully supported
+- **MariaDB / MySQL** — our choice in this course; excellent performance and feature coverage
+
+(The legacy SQLite backend has been removed in Bareos v24 — only PostgreSQL and MariaDB/MySQL remain.)
 
 MariaDB is preferred because:
 - It is the default in RHEL 10 / Bareos documentation
@@ -422,7 +423,7 @@ The WebUI requires:
 2. A `directors.ini` configuration file inside the container that tells the WebUI how to reach the Director.
 3. SELinux: no additional booleans needed because the WebUI runs inside a container that already has network access to the Director container via a shared Podman network.
 
-> **Full installation walkthrough:** See [Chapter 17 — Monitoring and Alerting](17-monitoring-alerts.md), Section 6 and Lab 17-2 for the complete step-by-step Quadlet deployment with all configuration files.
+> **Deployment walkthrough:** The WebUI container is deployed as part of the stack in [Chapter 6 — Running Bareos in Podman Containers](06-bareos-in-podman.md), where its Quadlet `.container` unit and configuration files are defined. [Chapter 17 — Monitoring and Alerting](17-monitoring-alerts.md) then covers using the WebUI for day-to-day monitoring and alerting.
 
 > **Note:** This course teaches `bconsole` first because it works in any environment, reveals the underlying concepts directly, and is essential for scripting and automation. Once you are comfortable with `bconsole`, the WebUI's features are immediately intuitive.
 
@@ -438,7 +439,7 @@ Understanding the exact sequence of events in a backup job is essential for trou
 Timeline of a Full Backup Job
 
 T+0s   Director scheduler fires (or operator runs job manually)
-       Director: "It's time to run BackupClient1"
+       Director: "It's time to run BackupLocalHost"
 
 T+1s   Director looks up the Job resource configuration
        Director: "Client = linux-host, Storage = File, Pool = Full"
@@ -479,7 +480,7 @@ T+N+2  Director updates Catalog:
        - Volume record: bytes_used updated
 
 T+N+3  Director runs configured Messages (email, log)
-       "Job BackupClient1 completed successfully"
+       "Job BackupLocalHost completed successfully"
 
 T+N+4  BackupCatalog job fires (if configured after regular backup)
        Dumps MariaDB catalog → backs it up to a Volume
@@ -499,7 +500,7 @@ Timeline of a Restore Job
 T+0s   Operator runs: bconsole → restore
 
 T+1s   Director prompts: "What do you want to restore?"
-       Operator selects: "Files from BackupClient1, most recent backup"
+       Operator selects: "Files from BackupLocalHost, most recent backup"
 
 T+2s   Director queries Catalog: "Which Job(s) contain the selected files?"
        Catalog returns: "Job 142 (Full), Job 150 (Incremental)"
@@ -709,7 +710,7 @@ JobDefs {
 }
 
 Job {
-  Name = "BackupClient1"
+  Name = "BackupLocalHost"
   JobDefs = "DefaultJobDef"  # inherits all DefaultJobDef settings
   Client = client1
   FileSet = "Linux-Standard"
@@ -755,7 +756,7 @@ Bareos uses **MD5-challenge-response authentication** between all components. Ea
 |---|---|
 | Director → File Daemon | Director's `Client` resource AND FD's `Director` resource |
 | Director → Storage Daemon | Director's `Storage` resource AND SD's `Director` resource |
-| Console → Director | Director's `Console` resource AND `bconsole.conf` |
+| Console → Director | For the default admin console: the Director's own `Director` resource AND the `Director` resource in `bconsole.conf`. Named `Console` resources are an optional additional mechanism for extra restricted consoles. |
 
 **The passwords must match exactly (case-sensitive).** A mismatch results in:
 ```
@@ -778,7 +779,7 @@ Bareos has a rich plugin system for both the File Daemon and the Storage Daemon.
 
 FD plugins extend what the File Daemon can back up. Important plugins:
 
-**`python-fd`**: The Python plugin framework. Enables Python scripts to hook into backup events. Used for:
+**`python3-fd`**: The Python 3 plugin framework (the Python 2 plugin was removed in Bareos v24). Enables Python scripts to hook into backup events. Used for:
 - MariaDB hot backups (using `mariabackup`)
 - PostgreSQL backups (using `pg_dump`)
 - Custom application integration
@@ -787,7 +788,7 @@ FD plugins extend what the File Daemon can back up. Important plugins:
 
 **`bareos-filedaemon-ldap-python-plugin`**: LDAP directory backup plugin.
 
-**`bareos-filedaemon-ovirt-plugin`**: VMware/oVirt virtual machine backup.
+**`bareos-filedaemon-ovirt-plugin`**: oVirt/RHV virtual machine backup. (VMware backups use the separate VMware plugin.)
 
 ### Storage Daemon Plugins
 
@@ -843,9 +844,9 @@ Backup Server Host:
     Listens: 3306/TCP (internal only, not exposed)
     Data directory: named volume bareos-db-data
 
-  File Daemon (RPM, on backup server itself):
+  Container: bareos-fd (File Daemon, on backup server itself):
     Listens: 9102/TCP
-    Backs up: /etc, /home/bareos, Podman volumes
+    Backs up: /etc, /home/bareos, Podman volumes (host bind-mounted at /hostfs)
 
 Client Hosts:
   Client 1:

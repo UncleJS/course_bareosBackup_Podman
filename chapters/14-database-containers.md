@@ -300,7 +300,7 @@ podman exec bareos-db \
 
 | Flag | Meaning |
 |------|---------|
-| `--single-transaction` | Opens a single transaction before dumping, ensuring a consistent snapshot without locking tables (InnoDB only) |
+| `--single-transaction` | Opens a single transaction before dumping, ensuring a consistent snapshot without locking tables. **InnoDB only:** system tables (Aria/MyISAM) are not covered, and any concurrent DDL during the dump breaks the snapshot consistency |
 | `--routines` | Includes stored procedures and functions |
 | `--triggers` | Includes triggers (enabled by default, explicit for clarity) |
 | `--events` | Includes scheduled events |
@@ -321,7 +321,9 @@ host=127.0.0.1
 port=3306
 ```
 
-Then call:
+Then call (note: `--defaults-file` references the path **inside** the container,
+`/etc/bareos/my-backup.cnf`, which the bind-mount below maps from the host file
+`/home/bareos/.config/bareos/my-backup.cnf`):
 ```bash
 podman exec bareos-db \
     mariadb-dump \
@@ -354,24 +356,27 @@ podman exec bareos-db \
   | gzip > /home/bareos/backups/all-databases.sql.gz
 ```
 
+> **Consistency caveat:** `--single-transaction` snapshots InnoDB tables only.
+> System tables stored as Aria/MyISAM (and any concurrent DDL during the dump)
+> are not part of that snapshot, so an `--all-databases` dump is not guaranteed
+> to be perfectly point-in-time consistent across non-InnoDB tables.
+
 ### 4.4 Where to Store the Dump File
 
-The dump file must be written to a location that Bareos's File Daemon can reach. In our rootless Podman setup, the File Daemon runs in its own container. The best approach is to write the dump to a directory that is bind-mounted into the File Daemon container.
+The dump file must be written to a location that Bareos's File Daemon can reach. In our rootless Podman setup, the dump is produced by a `ClientRunBeforeJob` hook that runs **inside the `bareos-fd` container** (Chapter 10), so the simplest, mount-free option is to write to an FD-internal directory and have the same File Daemon back it up.
 
-A good location is `/home/bareos/backups/`:
+We use `/var/tmp/bareos-dumps` inside the container — the convention established in Chapter 10. The hook creates it on the fly:
 
 ```bash
-mkdir -p /home/bareos/backups
-chmod 750 /home/bareos/backups
+# Inside the hook script (runs as the File Daemon):
+mkdir -p /var/tmp/bareos-dumps
 ```
 
-In the File Daemon's Quadlet `.container` file, add:
+The Bareos FileSet then references `/var/tmp/bareos-dumps` directly. Because both the writer (the hook) and the reader (the backup pass) are the File Daemon, this is an FD-internal path and takes **no `/hostfs/` prefix**. If you would rather the dumps survive FD-container restarts, point them at a subdirectory of the shared `bareos-working` volume instead (e.g. `/var/lib/bareos/dumps`), which the FD also mounts.
 
-```ini
-Volume=/home/bareos/backups:/var/bareos/backups:ro,Z
-```
-
-The Bareos FileSet then references `/var/bareos/backups/` (the path inside the FD container).
+> The manual `podman exec ... | gzip > /home/bareos/backups/...` examples earlier
+> in this section write to the **host** as the `bareos` user, which is fine for
+> ad-hoc dumps. The Bareos-driven jobs below use the FD-internal path instead.
 
 ---
 
@@ -384,27 +389,35 @@ The simplest way to get a crash-consistent physical backup is to stop the databa
 ### 5.1 The Stop/Start Approach
 
 The workflow is:
-1. Bareos Job's `RunBeforeJob` script stops the MariaDB container
+1. Bareos Job's `ClientRunBeforeJob` script stops the MariaDB container
 2. Bareos reads the volume data directory
-3. Bareos Job's `RunAfterJob` script restarts the MariaDB container
+3. Bareos Job's `ClientRunAfterJob` script restarts the MariaDB container
+
+Because these scripts drive the container via `podman` (stop/start), they **must
+run on the client (File Daemon)** — `ClientRunBeforeJob` / `ClientRunAfterJob` —
+inside the `bareos-fd` container, talking to the host Podman socket. We use
+`podman stop`/`podman start` rather than `systemctl --user`, because the FD
+container cannot reach the host user's systemd, but it can drive the container
+through the mounted Podman socket.
 
 ### 5.2 Pre/Post Scripts
 
 ```bash
 #!/bin/bash
-# /home/bareos/scripts/pre-mariadb-backup.sh
-# Run before the physical backup job
-# Stops the MariaDB container gracefully
+# /etc/bareos/scripts/pre-mariadb-backup.sh
+# ClientRunBeforeJob: stops the MariaDB container gracefully for a cold backup.
+# Runs INSIDE the bareos-fd container.
 
 set -euo pipefail
 
-export XDG_RUNTIME_DIR=/run/user/1001
+# Point the podman CLI at the host's Podman API socket (mounted by bareos-fd).
+export CONTAINER_HOST=unix:///run/podman/podman.sock
 
 echo "[$(date)] Stopping bareos-db container for physical backup..."
-systemctl --user stop bareos-db.service
+/usr/bin/podman stop bareos-db
 
 # Wait until the container is fully stopped
-timeout 60 bash -c 'until ! podman ps --format "{{.Names}}" | grep -q "^bareos-db$"; do sleep 1; done'
+timeout 60 bash -c 'until ! /usr/bin/podman ps --format "{{.Names}}" | grep -q "^bareos-db$"; do sleep 1; done'
 
 echo "[$(date)] bareos-db container stopped successfully."
 exit 0
@@ -412,36 +425,44 @@ exit 0
 
 ```bash
 #!/bin/bash
-# /home/bareos/scripts/post-mariadb-backup.sh
-# Run after the physical backup job
-# Restarts the MariaDB container
+# /etc/bareos/scripts/post-mariadb-backup.sh
+# ClientRunAfterJob: restarts the MariaDB container after the cold backup.
+# Runs INSIDE the bareos-fd container.
 
 set -euo pipefail
 
-export XDG_RUNTIME_DIR=/run/user/1001
+export CONTAINER_HOST=unix:///run/podman/podman.sock
+
+# MARIADB_ROOT_PASSWORD comes from the bareos-fd container environment
+# (set via the FD's env config, as in Chapter 10). Guard it.
+: "${MARIADB_ROOT_PASSWORD:?MARIADB_ROOT_PASSWORD must be set in the FD environment}"
 
 echo "[$(date)] Restarting bareos-db container after physical backup..."
-systemctl --user start bareos-db.service
+/usr/bin/podman start bareos-db
 
-# Wait until MariaDB is accepting connections
-timeout 120 bash -c 'until podman exec bareos-db mariadb-admin -u root -p"${MARIADB_ROOT_PASSWORD}" ping --silent 2>/dev/null; do sleep 2; done'
+# Wait until MariaDB is accepting connections. The credential is exported so the
+# value is visible inside the bash -c subshell that runs the ping loop.
+export MARIADB_ROOT_PASSWORD
+timeout 120 bash -c 'until /usr/bin/podman exec bareos-db mariadb-admin -u root -p"${MARIADB_ROOT_PASSWORD}" ping --silent 2>/dev/null; do sleep 2; done'
 
 echo "[$(date)] bareos-db container is back online."
 exit 0
 ```
 
 ```bash
-chmod +x /home/bareos/scripts/pre-mariadb-backup.sh
-chmod +x /home/bareos/scripts/post-mariadb-backup.sh
+chmod +x /etc/bareos/scripts/pre-mariadb-backup.sh
+chmod +x /etc/bareos/scripts/post-mariadb-backup.sh
 ```
 
 ### 5.3 The Physical Data Path
 
-The Bareos FileSet for a physical backup points to the volume's data directory on the host:
+The Bareos FileSet for a physical backup points to the volume's data directory on the host. Because this is a **host** path and the File Daemon sees the host filesystem under `/hostfs` (Chapter 6), the `File =` line carries the `/hostfs/` prefix:
 
 ```
-/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data/
+File = /hostfs/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data
 ```
+
+(The underlying host path is `/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data/`.)
 
 **SELinux consideration:** The `_data/` directory is labeled `container_file_t`. If the Bareos File Daemon runs in a container, it will have a `container_t` domain, which can read `container_file_t` files. If the FD runs natively on the host (not in a container), you may need to add a policy or relabel the path. For our course setup (FD in a container), no extra steps are needed.
 
@@ -467,7 +488,9 @@ Binary logging requires configuration in MariaDB. The cleanest way is to create 
 # Enable binary logging
 log_bin = /var/lib/mysql/mysql-bin
 binlog_format = ROW
-expire_logs_days = 7
+# MariaDB 10.11 prefers binlog_expire_logs_seconds over the deprecated
+# expire_logs_days; 604800 seconds = 7 days.
+binlog_expire_logs_seconds = 604800
 server_id = 1
 # Keep binlog files until they are at least 100MB
 max_binlog_size = 100M
@@ -491,10 +514,10 @@ podman exec bareos-db mariadb -u root -p"${MARIADB_ROOT_PASSWORD}" \
 
 Binary log files are named sequentially: `mysql-bin.000001`, `mysql-bin.000002`, etc. They live in the same volume as the data files, so they are included in any physical backup of the volume.
 
-For PITR purposes, you want to back them up frequently (e.g., every hour) so the recovery gap is small. A dedicated Bareos job can back up only the binlog files:
+For PITR purposes, you want to back them up frequently (e.g., every hour) so the recovery gap is small. A dedicated Bareos job can back up only the binlog files. This is a host path, so the FileSet uses the `/hostfs/` prefix and a wildcard:
 
 ```
-/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data/mysql-bin.*
+File = "/hostfs/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data/mysql-bin.*"
 ```
 
 ### 6.4 Point-in-Time Recovery Concept
@@ -506,7 +529,7 @@ To recover to a specific point in time:
 3. Replay all binary logs from the backup point up to (but not including) the accident:
    ```bash
    podman exec bareos-db \
-       mysqlbinlog \
+       mariadb-binlog \
        --start-datetime="2026-02-24 08:00:00" \
        --stop-datetime="2026-02-24 09:45:00" \
        /var/lib/mysql/mysql-bin.000010 \
@@ -526,16 +549,30 @@ To recover to a specific point in time:
 
 ### 7.2 Running mariabackup Inside the Container
 
-The `docker.io/library/mariadb:10.11` image includes `mariabackup`. You can run it via `podman exec`:
+The `docker.io/library/mariadb:10.11` image includes `mariabackup`. Because
+`mariabackup` writes raw files to a target directory, that directory must be a
+path the container can see — so the bind-mount has to be in place **before** the
+first run.
+
+First, bind-mount the host directory `/home/bareos/backups` into the `bareos-db`
+container at the in-container path `/backup`:
+
+```ini
+# In bareos-db.container
+Volume=/home/bareos/backups:/backup:Z
+```
+
+Restart the container so the mount takes effect, then create the output
+directory **on the host** (it appears inside the container under `/backup/`):
 
 ```bash
 export XDG_RUNTIME_DIR=/run/user/1001
 
-# Create a directory for the backup output
-# This path must be accessible from inside the container
+# Host path; visible inside the container as /backup/mariabackup-full
 mkdir -p /home/bareos/backups/mariabackup-full
 
-# Run mariabackup (this takes a while for large databases)
+# Run mariabackup (this takes a while for large databases).
+# --target-dir is the *in-container* path under the bind-mount.
 podman exec bareos-db \
     mariabackup \
     --backup \
@@ -544,12 +581,8 @@ podman exec bareos-db \
     --password="${MARIADB_ROOT_PASSWORD}"
 ```
 
-For this to work, `/home/bareos/backups/` must be bind-mounted into the `bareos-db` container at `/backup/`:
-
-```ini
-# In bareos-db.container
-Volume=/home/bareos/backups:/backup:Z
-```
+The output files land in `/home/bareos/backups/mariabackup-full` on the host,
+which the FileSet (or a logical-dump-style hook) can then back up.
 
 ### 7.3 Preparing the Backup
 
@@ -640,7 +673,14 @@ gzip /backup/pg-all-$(date +%Y%m%d-%H%M%S).sql
 
 `pg_basebackup` takes a physical base backup of a running PostgreSQL cluster by streaming the data directory over the replication protocol. This is the foundation for streaming replication and for PITR.
 
+`--pgdata` (`-D`) names a **directory**, not a file: with `--format=tar` and
+`--gzip`, `pg_basebackup` writes `base.tar.gz` (the data directory) and
+`pg_wal.tar.gz` (the streamed WAL) into it. The directory must exist (and, for a
+fresh backup, be empty) before you run the command, so create it first:
+
 ```bash
+podman exec bareos-pg mkdir -p /backup/pg-basebackup-$(date +%Y%m%d)
+
 podman exec bareos-pg \
     pg_basebackup \
     --pgdata=/backup/pg-basebackup-$(date +%Y%m%d) \
@@ -678,22 +718,32 @@ max_wal_senders = 3
 
 ### 8.4 Hook Script for PostgreSQL Logical Backup
 
+This hook calls `podman exec`, so it **must run on the client (the File Daemon)**
+— `ClientRunBeforeJob` / `RunsOnClient = yes`. It runs inside the `bareos-fd`
+container, which has the host Podman socket mounted; the script points the
+`podman` CLI at it via `CONTAINER_HOST`. The script lives at
+`/etc/bareos/scripts/` (bind-mounted into `bareos-fd` per Chapter 10) and writes
+the dump to an FD-internal directory that the same File Daemon backs up.
+
 ```bash
 #!/bin/bash
-# /home/bareos/scripts/pg-dump-backup.sh
-# Called by Bareos RunBeforeJob to produce a dump file
+# /etc/bareos/scripts/pg-dump-backup.sh
+# Runs as a ClientRunBeforeJob hook INSIDE the bareos-fd container.
+# Produces a compressed pg_dumpall via the host Podman socket.
 
 set -euo pipefail
 
-export XDG_RUNTIME_DIR=/run/user/1001
+# Point the podman CLI at the host's Podman API socket (mounted by bareos-fd).
+export CONTAINER_HOST=unix:///run/podman/podman.sock
 
-BACKUP_DIR="/home/bareos/backups"
+BACKUP_DIR="/var/tmp/bareos-dumps"          # FD-internal path (no /hostfs prefix)
+mkdir -p "${BACKUP_DIR}"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 DUMP_FILE="${BACKUP_DIR}/pg-all-${TIMESTAMP}.sql.gz"
 
 echo "[$(date)] Starting PostgreSQL pg_dumpall..."
 
-podman exec bareos-pg \
+/usr/bin/podman exec bareos-pg \
     pg_dumpall \
     --username=postgres \
     --clean \
@@ -785,6 +835,14 @@ When you install Bareos, the default configuration includes a pre-built `BackupC
 
 > **Bareos 23+ note:** Starting with Bareos 23, the `make_catalog_backup.pl` Perl script has been replaced by a shell script named `bareos-make-catalog-backup` (located at `/usr/lib/bareos/scripts/bareos-make-catalog-backup`). If you are running Bareos 23 or later, substitute `bareos-make-catalog-backup` wherever this section references `make_catalog_backup.pl`. The arguments and behavior are equivalent; only the script name changes. Bareos 21/22 deployments continue to use the `.pl` version.
 
+> **What we actually use:** On a traditional RPM install, the stock
+> `make_catalog_backup.pl` (and its `delete_catalog_backup` companion) handle the
+> catalog dump. In our containerized setup the catalog database lives in a
+> **separate** container with credentials supplied by `db.env`, so we use a small
+> custom script instead — see [Section 14](#14-complete-bareos-job-for-the-bareos-catalog),
+> which is the canonical mechanism for this course. This section explains the
+> stock script for context and for anyone running a native install.
+
 ### 11.1 What It Does
 
 `make_catalog_backup.pl` is a Perl script that ships with Bareos. It is designed to be called from a Bareos Job's `RunBeforeJob` directive. The script:
@@ -836,9 +894,16 @@ This removes the `/var/lib/bareos/bareos.sql` file (since it has now been backed
 
 ### 11.5 Adapting for Container Environments
 
-In our rootless Podman setup, `make_catalog_backup.pl` runs inside the Director container. It calls `mysqldump` — but the MariaDB server is in a **separate container** (`bareos-db`). The Director container must be able to reach the database container over the Podman internal network.
+Rather than rely on the stock script's auto-discovery of credentials from the
+Director config, our course uses a small custom dump script that runs **inside
+the Director container** (via `RunScript { RunsOnClient = no }`) and reaches the
+MariaDB server in its **separate container** (`bareos-db`) over the Podman
+network. That script — `/etc/bareos/scripts/dump-catalog.sh` — and its cleanup
+companion are defined in [Section 14](#141-the-catalog-backup-script). The
+network prerequisites below apply either way.
 
-Ensure the containers are in the same Podman network:
+The Director container must be able to reach the database container over the
+Podman internal network. Ensure both are in the same Podman network:
 
 ```ini
 # In bareos-director.container
@@ -868,32 +933,34 @@ Catalog {
 
 ## 12. Complete Bareos Job for MariaDB Container Backup
 
-This section provides a complete, production-ready Bareos configuration for backing up a MariaDB container using the logical dump approach. We use a RunBeforeJob script to perform the dump, then back up the resulting file.
+This section provides a complete, production-ready Bareos configuration for backing up a MariaDB container using the logical dump approach. Because the dump runs `podman exec`, it **must run on the client (File Daemon)** as a `ClientRunBeforeJob` hook — the same pattern as Chapter 10. The script runs inside the `bareos-fd` container (which has the host Podman socket), writes the dump to an FD-internal directory, and then the same File Daemon backs that file up.
 
 ### 12.1 The Hook Script
 
 ```bash
 #!/bin/bash
-# /home/bareos/scripts/mariadb-pre-backup.sh
-# Produces a compressed SQL dump of all MariaDB databases
-# Called by Bareos RunBeforeJob
+# /etc/bareos/scripts/mariadb-pre-backup.sh
+# Produces a compressed SQL dump of all MariaDB databases.
+# Runs as a ClientRunBeforeJob hook INSIDE the bareos-fd container.
 
 set -euo pipefail
 
-export XDG_RUNTIME_DIR=/run/user/1001
+# Point the podman CLI at the host's Podman API socket (mounted by bareos-fd).
+export CONTAINER_HOST=unix:///run/podman/podman.sock
 
-BACKUP_DIR="/home/bareos/backups"
+BACKUP_DIR="/var/tmp/bareos-dumps"          # FD-internal path (no /hostfs prefix)
+mkdir -p "${BACKUP_DIR}"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 DUMP_FILE="${BACKUP_DIR}/mariadb-full-${TIMESTAMP}.sql.gz"
 LATEST_LINK="${BACKUP_DIR}/mariadb-latest.sql.gz"
 
-# Load database credentials from the secrets file
-# shellcheck source=/dev/null
-source /home/bareos/.config/bareos/db.env
+# MARIADB_ROOT_PASSWORD is provided in the bareos-fd container's environment
+# (set via the FD's env config, as established in Chapter 10). Guard it.
+: "${MARIADB_ROOT_PASSWORD:?MARIADB_ROOT_PASSWORD must be set in the FD environment}"
 
 echo "[$(date)] Starting MariaDB logical dump..."
 
-podman exec bareos-db \
+/usr/bin/podman exec bareos-db \
     mariadb-dump \
     --all-databases \
     --single-transaction \
@@ -917,8 +984,13 @@ exit 0
 ```
 
 ```bash
-chmod 750 /home/bareos/scripts/mariadb-pre-backup.sh
+chmod 750 /etc/bareos/scripts/mariadb-pre-backup.sh
 ```
+
+> **Note:** `--all-databases` with `--single-transaction` snapshots InnoDB
+> consistently; non-InnoDB system tables (Aria/MyISAM) and concurrent DDL are not
+> part of that snapshot. For the Bareos catalog itself this is fine (it is pure
+> InnoDB), but be aware of it when dumping arbitrary application databases.
 
 ### 12.2 The Bareos FileSet
 
@@ -931,25 +1003,23 @@ FileSet {
   Include {
     Options {
       Signature = MD5
-      Compression = LZ4          # Bareos-level compression (redundant with gzip, disable if using gzip)
-      # Disable Bareos compression since the file is already gzip-compressed:
-      Compression = ""
+      # The dump is already gzip-compressed, so we omit any Bareos Compression
+      # directive here (no Compression line = no second compression pass).
     }
 
-    # The symlink always points to the latest dump
-    File = "/var/bareos/backups/mariadb-latest.sql.gz"
-
-    # Also back up the timestamped file explicitly if you want all copies
-    # File = "/var/bareos/backups"
-  }
-
-  Exclude {
-    File = "/var/bareos/backups/mariadb-full-*.sql.gz"
+    # The whole dump directory: this captures the timestamped dump and the
+    # mariadb-latest.sql.gz symlink that points at it. Backing up the directory
+    # (rather than only the symlink) guarantees the symlink target is included.
+    File = "/var/tmp/bareos-dumps"
   }
 }
 ```
 
-> **Note on path:** `/var/bareos/backups` is the path **inside the File Daemon container**, which bind-mounts `/home/bareos/backups` from the host. The symlink target must also be resolvable from inside the FD container.
+> **Note on path:** `/var/tmp/bareos-dumps` is a path **inside the bareos-fd
+> container**. The hook script (running as the File Daemon) writes the dump
+> there, and the same File Daemon reads it back when it backs the file up — so
+> this is an FD-internal path with **no `/hostfs/` prefix** (the same convention
+> as Chapter 10).
 
 ### 12.3 The Bareos Job
 
@@ -963,17 +1033,17 @@ Job {
   Client = bareos-fd
   FileSet = "MariaDB-Dump"
   Schedule = "WeeklyCycle"
-  Storage = File-1
+  Storage = File
   Pool = Full
   Priority = 10
 
-  # Run the dump script before the backup starts
-  # The script must complete (exit 0) before Bareos reads any files
-  RunBeforeJob = "/home/bareos/scripts/mariadb-pre-backup.sh"
+  # Run the dump script before the backup starts. It calls podman exec, so it
+  # MUST run on the client (File Daemon): ClientRunBeforeJob = RunsOnClient yes.
+  # The script must complete (exit 0) before Bareos reads any files.
+  ClientRunBeforeJob = "/etc/bareos/scripts/mariadb-pre-backup.sh"
 
-  # On failure, log a warning but do not mark the job failed
-  # (use RunAfterFailedJob for alerting)
-  RunAfterFailedJob = "/home/bareos/scripts/notify-failure.sh MariaDB-Backup"
+  # On failure, run an alerting script (this one runs on the Director).
+  RunAfterFailedJob = "/etc/bareos/scripts/notify-failure.sh MariaDB-Backup"
 
   # Write Messages here
   Messages = Standard
@@ -981,8 +1051,9 @@ Job {
   # Where to write the bootstrap file (critical for catalog-less restore)
   Write Bootstrap = "/var/lib/bareos/%n.bsr"
 
-  # Maximum time allowed for the pre-script + backup combined
-  Max Start Delay = 4 hours
+  # Cap the total runtime of the job (pre-script + backup). Max Run Time bounds
+  # how long the job may run; Max Start Delay would only bound queue wait.
+  Max Run Time = 4 hours
 }
 ```
 
@@ -1008,15 +1079,17 @@ Update the Job to use `Schedule = "MariaDB-Daily"`.
 
 ```bash
 #!/bin/bash
-# /home/bareos/scripts/pg-pre-backup.sh
-# Produces a pg_dumpall of all PostgreSQL databases
-# Called by Bareos RunBeforeJob
+# /etc/bareos/scripts/pg-pre-backup.sh
+# Produces a pg_dumpall of all PostgreSQL databases.
+# Runs as a ClientRunBeforeJob hook INSIDE the bareos-fd container.
 
 set -euo pipefail
 
-export XDG_RUNTIME_DIR=/run/user/1001
+# Point the podman CLI at the host's Podman API socket (mounted by bareos-fd).
+export CONTAINER_HOST=unix:///run/podman/podman.sock
 
-BACKUP_DIR="/home/bareos/backups"
+BACKUP_DIR="/var/tmp/bareos-dumps"          # FD-internal path (no /hostfs prefix)
+mkdir -p "${BACKUP_DIR}"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 DUMP_FILE="${BACKUP_DIR}/pg-all-${TIMESTAMP}.sql.gz"
 LATEST_LINK="${BACKUP_DIR}/pg-latest.sql.gz"
@@ -1024,10 +1097,10 @@ LATEST_LINK="${BACKUP_DIR}/pg-latest.sql.gz"
 echo "[$(date)] Starting PostgreSQL pg_dumpall..."
 
 # pg_dumpall requires no password if pg_hba.conf allows the connection,
-# or set PGPASSWORD in the environment
-# For containerized PostgreSQL, use trust auth for local connections
-podman exec \
-    --env PGPASSWORD="$(cat /home/bareos/.config/bareos/pg-password.txt)" \
+# or set PGPASSWORD in the environment.
+# pg-password.txt is bind-mounted into bareos-fd alongside the other secrets.
+/usr/bin/podman exec \
+    --env PGPASSWORD="$(cat /etc/bareos/pg-password.txt)" \
     bareos-pg \
     pg_dumpall \
     --username=postgres \
@@ -1044,10 +1117,10 @@ exit 0
 ```
 
 ```bash
-# Store the password securely
+# Store the password securely (on the host; bind-mounted into bareos-fd)
 echo -n "PostgresRootPass" > /home/bareos/.config/bareos/pg-password.txt
 chmod 600 /home/bareos/.config/bareos/pg-password.txt
-chmod 750 /home/bareos/scripts/pg-pre-backup.sh
+chmod 750 /etc/bareos/scripts/pg-pre-backup.sh
 ```
 
 ### 13.2 The Bareos FileSet
@@ -1061,8 +1134,11 @@ FileSet {
   Include {
     Options {
       Signature = MD5
+      # Output is already gzip-compressed, so we omit any Bareos Compression
+      # directive (no second compression pass).
     }
-    File = "/var/bareos/backups/pg-latest.sql.gz"
+    # FD-internal dump directory (no /hostfs prefix) — same path the hook writes.
+    File = "/var/tmp/bareos-dumps"
   }
 }
 ```
@@ -1079,12 +1155,13 @@ Job {
   Client = bareos-fd
   FileSet = "PostgreSQL-Dump"
   Schedule = "WeeklyCycle"
-  Storage = File-1
+  Storage = File
   Pool = Full
   Priority = 10
 
-  RunBeforeJob = "/home/bareos/scripts/pg-pre-backup.sh"
-  RunAfterFailedJob = "/home/bareos/scripts/notify-failure.sh PostgreSQL-Backup"
+  # podman exec → must run on the client (File Daemon).
+  ClientRunBeforeJob = "/etc/bareos/scripts/pg-pre-backup.sh"
+  RunAfterFailedJob = "/etc/bareos/scripts/notify-failure.sh PostgreSQL-Backup"
 
   Messages = Standard
   Write Bootstrap = "/var/lib/bareos/%n.bsr"
@@ -1099,50 +1176,51 @@ Job {
 
 This is the most important backup job in your entire Bareos setup.
 
+Unlike the application-database jobs above, the **catalog** dump does **not** use
+`podman exec`. The catalog database lives in `bareos-db`, and the Director
+container already has network reachability to it plus the `MARIADB_*` credentials
+from its own `db.env` (`EnvironmentFile=`). So the dump runs **inside the
+Director container** via `RunScript { RunsOnClient = no }`, writing onto the
+shared `bareos-working` volume at `/var/lib/bareos`, where the File Daemon
+(mounting the same volume) backs it up. This is exactly the mechanism introduced
+in Chapter 7; the script below is identical to that canonical version.
+
 ### 14.1 The Catalog Backup Script
 
-We adapt `make_catalog_backup.pl`'s logic into a shell script that works with our containerized MariaDB. The Director container runs this script via RunBeforeJob.
-
 ```bash
-#!/bin/bash
-# /home/bareos/scripts/backup-catalog.sh
-# Dumps the Bareos catalog database to a file inside the Director container
-# This script runs INSIDE the bareos-director container (via RunBeforeJob)
+#!/bin/sh
+# /etc/bareos/scripts/dump-catalog.sh
+# Dumps the Bareos catalog from the bareos-db container over the network.
+# Runs INSIDE the bareos-director container (RunScript RunsOnClient = no).
+# MARIADB_* come from the Director container's EnvironmentFile=db.env.
 
-set -euo pipefail
-
-# These variables are set from db.env, which is loaded by the container
-: "${MARIADB_PASSWORD:?MARIADB_PASSWORD must be set}"
-: "${MARIADB_DATABASE:?MARIADB_DATABASE must be set}"
-: "${MARIADB_USER:?MARIADB_USER must be set}"
-
-DUMP_FILE="/var/lib/bareos/bareos-catalog.sql.gz"
-
-echo "[$(date)] Starting Bareos Catalog dump..."
+set -eu
+mkdir -p /var/lib/bareos/catalog-dump
 
 mariadb-dump \
     --host=bareos-db \
-    --port=3306 \
     --user="${MARIADB_USER}" \
     --password="${MARIADB_PASSWORD}" \
     --single-transaction \
-    --routines \
-    --triggers \
-    --events \
     "${MARIADB_DATABASE}" \
-  | gzip > "${DUMP_FILE}"
+  | gzip > /var/lib/bareos/catalog-dump/bareos-catalog.sql.gz
+```
 
-echo "[$(date)] Catalog dump complete: ${DUMP_FILE}"
-exit 0
+We deliberately omit `--events`, `--routines`, and `--triggers`: the Bareos
+catalog has none of those objects, and the `bareos` DB user lacks the privileges
+to dump them, so including the flags would only cause errors.
+
+```bash
+#!/bin/sh
+# /etc/bareos/scripts/delete-catalog-dump.sh
+# Cleanup — removes the dump after the job has captured it.
+set -eu
+rm -f /var/lib/bareos/catalog-dump/bareos-catalog.sql.gz
 ```
 
 ```bash
-# The cleanup script (run after the backup job completes)
-#!/bin/bash
-# /home/bareos/scripts/cleanup-catalog-dump.sh
-rm -f /var/lib/bareos/bareos-catalog.sql.gz
-echo "[$(date)] Catalog dump file removed."
-exit 0
+sudo chmod 0755 /etc/bareos/scripts/dump-catalog.sh \
+                /etc/bareos/scripts/delete-catalog-dump.sh
 ```
 
 ### 14.2 The Bareos Job Configuration
@@ -1156,11 +1234,11 @@ Job {
   Level = Full
   Client = bareos-fd
 
-  # The FileSet points to the dump file location inside the FD container
+  # The FileSet points to the dump directory on the shared bareos-working volume
   FileSet = "Catalog"
 
   Schedule = "WeeklyCycleAfterBackup"
-  Storage = File-1
+  Storage = File
 
   # Use a separate Pool for catalog backups so they are easy to find
   Pool = Full
@@ -1168,22 +1246,36 @@ Job {
   # CRITICAL: Run after all other jobs so the catalog is fully up to date
   Priority = 100
 
-  # Run the dump script inside the Director container before backing up
-  RunBeforeJob = "/usr/lib/bareos/scripts/make_catalog_backup.pl MyCatalog"
+  # Dump the catalog inside the Director container before backing up.
+  # RunsOnClient = no directs the command to the Director (which holds the DB
+  # credentials and reaches bareos-db over the network), NOT to the File Daemon.
+  RunScript {
+    RunsWhen       = Before
+    RunsOnClient   = no
+    FailJobOnError = yes
+    Command        = "/etc/bareos/scripts/dump-catalog.sh"
+  }
 
-  # Clean up the dump file after the backup completes
-  RunAfterJob  = "/usr/lib/bareos/scripts/delete_catalog_backup"
+  # Remove the dump after the job, whether it succeeded or failed.
+  RunScript {
+    RunsWhen      = After
+    RunsOnClient  = no
+    RunsOnSuccess = yes
+    RunsOnFailure = yes
+    Command       = "/etc/bareos/scripts/delete-catalog-dump.sh"
+  }
 
   Messages = Standard
 
   # The bootstrap file for the catalog backup must be kept somewhere
-  # safe and separate from Bareos storage
-  Write Bootstrap = "/var/lib/bareos/%n.bsr"
-
-  # Never let this job run for too long
-  Max Start Delay = 2 hours
+  # safe and separate from Bareos storage.
+  Write Bootstrap = "/var/lib/bareos/bareos-catalog.bsr"
 }
 ```
+
+> On a traditional RPM install the stock `make_catalog_backup.pl` /
+> `delete_catalog_backup` scripts fill this role; we do not use them here because
+> there is no local DB socket — the catalog lives in a separate container.
 
 ### 14.3 The Catalog FileSet
 
@@ -1197,9 +1289,9 @@ FileSet {
     Options {
       Signature = MD5
     }
-    # Path inside the File Daemon container that maps to
-    # /var/lib/bareos/ on the host
-    File = "/var/lib/bareos/bareos-catalog.sql.gz"
+    # The dump lands on the shared bareos-working volume, which the File Daemon
+    # mounts at /var/lib/bareos — so it is referenced as-is, no /hostfs prefix.
+    File = "/var/lib/bareos/catalog-dump"
   }
 }
 ```
@@ -1222,9 +1314,9 @@ Restoring from a `mariadb-dump` output requires:
 ```bash
 # In bconsole
 *restore
-# Select the backup of mariadb-latest.sql.gz
+# Select the backup of the MariaDB dump
 # Choose: 5 (Select the most recent backup for a client)
-# Select the file: /var/bareos/backups/mariadb-latest.sql.gz
+# Select the file: /var/tmp/bareos-dumps/mariadb-latest.sql.gz
 # Confirm the restore directory (e.g., /tmp/bareos-restore/)
 *run
 *wait
@@ -1232,21 +1324,22 @@ Restoring from a `mariadb-dump` output requires:
 
 After the restore, the dump file will be at:
 ```
-/tmp/bareos-restore/var/bareos/backups/mariadb-latest.sql.gz
+/tmp/bareos-restore/var/tmp/bareos-dumps/mariadb-latest.sql.gz
 ```
 
 ### 15.3 Step 2: Decompress and Restore
 
 ```bash
 export XDG_RUNTIME_DIR=/run/user/1001
+source /home/bareos/.config/bareos/db.env
 
-# Copy the dump file to the shared backup directory
-cp /tmp/bareos-restore/var/bareos/backups/mariadb-latest.sql.gz \
-    /home/bareos/backups/restore-dump.sql.gz
+# Copy the dump file to a working location on the host
+cp /tmp/bareos-restore/var/tmp/bareos-dumps/mariadb-latest.sql.gz \
+    /home/bareos/restore-dump.sql.gz
 
 # Restore all databases (this will DROP and recreate all databases)
 # WARNING: This replaces all existing data
-zcat /home/bareos/backups/restore-dump.sql.gz \
+zcat /home/bareos/restore-dump.sql.gz \
   | podman exec -i bareos-db \
       mariadb \
       --user=root \
@@ -1266,17 +1359,38 @@ podman exec bareos-db \
 
 ### 15.5 Restoring a Single Database
 
-If the dump contains all databases but you only need to restore one:
+If you need only one database but the backup is an `--all-databases` dump, do
+**not** rely on `mariadb --one-database`. That client-side filter only keeps
+statements issued while the named database is the *default*; any statement not
+prefixed by a matching `USE` (or run before the first `USE`) is silently
+skipped, so you can quietly restore an incomplete database. Prefer one of these:
+
+**Option A — keep per-database dumps (recommended).** Dump each database to its
+own file (e.g. `mariadb-dump ... myapp | gzip > myapp.sql.gz`) so a single-DB
+restore is just a plain import into that database:
 
 ```bash
-# Extract only the schema and data for the 'myapp' database from the dump
-zcat /home/bareos/backups/restore-dump.sql.gz \
+source /home/bareos/.config/bareos/db.env
+zcat /home/bareos/myapp.sql.gz \
   | podman exec -i bareos-db \
-      mariadb \
-      --user=root \
-      --password="${MARIADB_ROOT_PASSWORD}" \
-      --one-database myapp
+      mariadb --user=root --password="${MARIADB_ROOT_PASSWORD}" myapp
 ```
+
+**Option B — extract one database from an all-DB dump.** Use `mariadb-dump`'s
+`--one-database`-aware extraction by parsing out just the target section with
+`sed` before importing (the `-- Current Database:` markers delimit each
+database):
+
+```bash
+zcat /home/bareos/restore-dump.sql.gz \
+  | sed -n '/^-- Current Database: `myapp`/,/^-- Current Database: /p' \
+  | podman exec -i bareos-db \
+      mariadb --user=root --password="${MARIADB_ROOT_PASSWORD}" myapp
+```
+
+If you still choose to use `mariadb --one-database myapp` directly, treat it as a
+best-effort filter only, and always verify row counts against the source
+afterward — it can silently miss data.
 
 ---
 
@@ -1286,7 +1400,7 @@ zcat /home/bareos/backups/restore-dump.sql.gz \
 
 ### 16.1 Retrieve the Dump File
 
-Same as MariaDB: use `bconsole restore` to retrieve `pg-latest.sql.gz`, then place it at `/home/bareos/backups/pg-restore.sql.gz`.
+Same as MariaDB: use `bconsole restore` to retrieve `/var/tmp/bareos-dumps/pg-latest.sql.gz` (it lands under the restore directory, e.g. `/tmp/bareos-restore/var/tmp/bareos-dumps/pg-latest.sql.gz`), then copy it to a working location such as `/home/bareos/pg-restore.sql.gz`.
 
 ### 16.2 Restore All Databases
 
@@ -1294,7 +1408,7 @@ Same as MariaDB: use `bconsole restore` to retrieve `pg-latest.sql.gz`, then pla
 export XDG_RUNTIME_DIR=/run/user/1001
 
 # Decompress and pipe directly into psql
-zcat /home/bareos/backups/pg-restore.sql.gz \
+zcat /home/bareos/pg-restore.sql.gz \
   | podman exec -i \
       --env PGPASSWORD="$(cat /home/bareos/.config/bareos/pg-password.txt)" \
       bareos-pg \
@@ -1335,29 +1449,35 @@ podman exec \
 **Prerequisites:**
 - Bareos running in rootless Podman containers
 - MariaDB container (`bareos-db`) running with the `bareos` database
-- File Daemon container bind-mounting `/home/bareos/backups`
+- File Daemon (`bareos-fd`) built with the `podman` CLI and the host Podman
+  socket mounted (Chapter 10), with `/etc/bareos/scripts` bind-mounted in
 
-**Step 1: Create the scripts directory and hook script**
+**Step 1: Create the hook script on the host**
+
+The script lives at `/etc/bareos/scripts/` (bind-mounted into `bareos-fd`) and
+runs inside the FD container as a `ClientRunBeforeJob` hook:
 
 ```bash
 # As the bareos user
 su - bareos
 export XDG_RUNTIME_DIR=/run/user/1001
 
-mkdir -p /home/bareos/scripts /home/bareos/backups
+sudo install -d -m 0750 /etc/bareos/scripts
 
-cat > /home/bareos/scripts/mariadb-pre-backup.sh << 'SCRIPT'
+sudo tee /etc/bareos/scripts/mariadb-pre-backup.sh << 'SCRIPT'
 #!/bin/bash
 set -euo pipefail
-export XDG_RUNTIME_DIR=/run/user/1001
+export CONTAINER_HOST=unix:///run/podman/podman.sock
 
-BACKUP_DIR="/home/bareos/backups"
+BACKUP_DIR="/var/tmp/bareos-dumps"
+mkdir -p "${BACKUP_DIR}"
 DUMP_FILE="${BACKUP_DIR}/mariadb-latest.sql.gz"
 
-source /home/bareos/.config/bareos/db.env
+# MARIADB_ROOT_PASSWORD comes from the bareos-fd container environment.
+: "${MARIADB_ROOT_PASSWORD:?MARIADB_ROOT_PASSWORD must be set in the FD environment}"
 
 echo "[$(date)] Dumping MariaDB..."
-podman exec bareos-db \
+/usr/bin/podman exec bareos-db \
     mariadb-dump \
     --all-databases \
     --single-transaction \
@@ -1370,21 +1490,24 @@ podman exec bareos-db \
 echo "[$(date)] Done: ${DUMP_FILE} ($(du -sh "${DUMP_FILE}" | cut -f1))"
 SCRIPT
 
-chmod 750 /home/bareos/scripts/mariadb-pre-backup.sh
+sudo chmod 750 /etc/bareos/scripts/mariadb-pre-backup.sh
 ```
 
-**Step 2: Test the hook script manually**
+**Step 2: Test the hook script inside the FD container**
+
+Because the script targets the in-container Podman socket and writes to an
+FD-internal path, run it where it will actually run — inside `bareos-fd`:
 
 ```bash
-/home/bareos/scripts/mariadb-pre-backup.sh
-ls -lh /home/bareos/backups/mariadb-latest.sql.gz
+podman exec bareos-fd /etc/bareos/scripts/mariadb-pre-backup.sh
+podman exec bareos-fd ls -lh /var/tmp/bareos-dumps/mariadb-latest.sql.gz
 # Expected: a non-empty .sql.gz file
 ```
 
 **Step 3: Verify the dump is readable**
 
 ```bash
-zcat /home/bareos/backups/mariadb-latest.sql.gz | head -20
+podman exec bareos-fd sh -c 'zcat /var/tmp/bareos-dumps/mariadb-latest.sql.gz | head -20'
 # Should show: -- MariaDB dump header
 ```
 
@@ -1400,10 +1523,10 @@ Job {
   Client = bareos-fd
   FileSet = "MariaDB-Dump"
   Schedule = "WeeklyCycle"
-  Storage = File-1
+  Storage = File
   Pool = Full
   Priority = 10
-  RunBeforeJob = "/home/bareos/scripts/mariadb-pre-backup.sh"
+  ClientRunBeforeJob = "/etc/bareos/scripts/mariadb-pre-backup.sh"
   Messages = Standard
   Write Bootstrap = "/var/lib/bareos/%n.bsr"
 }
@@ -1414,7 +1537,7 @@ FileSet {
   Name = "MariaDB-Dump"
   Include {
     Options { Signature = MD5 }
-    File = "/var/bareos/backups/mariadb-latest.sql.gz"
+    File = "/var/tmp/bareos-dumps"
   }
 }
 FS
@@ -1444,7 +1567,7 @@ In `bconsole`:
 # Find BackupMariaDB-Lab — Status should be "T" (Terminated OK)
 
 *list files jobid=<JOBID>
-# Should show /var/bareos/backups/mariadb-latest.sql.gz
+# Should show /var/tmp/bareos-dumps/mariadb-latest.sql.gz
 
 *list volumes
 # Should show the volume that contains this job
@@ -1529,7 +1652,7 @@ Automatically selected FileSet: MariaDB-Dump
 
 The highlighted entry is the most recent backup.
 Enter the file to restore (use 'mark', 'lsmark', 'done'):
-$ mark /var/bareos/backups/mariadb-latest.sql.gz
+$ mark /var/tmp/bareos-dumps/mariadb-latest.sql.gz
 $ done
 
 Restoring to /tmp/bareos-restore/ ...
@@ -1542,16 +1665,19 @@ JobId: ...
 **Step 5: Restore the database from the retrieved dump**
 
 ```bash
-# Find the restored file
-ls /tmp/bareos-restore/var/bareos/backups/
-cp /tmp/bareos-restore/var/bareos/backups/mariadb-latest.sql.gz \
-    /home/bareos/backups/restore-lab14.sql.gz
+source /home/bareos/.config/bareos/db.env
 
-# Restore the lab14_test database
-zcat /home/bareos/backups/restore-lab14.sql.gz \
+# Find the restored file
+ls /tmp/bareos-restore/var/tmp/bareos-dumps/
+cp /tmp/bareos-restore/var/tmp/bareos-dumps/mariadb-latest.sql.gz \
+    /home/bareos/restore-lab14.sql.gz
+
+# Extract ONLY the lab14_test section from the all-databases dump, then import it.
+# (We avoid `mariadb --one-database`, which can silently skip data — see 15.5.)
+zcat /home/bareos/restore-lab14.sql.gz \
+  | sed -n '/^-- Current Database: `lab14_test`/,/^-- Current Database: /p' \
   | podman exec -i bareos-db \
-      mariadb -u root -p"${MARIADB_ROOT_PASSWORD}" \
-      --one-database lab14_test
+      mariadb -u root -p"${MARIADB_ROOT_PASSWORD}"
 ```
 
 **Step 6: Verify the data is back**
@@ -1594,7 +1720,7 @@ podman exec -it bareos-director bconsole
 # Note the JobId for BackupCatalog
 
 *list files jobid=<CATALOG_JOBID>
-# Should show /var/lib/bareos/bareos-catalog.sql.gz (or similar)
+# Should show /var/lib/bareos/catalog-dump/bareos-catalog.sql.gz
 
 *list volumes
 # Note the Volume name that contains the catalog backup
@@ -1603,9 +1729,10 @@ podman exec -it bareos-director bconsole
 **Step 3: Note the bootstrap file location**
 
 ```bash
-ls -la /var/lib/bareos/BackupCatalog.bsr
+# The BackupCatalog job writes its bootstrap to a fixed name (see §14.2)
+ls -la /var/lib/bareos/bareos-catalog.bsr
 # This file is critical — back it up separately!
-cat /var/lib/bareos/BackupCatalog.bsr
+cat /var/lib/bareos/bareos-catalog.bsr
 ```
 
 The bootstrap file tells Bareos which Volume and byte offset contains the catalog backup — enabling catalog-less restore.
@@ -1626,26 +1753,35 @@ systemctl --user stop bareos-director.service
 **Step 5: Restore the catalog dump using bextract (catalog-less)**
 
 ```bash
-# Use bextract to restore without the catalog, using the bootstrap file
+# Use bextract to restore without the catalog, using the bootstrap file.
+# Form: -b <bootstrap> -V <volume> <storage_device> <output_dir>
+# (the storage device path is the SD's volume dir inside bareos-storage).
 podman exec bareos-storage \
     bextract \
-    -b /var/lib/bareos/BackupCatalog.bsr \
-    -D File-1 \
-    /tmp/catalog-restore/
+    -b /var/lib/bareos/bareos-catalog.bsr \
+    -V Full-0001 \
+    /var/lib/bareos/storage \
+    /tmp/catalog-restore
 
 # The dump file is now at:
-ls /tmp/catalog-restore/var/lib/bareos/bareos-catalog.sql.gz
+podman exec bareos-storage \
+    ls /tmp/catalog-restore/var/lib/bareos/catalog-dump/bareos-catalog.sql.gz
 ```
 
 **Step 6: Recreate the database schema and restore the dump**
 
 ```bash
+source /home/bareos/.config/bareos/db.env
+
 # Recreate the Bareos database schema
 podman exec bareos-director \
     /usr/lib/bareos/scripts/create_bareos_database
 
-# Restore the catalog data
-zcat /tmp/catalog-restore/var/lib/bareos/bareos-catalog.sql.gz \
+# Restore the catalog data (the dump lives inside bareos-storage's filesystem,
+# so stream it out of that container and into the DB container)
+podman exec bareos-storage \
+    cat /tmp/catalog-restore/var/lib/bareos/catalog-dump/bareos-catalog.sql.gz \
+  | zcat \
   | podman exec -i bareos-db \
       mariadb -u bareos -p"${MARIADB_PASSWORD}" bareos
 

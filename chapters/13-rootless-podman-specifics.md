@@ -84,7 +84,7 @@
   - [Pitfall 2: Containers Die on Logout](#pitfall-2-containers-die-on-logout)
   - [Pitfall 3: "cannot bind to address" on Port Below 1024](#pitfall-3-cannot-bind-to-address-on-port-below-1024)
   - [Pitfall 4: "Cannot find subuid/subgid for user"](#pitfall-4-cannot-find-subuidsubgid-for-user)
-  - [Pitfall 5: AVC Denial for bareos-store Volume](#pitfall-5-avc-denial-for-bareos-store-volume)
+  - [Pitfall 5: AVC Denial for the Storage Bind Mount](#pitfall-5-avc-denial-for-the-storage-bind-mount)
   - [Pitfall 6: Quadlet Files Not Picked Up After daemon-reload](#pitfall-6-quadlet-files-not-picked-up-after-daemon-reload)
   - [Pitfall 7: Container Cannot Reach Other Containers by Name](#pitfall-7-container-cannot-reach-other-containers-by-name)
   - [Pitfall 8: Missing XDG_RUNTIME_DIR in Scripts](#pitfall-8-missing-xdg_runtime_dir-in-scripts)
@@ -191,9 +191,12 @@ grep bareos /etc/subgid
 # If these lines are missing, add them:
 sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 bareos
 
-# Verify with getsubids (Podman ships this utility)
+# Verify with getsubids (part of shadow-utils, the same package that
+# provides useradd/newuidmap — not Podman itself)
 getsubids bareos
-# Expected: 0: bareos 100000 65536
+# Output is a single allocation line for the user; the start UID and
+# count match /etc/subuid (100000 and 65536). The exact text varies
+# slightly by shadow-utils version.
 ```
 
 ### How the Mapping Works Step by Step
@@ -212,7 +215,7 @@ Let's unpack this table carefully:
 - If a file inside the container is owned by UID 0 (created by root inside the container), the kernel stores it on the host as owned by UID 1001 (bareos).
 - This means the `bareos` user can read and write files created by the container's root process.
 
-**Row 2:** Container UIDs 1 through 65535 map to host UIDs 100000 through 165535. This is a 65535:65535 range mapping.
+**Row 2:** Container UIDs 1 through 65535 map to host UIDs 100000 through 165534 — a count of 65535 IDs. Note the arithmetic: the `/etc/subuid` pool is 65536 IDs (100000–165535), but row 1 already spent one mapping (container UID 0 → host UID 1001), so only 65535 of the pool's IDs are consumed here (100000–165534). The pool's final ID, host UID 165535, is simply left unused; container UID 0 is served by host UID 1001 instead of the pool.
 
 - If a container process runs as UID 33 (the `www-data` user inside many containers), the kernel stores its files as host UID 100032 (= 100000 + 33 - 1).
 - If a container process runs as UID 999 (common for application users like `mysql`, `postgres`), files are owned by host UID 100998 (= 100000 + 999 - 1).
@@ -240,7 +243,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-db id
 # Output: uid=999(mysql) gid=999(mysql) groups=999(mysql)
 
 # On the host, look at the volume's data directory
-ls -la ~/.local/share/containers/storage/volumes/bareos-db/_data/
+ls -la ~/.local/share/containers/storage/volumes/bareos-db-data/_data/
 # Expected: files owned by 100998, not by mysql or bareos
 ```
 
@@ -318,7 +321,7 @@ After running a rootless Bareos stack, you may notice files with UIDs in the 100
 
 ```bash
 # List files with unusual UIDs in the volume storage
-ls -laZ ~/.local/share/containers/storage/volumes/bareos-db/_data/ | head -20
+ls -laZ ~/.local/share/containers/storage/volumes/bareos-db-data/_data/ | head -20
 # You will see entries like:
 # -rw-r----- 1 100998 100998 ... ibdata1
 # drwxr-xr-x 2 100998 100998 ... bareos/
@@ -511,11 +514,11 @@ If you needed a port below 1024 (e.g., port 443 for HTTPS), you would need to ei
 
 ### Container-to-Container Networking in Rootless Mode
 
-When multiple rootless containers are connected to the same Podman network (as our Bareos containers are on `bareos-net`), they communicate *through pasta* using the user-space stack. Each container gets its own IP address on the network's subnet (10.89.1.0/24 in our case), and the embedded `aardvark-dns` service resolves container names.
+When multiple rootless containers are connected to the same Podman network (as our Bareos containers are on the `bareos` network), they communicate *through pasta* using the user-space stack. Each container gets its own IP address on the network's subnet (10.89.10.0/24 in our case), and the embedded `aardvark-dns` service resolves container names.
 
 Packets between containers on the same rootless network flow through pasta, not through a kernel bridge. This means:
 
-1. Two containers talking to each other on `bareos-net` go: container A → pasta → container B. This is faster than going out to the host network and back, but slower than a kernel bridge.
+1. Two containers talking to each other on the `bareos` network go: container A → pasta → container B. This is faster than going out to the host network and back, but slower than a kernel bridge.
 
 2. For Bareos's typical workload (metadata queries from Director to MariaDB, job coordination), this performance difference is negligible.
 
@@ -524,9 +527,9 @@ Packets between containers on the same rootless network flow through pasta, not 
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman exec bareos-director ping -c 3 bareos-db
 
-# Check the IP addresses assigned on bareos-net
+# Check the IP addresses assigned on the bareos network
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman network inspect bareos-net \
+  podman network inspect bareos \
   --format '{{range .Containers}}{{.Name}}: {{.IPv4Address}}{{"\n"}}{{end}}'
 ```
 
@@ -637,10 +640,10 @@ Podman stores all container images, layers, and named volumes under `XDG_DATA_HO
 │   ├── images/           # Image manifests and metadata
 │   └── <layer-id>/       # Individual overlay layers
 └── volumes/              # Named volume data
-    ├── bareos-db/
+    ├── bareos-db-data/
     │   └── _data/        # MariaDB data files
-    └── bareos-store/
-        └── _data/        # Backup archives (bind mount)
+    └── bareos-working/
+        └── _data/        # Bareos working dir (bootstrap, state, dumps)
 ```
 
 Understanding this path structure is essential for:
@@ -839,6 +842,8 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 ps -efZ | grep bareos-director | head -5
 ```
 
+> **Exception — the File Daemon:** `bareos-fd` is the one container in this stack that runs with `SecurityLabelDisable=true` (set in its Quadlet unit in Chapter 6). A host-backup agent must read files anywhere under `/hostfs` (the entire host filesystem, bind-mounted read-only), and those files carry arbitrary SELinux labels that a confined `container_t` process could not read — and `/` cannot be relabeled. Disabling the SELinux label means the FD does **not** get MCS separation from other containers, the trade-off for being able to read the whole filesystem. It is still fully rootless, and `/hostfs` is mounted read-only, so the FD cannot modify host files. No other Bareos container disables labeling.
+
 ### Volume Labeling: :z vs. :Z
 
 When you bind-mount a host directory into a container, SELinux may block the container from reading or writing it because the host directory's label does not match what container processes are allowed to access.
@@ -849,11 +854,13 @@ The solution is to relabel the mount target. Podman provides two options:
 
 Relabels the directory and all its contents with a *shared* MCS label (`s0`). This means **all containers** that use `:z` on the same path can access it. The label applied is `system_u:object_r:container_file_t:s0`.
 
-Use `:z` when multiple containers need to share the same data.
+Use `:z` when multiple containers share the same host directory. In the Bareos stack the shared scripts directory is mounted into both the Director and the File Daemon, so it uses `:z`:
 
 ```ini
-Volume=bareos-db.volume:/var/lib/mysql:z
+Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,z
 ```
+
+(Named volumes — like `bareos-db-data.volume:/var/lib/mysql` — never take `:z`/`:Z`; Podman already makes them container-accessible.)
 
 **Warning:** `:z` changes the SELinux label permanently on the host path. If you later mount the same directory without `:z`, the host process may not be able to access it until you relabel it with `restorecon`.
 
@@ -861,10 +868,10 @@ Volume=bareos-db.volume:/var/lib/mysql:z
 
 Relabels the directory with the *container's specific* MCS label. Only this container can access the relabeled files. The label applied is `system_u:object_r:container_file_t:s0:c123,c456` (the container's unique MCS pair).
 
-Use `:Z` when only one container accesses this data (the usual case for per-container config directories and database volumes).
+Use `:Z` when only one container accesses this host directory (the usual case for a per-container config directory). In the Bareos stack the Director's config tree is mounted read-only into the Director alone, so it uses `:Z`:
 
 ```ini
-Volume=/home/bareos/bareos-config/director:/etc/bareos:Z
+Volume=/etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z
 ```
 
 #### When Not to Use :z or :Z
@@ -1203,7 +1210,7 @@ grep bareos /etc/subuid /etc/subgid
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman system migrate
 ```
 
-### Pitfall 5: AVC Denial for bareos-store Volume
+### Pitfall 5: AVC Denial for the Storage Bind Mount
 
 **Symptom:** Bareos Storage Daemon cannot write backup archives, journal shows SELinux AVC denial.
 
@@ -1259,13 +1266,13 @@ cat /tmp/q-out/*.service 2>/dev/null || echo "No output files generated"
 **Fix:**
 
 ```bash
-# Verify both containers are on bareos-net
+# Verify both containers are on the bareos network
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman network inspect bareos-net
+  podman network inspect bareos
 
 # If a container is missing, check its Network= directive
 grep Network /home/bareos/.config/containers/systemd/bareos-director.container
-# Expected: Network=bareos-net.network
+# Expected: Network=bareos.network
 
 # Test DNS resolution from inside the Director container
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
@@ -1350,7 +1357,7 @@ echo "Expected host UID for container's mysql (999): $EXPECTED_HOST_UID"
 ```bash
 # List the volume data directory and check file ownership
 VOLUME_PATH=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman volume inspect bareos-db --format '{{.Mountpoint}}')
+  podman volume inspect bareos-db-data --format '{{.Mountpoint}}')
 echo "Volume path: $VOLUME_PATH"
 
 ls -lan $VOLUME_PATH | head -10

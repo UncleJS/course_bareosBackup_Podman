@@ -30,10 +30,10 @@
   - [Bareos Dependency Graph](#bareos-dependency-graph)
   - [Waiting for Container Health](#waiting-for-container-health)
 - [6. Complete Quadlet Stack for Bareos](#6-complete-quadlet-stack-for-bareos)
-  - [Prerequisites](#prerequisites)
-  - [File: `bareos-db.volume`](#file-bareos-dbvolume)
-  - [File: `bareos-store.volume`](#file-bareos-storevolume)
-  - [File: `bareos-net.network`](#file-bareos-netnetwork)
+  - [Stack Prerequisites](#stack-prerequisites)
+  - [File: `bareos-db-data.volume`](#file-bareos-db-datavolume)
+  - [File: `bareos-working.volume`](#file-bareos-workingvolume)
+  - [File: `bareos.network`](#file-bareosnetwork)
   - [File: `bareos-db.container`](#file-bareos-dbcontainer)
    - [File: `bareos-director.container`](#file-bareos-directorcontainer)
   - [File: `bareos-storage.container`](#file-bareos-storagecontainer)
@@ -75,7 +75,7 @@
   - [`RestartSec=`](#restartsec)
   - [`StartLimitIntervalSec=` and `StartLimitBurst=`](#startlimitintervalsec-and-startlimitburst)
 - [Lab 12-1: Write the Full Quadlet Stack from Scratch](#lab-12-1-write-the-full-quadlet-stack-from-scratch)
-  - [Prerequisites](#prerequisites)
+  - [Lab Prerequisites](#lab-prerequisites)
   - [Step 1: Create the bareos user and set up directories](#step-1-create-the-bareos-user-and-set-up-directories)
   - [Step 2: Set up the storage path with correct SELinux type](#step-2-set-up-the-storage-path-with-correct-selinux-type)
   - [Step 3: Create the env files](#step-3-create-the-env-files)
@@ -109,9 +109,9 @@ Before Quadlet existed, the recommended way to run Podman containers under syste
 
 Quadlet was originally a standalone project created by Alexander Larsson at Red Hat. It introduced the idea of writing *declarative* unit files — files that describe what you want, not how to build it — in a Podman-specific format. When first released as an external tool, Quadlet would read `.container` files and generate `.service` files from them.
 
-Starting with **Podman 4.4** (shipped with RHEL 9.2 and later) and fully mature in **Podman 4.6+**, Quadlet was merged directly into Podman itself. The Quadlet generator is now built into the `podman` binary and is invoked automatically by systemd's generator infrastructure during `daemon-reload`. There is no separate `quadlet` binary to install — it just works.
+Quadlet arrived in **Podman 4.4** (shipped with RHEL 9.2 and later) and is fully mature in **Podman 4.6+**, having been merged directly into Podman itself. The Quadlet generator ships as part of the Podman package and is invoked automatically by systemd's generator infrastructure during `daemon-reload`. There is no separate `quadlet` binary to install — it just works.
 
-The `podman generate systemd` command was deprecated in Podman 4.4 and is scheduled for removal. **Quadlet is the official, supported replacement.**
+The `podman generate systemd` command has since been deprecated in favor of Quadlet and is scheduled for eventual removal. **Quadlet is the official, supported replacement.**
 
 ### Why Quadlet Is Better for Production
 
@@ -132,7 +132,7 @@ This is the same philosophy as Kubernetes manifests, but for single-node or smal
 
 ## 2. The Four Quadlet Unit Types
 
-Quadlet defines four unit types, each with its own file extension. Each maps to a native systemd concept and ultimately generates a transient `.service`, `.mount`, or other unit file behind the scenes.
+Quadlet defines several unit types, each with its own file extension. Each maps to a native systemd concept and ultimately generates a transient `.service`, `.mount`, or other unit file behind the scenes. This course uses the three workhorse types — `.container`, `.volume`, and `.network` — plus a brief look at `.pod`. Quadlet also defines `.pod`, `.kube`, `.image`, and `.build` units (for pods, Kubernetes-YAML-driven workloads, image pulls, and in-place image builds respectively); we do not use `.kube`, `.image`, or `.build` in this course.
 
 ### `.container` Units
 
@@ -192,6 +192,10 @@ A `.volume` file describes a named Podman volume. It generates a systemd `.servi
 
 ```ini
 [Volume]
+# Override the runtime volume name. Without this, a bareos-db-data.volume
+# file would create a volume called systemd-bareos-db-data.
+VolumeName=bareos-db-data
+
 # Driver can be 'local' (default) or a plugin name.
 Driver=local
 
@@ -200,7 +204,7 @@ Label=app=bareos
 Label=component=database
 ```
 
-The file name determines the volume name. A file named `bareos-db.volume` creates a volume named `bareos-db`. Other Quadlet units can reference it as `bareos-db.volume` in their `Volume=` directive.
+The file name determines the unit name, but the runtime volume name follows the `VolumeName=` key if present (otherwise it defaults to the unit name with a `systemd-` prefix). A file named `bareos-db-data.volume` with `VolumeName=bareos-db-data` creates a volume named `bareos-db-data`. Other Quadlet units reference it as `bareos-db-data.volume` in their `Volume=` directive.
 
 ### `.network` Units
 
@@ -208,6 +212,11 @@ A `.network` file describes a Podman network. It maps to a systemd service that 
 
 ```ini
 [Network]
+# Override the runtime network name. Without this, a bareos.network file
+# would create a network called systemd-bareos. NetworkName=bareos makes
+# the runtime network literally "bareos".
+NetworkName=bareos
+
 # The subnet to allocate from this network.
 Subnet=10.89.1.0/24
 
@@ -218,7 +227,7 @@ DNS=true
 Label=app=bareos
 ```
 
-The file `bareos-net.network` creates a network named `bareos-net`. Containers reference it as `bareos-net.network` in their `[Container]` `Network=` directive.
+The file name determines the unit name, but the runtime network name follows the `NetworkName=` key if present (otherwise it defaults to the unit name with a `systemd-` prefix). The file `bareos.network` with `NetworkName=bareos` creates a runtime network named `bareos`. Containers reference it as `bareos.network` in their `[Container]` `Network=` directive.
 
 ### `.pod` Units
 
@@ -227,7 +236,7 @@ A `.pod` file describes a Podman pod — a group of containers that share a netw
 ```ini
 [Pod]
 PublishPort=9101:9101
-Network=bareos-net.network
+Network=bareos.network
 ```
 
 Pod units are less commonly used than individual container units because Quadlet's network management already provides container-to-container communication. However, they are useful when containers must share `localhost` (e.g., a sidecar container that communicates via loopback to the main container).
@@ -295,7 +304,7 @@ systemd has a concept called **generators**: programs that run before the main i
 When you run `systemctl --user daemon-reload`, systemd:
 
 1. Runs all generators registered for the user instance.
-2. The Quadlet generator (`/usr/lib/systemd/user-generators/podman-user-generator` on RHEL 10) is one of those generators.
+2. The Quadlet generator is one of those generators. The generator binary lives at `/usr/libexec/podman/quadlet`; `/usr/lib/systemd/user-generators/podman-user-generator` is a symlink to it that systemd invokes for the user instance.
 3. The generator scans all Quadlet lookup paths (see Section 3) and finds your `.container`, `.volume`, `.network`, and `.pod` files.
 4. For each file found, it generates a transient `.service` unit (or `.mount` unit for volumes) and writes it to `/run/user/1001/systemd/generator/`.
 5. systemd reads those generated units into its in-memory unit database.
@@ -332,15 +341,20 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user enable --now bare
 
 ### Verifying Generator Output
 
-```bash
-# Run the Quadlet generator manually to see what it would produce
-# (useful for syntax checking before daemon-reload)
-QUADLET_UNIT_DIRS=/home/bareos/.config/containers/systemd \
-  /usr/lib/systemd/user-generators/podman-user-generator \
-  /tmp/quadlet-out /tmp/quadlet-out /tmp/quadlet-out
+The supported way to preview what Quadlet would generate — without touching your running units — is the generator's built-in dry-run mode. Run it as the `bareos` user so it scans the user lookup paths:
 
-ls /tmp/quadlet-out/
-cat /tmp/quadlet-out/bareos-director.service
+```bash
+# Dry-run: print the generated unit files to stdout without writing them.
+# -user makes it scan the rootless lookup paths (~/.config/containers/systemd/).
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  /usr/libexec/podman/quadlet -dryrun -user
+```
+
+The output shows each generated `.service` (and `.mount`) unit with its full `ExecStart=` line. This is the fastest way to syntax-check a Quadlet file and confirm that `Volume=`, `Network=`, and `EnvironmentFile=` references resolved correctly — any parse error is printed instead of silently dropped. After a `daemon-reload` you can also inspect the units that were actually written:
+
+```bash
+ls /run/user/1001/systemd/generator/
+cat /run/user/1001/systemd/generator/bareos-director.service
 ```
 
 ---
@@ -384,7 +398,9 @@ After=bareos-db.service
 
 ### `BindsTo=`
 
-`BindsTo=unitA` is even stronger than `Requires=`. If `unitA` stops *for any reason* (even a clean stop), this unit is also stopped immediately. This is appropriate for containers that are tightly coupled — a Bareos Director that cannot function without its database should use `BindsTo=` to ensure it is torn down when the database goes away.
+`BindsTo=unitA` is even stronger than `Requires=`. If `unitA` stops *for any reason* (even a clean stop or restart), this unit is also stopped immediately. This is appropriate for containers that are so tightly coupled that one is useless the instant the other goes away.
+
+For the Bareos Director, this chapter uses `Requires=bareos-db.service` rather than `BindsTo=`: `Requires=` still pulls in the database and fails the Director if the DB fails to *start*, but it lets the Director ride out a brief DB restart instead of being torn down. Choose `BindsTo=` only if you explicitly want the Director killed whenever the database stops.
 
 > **Important:** `BindsTo=` defines a *teardown* relationship, not a *start ordering* relationship. It does **not** guarantee that `unitA` starts before this unit. Always pair `BindsTo=` with a corresponding `After=` on the same unit to enforce startup ordering:
 >
@@ -400,13 +416,13 @@ After=bareos-db.service
 For the Bareos stack:
 
 ```
-bareos-db-volume.service   ─┐
-bareos-store-volume.service ─┼─ Wants → bareos-db.service
-bareos-net-network.service  ─┘       ↓ (Requires + After)
-                                bareos-director.service
-                                       ↓ (Wants + After)
-                               bareos-storage.service
-                               bareos-fd.service
+bareos-db-data-volume.service ─┐
+bareos-working-volume.service ─┼─ Requires + After → bareos-db.service
+bareos-network.service        ─┘       ↓ (Requires + After)
+                                  bareos-director.service
+                                         ↓ (Requires + After)
+                                 bareos-storage.service
+                                 bareos-fd.service
 ```
 
 In practice, the `[Unit]` section of `bareos-director.container` should look like:
@@ -414,24 +430,27 @@ In practice, the `[Unit]` section of `bareos-director.container` should look lik
 ```ini
 [Unit]
 Description=Bareos Director
-Requires=bareos-db.service bareos-net-network.service
-After=bareos-db.service bareos-net-network.service
-Wants=bareos-storage.service
+Requires=bareos-db.service bareos-network.service
+After=bareos-db.service bareos-network.service
 ```
 
 ### Waiting for Container Health
 
 A critical subtlety: `After=bareos-db.service` ensures the MariaDB container *starts*, not that MariaDB is ready to accept connections. The database initialization takes several seconds. If the Director starts connecting before the database is ready, it will fail.
 
-The solution is to configure a health check on the `bareos-db` container and then tell the Director to wait for that health check. We cover health checks in Section 10, but the key directive for the waiting side is:
+The solution is to configure a health check on the `bareos-db` container and set `Notify=healthy` on `bareos-db.container`. With `Notify=healthy`, the `bareos-db.service` unit is held in the *activating* state and only reaches *active* once the container's healthcheck passes. A dependent unit then waits for that healthy state by ordering itself *after* the database **and** declaring a dependency on it:
 
 ```ini
 [Unit]
-# Wait for bareos-db to report healthy, not just started.
+# After= alone is only ordering. Pair it with Requires= (or Wants=) so
+# bareos-db.service is actually pulled in, and because that unit uses
+# Notify=healthy its "active" state means "healthy" — so the Director
+# does not start until MariaDB's health check passes.
 After=bareos-db.service
+Requires=bareos-db.service
 ```
 
-Combined with `Notify=healthy` on `bareos-db.container`, systemd will delay starting the Director until MariaDB's health check passes.
+`Notify=healthy` by itself does nothing for the Director: it changes only when `bareos-db.service` is *considered active*. The waiting is produced by `After=` (ordering) plus `Requires=`/`Wants=` (the dependency that pulls the unit in). Without the `After=`, systemd may start both units at once; without `Requires=`/`Wants=`, the Director would not wait for the database at all.
 
 ---
 
@@ -441,7 +460,7 @@ Combined with `Notify=healthy` on `bareos-db.container`, systemd will delay star
 
 This section presents the complete set of Quadlet files for the Bareos backup system. Each file is annotated line by line. All files live in `/home/bareos/.config/containers/systemd/`.
 
-### Prerequisites
+### Stack Prerequisites
 
 Before writing the Quadlet files, ensure:
 
@@ -463,19 +482,23 @@ ls -laZ /srv/bareos-storage/volumes
 ls -la /home/bareos/.config/bareos/
 ```
 
-### File: `bareos-db.volume`
+### File: `bareos-db-data.volume`
 
 ```ini
-# /home/bareos/.config/containers/systemd/bareos-db.volume
+# /home/bareos/.config/containers/systemd/bareos-db-data.volume
 #
-# This file creates a named Podman volume called "bareos-db".
+# This file creates a named Podman volume called "bareos-db-data".
 # Podman stores the volume data at:
-#   ~/.local/share/containers/storage/volumes/bareos-db/_data/
+#   ~/.local/share/containers/storage/volumes/bareos-db-data/_data/
 #
 # The volume persists across container restarts and removals.
 # It holds the MariaDB data directory (all databases, WAL files, etc.)
 
 [Volume]
+# Override the runtime volume name so it is literally "bareos-db-data"
+# instead of Quadlet's default "systemd-bareos-db-data".
+VolumeName=bareos-db-data
+
 # Use the default local driver, which stores data in Podman's
 # volume directory inside the bareos home directory.
 Driver=local
@@ -487,51 +510,49 @@ Label=component=database
 Label=managed-by=quadlet
 ```
 
-### File: `bareos-store.volume`
+### File: `bareos-working.volume`
 
 ```ini
-# /home/bareos/.config/containers/systemd/bareos-store.volume
+# /home/bareos/.config/containers/systemd/bareos-working.volume
 #
-# This volume is a bind-mount-backed volume pointing to the physical
-# storage disk at /srv/bareos-storage/volumes. This directory must
-# have the correct SELinux type (bareos_store_t) applied BEFORE
-# starting the container.
-#
-# Unlike bareos-db.volume, this volume is backed by a specific
-# host path rather than Podman's default volume storage. We achieve
-# this using the "device" and "o" (options) mount options.
+# Named volume for the Bareos working directory (/var/lib/bareos).
+# It is mounted by the Director, the Storage Daemon, AND the File
+# Daemon — they share bootstrap files, state files, and catalog dumps.
 
 [Volume]
+# Override the runtime volume name so it is literally "bareos-working"
+# instead of Quadlet's default "systemd-bareos-working".
+VolumeName=bareos-working
+
 Driver=local
 
-# Options to pass to `mount`. These are the same options you would
-# use with `mount -t none -o bind,rw /src /dst`.
-Options=bind
-Device=/srv/bareos-storage/volumes
-
 Label=app=bareos
-Label=component=storage
+Label=component=working
 Label=managed-by=quadlet
 ```
 
-> **SELinux Note:** Because `/srv/bareos-storage/volumes` is a bind mount into the container, the directory must carry the `container_file_t` or a custom `bareos_store_t` type that is accessible to container processes. We will label it in Lab 12-1.
+> **Storage archive note:** The actual backup archives do *not* live in a named volume. They are written to a dedicated host disk at `/srv/bareos-storage/volumes`, which the Storage Daemon bind-mounts directly (`Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z`). Using a direct bind keeps the archives accessible to host tooling; `:z` applies the shared `container_file_t` label so both the container and host processes can reach them. We label the directory in Lab 12-1.
 
-### File: `bareos-net.network`
+### File: `bareos.network`
 
 ```ini
-# /home/bareos/.config/containers/systemd/bareos-net.network
+# /home/bareos/.config/containers/systemd/bareos.network
 #
-# Creates an isolated Podman network named "bareos-net".
+# Creates an isolated Podman network. Because of NetworkName=bareos
+# the runtime network is literally "bareos" (without NetworkName= a
+# bareos.network file would produce a network called systemd-bareos).
 # All Bareos containers attach to this network, allowing them to
 # reach each other by container name (DNS resolution is enabled).
 # No external traffic can reach these containers unless a port
 # is explicitly published with PublishPort= in a .container file.
 
 [Network]
+# Override the runtime network name (see comment above).
+NetworkName=bareos
+
 # The private subnet for this network. Choose a range that does
 # not conflict with your host's network or other Podman networks.
-# 10.89.1.0/24 is a good default for user networks.
-Subnet=10.89.1.0/24
+Subnet=10.89.10.0/24
 
 # Enable the embedded DNS server so containers can resolve each
 # other by their ContainerName= values.
@@ -559,39 +580,36 @@ Description=Bareos Database (MariaDB)
 # The volume and network must exist before this container starts.
 # Quadlet generates <name>.service units for .volume and .network
 # files, so we reference those generated service names here.
-After=bareos-db-volume.service bareos-net-network.service
-Requires=bareos-db-volume.service bareos-net-network.service
+After=bareos-db-data-volume.service bareos-network.service
+Requires=bareos-db-data-volume.service bareos-network.service
 
 [Container]
 Image=docker.io/library/mariadb:10.11
 
 # Give the container a stable, human-readable name.
-# This name is also the DNS hostname on the bareos-net network.
+# This name is also the DNS hostname on the bareos network.
 ContainerName=bareos-db
 
-# Attach to the isolated bareos-net network.
-# The .network suffix tells Quadlet to reference the bareos-net
+# Attach to the isolated bareos network.
+# The .network suffix tells Quadlet to reference the bareos
 # Quadlet-managed network (not an external Podman network).
-Network=bareos-net.network
+Network=bareos.network
 
 # Mount the named volume for persistent database storage.
-# bareos-db.volume → volume name "bareos-db"
+# bareos-db-data.volume → volume name "bareos-db-data".
 # /var/lib/mysql is where MariaDB stores its data files.
-Volume=bareos-db.volume:/var/lib/mysql:Z
-
-# Z (capital) = relabel the volume contents for SELinux with a
-# SHARED label (svirt_sandbox_file_t with a shared MCS label).
-# This allows multiple containers to access the same volume.
-# Use z (lowercase) if only ONE container accesses this volume —
-# it applies a private, per-container MCS label.
+# No :z/:Z — Podman makes named volumes container-accessible
+# automatically, so no SELinux relabel option is needed here.
+Volume=bareos-db-data.volume:/var/lib/mysql
 
 # Load database credentials from the env file.
 # This file must exist and be mode 600 before starting the service.
 EnvironmentFile=/home/bareos/.config/bareos/db.env
 
-# Health check: run a simple SQL query every 10 seconds.
-# The Director will wait for this check to pass before starting.
-HealthCmd=/usr/local/bin/healthcheck.sh --connect --innodb_initialized
+# Health check: the official MariaDB image ships healthcheck.sh on the
+# PATH. --connect tests a real connection; --innodb_initialized confirms
+# InnoDB finished initializing. The Director waits for this to pass.
+HealthCmd=healthcheck.sh --connect --innodb_initialized
 HealthInterval=10s
 HealthStartPeriod=30s
 HealthTimeout=5s
@@ -630,25 +648,38 @@ WantedBy=default.target
 
 [Unit]
 Description=Bareos Director
-# The Director cannot function without the database.
-# BindsTo= means: if bareos-db.service stops, stop this unit too.
-BindsTo=bareos-db.service
-After=bareos-db.service bareos-net-network.service
-Requires=bareos-net-network.service
+# The Director cannot function without the database. Requires= means:
+# pull bareos-db.service in, and if it fails to start, fail this unit
+# too. (BindsTo= would additionally stop the Director whenever the DB
+# stops for ANY reason, including a clean restart — too aggressive for
+# a Director that should ride out a brief DB restart. We choose
+# Requires= here; switch to BindsTo= only if you want hard teardown
+# coupling.) Because bareos-db sets Notify=healthy, ordering After= it
+# means the Director starts only once MariaDB reports healthy.
+After=bareos-db.service bareos-network.service
+Requires=bareos-db.service bareos-network.service
 
 [Container]
 Image=docker.io/bareos/bareos-director:24
 ContainerName=bareos-director
-Network=bareos-net.network
+Network=bareos.network
 
-# Mount the Bareos configuration directory.
-# /home/bareos/bareos-config/director/ is a host directory
-# containing the Director's configuration files.
-# :Z relabels it for SELinux (private container label).
-Volume=/home/bareos/bareos-config/director:/etc/bareos:Z
+# Mount the Director configuration directory from the host (read-only).
+# :Z applies a PRIVATE per-container MCS label — only this container
+# may read it, which is correct for a single-consumer config tree.
+Volume=/etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z
+
+# Working directory (bootstrap files, state). Shared by the Director,
+# Storage Daemon, and File Daemon — so NO :Z (a private MCS label would
+# lock the other two daemons out). Named volumes need no relabel anyway.
+Volume=bareos-working.volume:/var/lib/bareos
+
+# Shared scripts directory (hook & catalog-dump scripts). :z applies the
+# SHARED container_file_t label because the File Daemon mounts it too.
+Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,z
 
 # Load Director-specific environment variables.
-# Contains BAREOS_DB_PASSWORD, BAREOS_DB_HOST, etc.
+# bareos.env: BAREOS_* daemon passwords; db.env: MARIADB_* catalog credentials.
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 EnvironmentFile=/home/bareos/.config/bareos/db.env
 
@@ -664,7 +695,11 @@ PublishPort=9101:9101
 # port 9101 confirms the Director process is alive and listening.
 # (bconsole authentication errors would still leave the port open, so
 # add bconsole-level monitoring separately if needed.)
-HealthCmd=/bin/sh -c "exec 3<>/dev/tcp/127.0.0.1/9101 && echo OK && exec 3>&-"
+#
+# /dev/tcp is a bash builtin, NOT a real device — it only works under
+# bash, so the command is invoked with /bin/bash -c (the Bareos images
+# ship bash). A POSIX /bin/sh would fail this check.
+HealthCmd=/bin/bash -c "exec 3<>/dev/tcp/127.0.0.1/9101 && echo OK && exec 3>&-"
 HealthInterval=30s
 HealthStartPeriod=60s
 HealthTimeout=10s
@@ -692,28 +727,33 @@ WantedBy=default.target
 #
 # The Bareos Storage Daemon receives backup data from File Daemons
 # (via the Director's coordination) and writes it to storage volumes.
-# In this setup the storage is on /srv/bareos-storage/volumes,
-# bind-mounted via the bareos-store.volume Quadlet volume.
+# In this setup the archives live on a dedicated host disk at
+# /srv/bareos-storage/volumes, bind-mounted directly into the container.
 
 [Unit]
 Description=Bareos Storage Daemon
-# The SD needs the store volume and the network.
+# The SD needs the working volume and the network.
 # It connects to the Director for authentication, but the Director
-# connects back to the SD to send jobs, so we only need the network.
-After=bareos-net-network.service bareos-store-volume.service
-Requires=bareos-net-network.service bareos-store-volume.service
+# connects back to the SD to send jobs.
+After=bareos-network.service bareos-working-volume.service
+Requires=bareos-network.service bareos-working-volume.service
 
 [Container]
 Image=docker.io/bareos/bareos-storage:24
 ContainerName=bareos-storage
-Network=bareos-net.network
+Network=bareos.network
 
-# Mount the persistent backup storage.
-# The SD writes actual backup archives here.
-Volume=bareos-store.volume:/var/lib/bareos/storage:Z
+# Mount the persistent backup storage as a DIRECT bind to the host disk.
+# The SD writes actual backup archives here. :z applies the SHARED
+# container_file_t label so host tooling can also read the archives.
+Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
 
-# Mount the SD configuration directory.
-Volume=/home/bareos/bareos-config/storage:/etc/bareos:Z
+# Mount the SD configuration directory from the host (read-only).
+# :Z = PRIVATE per-container MCS label (single consumer).
+Volume=/etc/bareos/bareos-sd.d:/etc/bareos/bareos-sd.d:ro,Z
+
+# Working directory, shared with Director and FD — NO :Z.
+Volume=bareos-working.volume:/var/lib/bareos
 
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 
@@ -750,8 +790,8 @@ WantedBy=default.target
 
 [Unit]
 Description=Bareos File Daemon (local client)
-After=bareos-net-network.service
-Requires=bareos-net-network.service
+After=bareos-network.service
+Requires=bareos-network.service
 # The FD only needs to run when the Director wants to talk to it.
 # It does not need to start before the Director.
 Wants=bareos-director.service
@@ -759,32 +799,41 @@ Wants=bareos-director.service
 [Container]
 Image=docker.io/bareos/bareos-client:24
 ContainerName=bareos-fd
-Network=bareos-net.network
+Network=bareos.network
 
-# Mount directories to be backed up.
-# :ro = read-only; the FD only reads, never writes the source data.
-Volume=/home/bareos:/backup/bareos-home:ro,Z
-Volume=/etc:/backup/etc:ro,Z
+# Mount the FD configuration from a named volume (bareos-fd.d lives
+# here). No :Z — Podman makes named volumes container-accessible.
+Volume=bareos-fd-config.volume:/etc/bareos
+
+# Working directory, shared with Director and SD — NO :Z.
+Volume=bareos-working.volume:/var/lib/bareos
 
 # Mount hook scripts from host into the container (read-only).
 # RunScript Command= paths are resolved inside the container, so scripts
 # created at /etc/bareos/scripts/ on the host must be bind-mounted in.
+# :z = SHARED label, because the Director mounts the same directory.
 # See Chapter 10, Section 3 for the full explanation.
-Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,Z
+Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,z
 
-# Mount the dump output directory with write access so hook scripts
-# can create dump files that Bareos then reads for backup.
-Volume=/var/tmp/bareos-dumps:/var/tmp/bareos-dumps:rw,Z
+# Read-only bind-mount of the entire host filesystem so the FD can back
+# up any host path. Backup jobs use paths under /hostfs/ (e.g. to back
+# up /home on the host, use File = /hostfs/home). No :z — Podman cannot
+# relabel /, so a relabel request would fail startup; instead the unit
+# sets SecurityLabelDisable=true (below).
+Volume=/:/hostfs:ro
 
-# Mount the FD configuration.
-Volume=/home/bareos/bareos-config/filedaemon:/etc/bareos:Z
+# Mount the Podman socket so hook scripts can issue podman exec / pause /
+# stop commands against the host container runtime (Chapter 10, Sec 3).
+Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock
 
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 
-# Mount the Podman socket so hook scripts can issue podman exec / pause / stop
-# commands against the host container runtime (see Chapter 10, Section 3).
-Volume=/run/user/1001/podman/podman.sock:/run/user/1001/podman/podman.sock:Z
-Environment=CONTAINER_HOST=unix:///run/user/1001/podman/podman.sock
+# A confined container_t process cannot read host files under /hostfs
+# that carry arbitrary SELinux labels, and / cannot be relabeled. A
+# host-backup agent must read the whole filesystem, so we disable
+# label separation for THIS container only. It is still rootless and
+# /hostfs is read-only, so no host write access is granted.
+SecurityLabelDisable=true
 
 # The FD listens on 9102 for Director connections.
 PublishPort=9102:9102
@@ -813,6 +862,7 @@ The WebUI configuration volume holds the two INI files (`directors.ini` and `con
 # See Chapter 6, Section 12 for population commands.
 
 [Volume]
+VolumeName=bareos-webui-config
 Label=app=bareos
 Label=component=webui-config
 ```
@@ -838,10 +888,11 @@ Image=docker.io/bareos/bareos-webui:24
 ContainerName=bareos-webui
 
 # Join the bareos network so the WebUI can reach the Director by container name.
-Network=bareos-net.network
+Network=bareos.network
 
 # Mount the config volume at the path the WebUI image expects.
-Volume=bareos-webui-config:/etc/bareos-webui:Z
+# No :Z — named volumes are container-accessible without a relabel.
+Volume=bareos-webui-config.volume:/etc/bareos-webui
 
 # Expose the WebUI on localhost only.
 PublishPort=127.0.0.1:9100:80
@@ -858,19 +909,22 @@ RestartSec=10s
 WantedBy=default.target
 ```
 
-The complete Bareos Quadlet stack now consists of **seven units**:
+The complete Bareos Quadlet stack now consists of **ten files** — 1 network, 4 volumes, and 5 containers:
 
 | File | Type | Purpose |
 |------|------|---------|
-| `bareos-net.network` | Network | Isolated bridge for all Bareos containers |
-| `bareos-db.volume` | Volume | MariaDB catalog data |
-| `bareos-store.volume` | Volume | Backup archive storage |
+| `bareos.network` | Network | Isolated bridge for all Bareos containers (runtime name `bareos`) |
+| `bareos-db-data.volume` | Volume | MariaDB catalog data |
+| `bareos-working.volume` | Volume | Shared working dir (`/var/lib/bareos`) for Director, SD, FD |
+| `bareos-fd-config.volume` | Volume | File Daemon configuration (`/etc/bareos`) |
 | `bareos-webui-config.volume` | Volume | WebUI INI configuration files |
 | `bareos-db.container` | Container | MariaDB catalog |
 | `bareos-storage.container` | Container | Bareos Storage Daemon |
 | `bareos-director.container` | Container | Bareos Director |
 | `bareos-fd.container` | Container | Bareos File Daemon (local client) |
 | `bareos-webui.container` | Container | Bareos WebUI (graphical interface) |
+
+The backup archives themselves are *not* a Quadlet volume — the Storage Daemon bind-mounts the host disk `/srv/bareos-storage/volumes` directly (see its `.container` above).
 
 ---
 
@@ -895,8 +949,8 @@ Podman (and Docker) support two main ways to persist container data:
 - You need fine-grained control over SELinux labels.
 
 In our Bareos setup:
-- `bareos-db.volume` → named volume (database files, managed by Podman)
-- `bareos-store.volume` → bind-mount-backed volume pointing to `/srv/bareos-storage/volumes` (backup archives, accessible by host tools)
+- `bareos-db-data.volume`, `bareos-working.volume`, `bareos-fd-config.volume`, `bareos-webui-config.volume` → named volumes (managed by Podman)
+- The backup archives use a **direct bind mount** (`/srv/bareos-storage/volumes` → `/var/lib/bareos/storage` in `bareos-storage.container`) rather than a named volume, so the archives stay accessible by host tools.
 
 ### Pre-Creating Named Volumes
 
@@ -907,13 +961,13 @@ Quadlet will create named volumes automatically when the `.volume` unit is start
 
 ```bash
 # Pre-create the named volume manually
-sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman volume create bareos-db
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman volume create bareos-db-data
 
 # Inspect the volume to find its path
-sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman volume inspect bareos-db
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman volume inspect bareos-db-data
 
 # The _data directory is where container writes go
-ls ~/.local/share/containers/storage/volumes/bareos-db/_data/
+ls ~/.local/share/containers/storage/volumes/bareos-db-data/_data/
 ```
 
 ### The Quadlet Volume Service Name Convention
@@ -922,10 +976,12 @@ When Quadlet processes a `.volume` file, it creates a systemd service unit whose
 
 | Quadlet file | Generated service | Volume name |
 |---|---|---|
-| `bareos-db.volume` | `bareos-db-volume.service` | `bareos-db` |
-| `bareos-store.volume` | `bareos-store-volume.service` | `bareos-store` |
+| `bareos-db-data.volume` | `bareos-db-data-volume.service` | `bareos-db-data` |
+| `bareos-working.volume` | `bareos-working-volume.service` | `bareos-working` |
+| `bareos-fd-config.volume` | `bareos-fd-config-volume.service` | `bareos-fd-config` |
+| `bareos-webui-config.volume` | `bareos-webui-config-volume.service` | `bareos-webui-config` |
 
-Use these `.service` names in `After=` and `Requires=` directives in your `.container` files.
+The volume name follows `VolumeName=` (set in each `.volume` file) rather than receiving Quadlet's default `systemd-` prefix. Use the `.service` names in `After=` and `Requires=` directives in your `.container` files.
 
 ---
 
@@ -941,7 +997,7 @@ Without explicit network configuration, Podman assigns rootless containers to th
 - May conflict with other users' container networks.
 - Is harder to reason about in security audits.
 
-By creating a dedicated `bareos-net` network, we ensure:
+By creating a dedicated `bareos` network, we ensure:
 
 - Only Bareos containers are attached to this network.
 - Containers resolve each other by `ContainerName` via DNS (e.g., the Director connects to `bareos-db:3306`).
@@ -966,13 +1022,15 @@ dbaddress = bareos-db
 dbport = 3306
 ```
 
-And the Director will resolve `bareos-db` to the MariaDB container's IP address on `bareos-net`.
+And the Director will resolve `bareos-db` to the MariaDB container's IP address on the `bareos` network.
 
 ### The Network Service Name Convention
 
 | Quadlet file | Generated service | Network name |
 |---|---|---|
-| `bareos-net.network` | `bareos-net-network.service` | `bareos-net` |
+| `bareos.network` | `bareos-network.service` | `bareos` |
+
+The runtime network name follows `NetworkName=bareos`; without it, the runtime network would be `systemd-bareos`.
 
 ---
 
@@ -1022,10 +1080,6 @@ MARIADB_USER=bareos
 
 # The password for the bareos database user.
 MARIADB_PASSWORD=change-me-bareos-db-password
-
-# Allow the bareos user to connect from any host (inside the container
-# network). In production, restrict this to the Director's container IP.
-MARIADB_HOST=%
 ```
 
 ### File: `/home/bareos/.config/bareos/bareos.env`
@@ -1090,9 +1144,11 @@ Without health checks:
 - The Director's database connection attempt fails.
 - The Director either crashes or falls into a retry loop.
 
-With health checks and `Notify=healthy`:
-- systemd waits for MariaDB's health check to pass before starting the Director.
-- The Director only connects when the database is genuinely ready.
+With `Notify=healthy` on `bareos-db.container` **plus** `After=bareos-db.service` and `Requires=bareos-db.service` on the Director:
+- `bareos-db.service` only becomes *active* once MariaDB's health check passes.
+- The Director is ordered after (and depends on) that unit, so it starts only when the database is genuinely ready.
+
+`Notify=healthy` on its own does not delay anything — it just changes *when* the database unit counts as active. The waiting comes from the Director's `After=` + `Requires=`.
 
 ### Quadlet Health Check Directives
 
@@ -1100,8 +1156,9 @@ With health checks and `Notify=healthy`:
 [Container]
 # The command to run inside the container. Exit code 0 = healthy.
 # Use a command that exercises the actual application, not just
-# "is the process running."
-HealthCmd=mysqladmin ping -h localhost -u root -p${MARIADB_ROOT_PASSWORD}
+# "is the process running." The official MariaDB image ships
+# healthcheck.sh on the PATH for exactly this purpose.
+HealthCmd=healthcheck.sh --connect --innodb_initialized
 
 # How often to run the health check.
 HealthInterval=10s
@@ -1123,10 +1180,10 @@ Notify=healthy
 
 ### Health Check for MariaDB
 
-The official MariaDB image ships with a `healthcheck.sh` script:
+The official MariaDB image ships a `healthcheck.sh` script on the container's PATH, so it can be invoked by name:
 
 ```ini
-HealthCmd=/usr/local/bin/healthcheck.sh --connect --innodb_initialized
+HealthCmd=healthcheck.sh --connect --innodb_initialized
 ```
 
 `--connect` verifies that a TCP connection to port 3306 succeeds. `--innodb_initialized` verifies that InnoDB (the storage engine) has completed its initialization. Both conditions must be true before the health check passes.
@@ -1137,9 +1194,12 @@ HealthCmd=/usr/local/bin/healthcheck.sh --connect --innodb_initialized
 # View the health status of all running containers
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman ps --format "table {{.Names}}\t{{.Status}}\t{{.Health}}"
 
-# Inspect health check history for a specific container
+# Inspect the latest health check result for a specific container.
+# Use podman inspect's own --format instead of piping to an external
+# JSON pretty-printer — no extra host runtime (python) required.
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman inspect bareos-db \
-  --format '{{json .State.Healthcheck}}' | python3 -m json.tool
+  --format 'Status: {{.State.Health.Status}}{{range .State.Health.Log}}
+  {{.Start}} exit={{.ExitCode}} {{.Output}}{{end}}'
 ```
 
 ---
@@ -1233,7 +1293,7 @@ bareos-director: dird/dbdriver.cc:1234 Could not open Catalog "MyCatalog", DB Ve
    # (this upgrades the DB schema to match the new image)
    sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
      podman run --rm \
-       --network bareos-net \
+       --network bareos \
        --env-file /home/bareos/.config/bareos/bareos.env \
        --env-file /home/bareos/.config/bareos/db.env \
        docker.io/bareos/bareos-director:24 \
@@ -1373,14 +1433,14 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman pull docker.io/bareos/bareo
 
 ```bash
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  systemctl --user status bareos-db.service bareos-net-network.service
+  systemctl --user status bareos-db.service bareos-network.service
 ```
 
 ### Common Error Messages and Fixes
 
 | Error | Likely cause | Fix |
 |---|---|---|
-| `Failed to create container: ...network not found` | Network not created yet | Start `bareos-net-network.service` first |
+| `Failed to create container: ...network not found` | Network not created yet | Start `bareos-network.service` first |
 | `Error: crun: ... permission denied` | SELinux denial on volume | Apply `:Z` or `chcon` to volume path |
 | `container_linux.go: ... operation not permitted` | Missing capability | Add `AddCapability=` to `[Container]` |
 | `Failed to parse environment file` | Bad format in env file | Check for Windows line endings, export statements |
@@ -1438,7 +1498,7 @@ This allows up to 5 restart attempts over 5 minutes before giving up.
 
 This lab guides you through creating all Quadlet files on a fresh RHEL 10 system and bringing up the full Bareos stack.
 
-### Prerequisites
+### Lab Prerequisites
 
 - RHEL 10 system with Podman 4.6+ installed
 - `bareos` user with UID 1001
@@ -1462,12 +1522,16 @@ loginctl show-user bareos | grep Linger
 # Create Quadlet directory
 sudo -u bareos mkdir -p /home/bareos/.config/containers/systemd
 
-# Create Bareos config directories
-sudo -u bareos mkdir -p /home/bareos/bareos-config/{director,storage,filedaemon}
+# Create the host-side Bareos config directories (mounted read-only into
+# the Director and Storage Daemon) and the shared scripts directory.
+sudo mkdir -p /etc/bareos/{bareos-dir.d,bareos-sd.d,scripts}
+sudo chown -R bareos:bareos /etc/bareos
 
 # Create the secrets directory with restricted permissions
 sudo -u bareos install -d -m 700 /home/bareos/.config/bareos
 ```
+
+> **Lab scope:** This lab brings up the core daemons — MariaDB, Director, Storage Daemon, and File Daemon — using the four volumes and one network from Section 6 (eight Quadlet files in total). The WebUI (`bareos-webui-config.volume` + `bareos-webui.container`) is optional and omitted here; add it afterward following Section 6 to reach the full ten-file stack. Populate the `bareos-dir.d`/`bareos-sd.d` config trees and the File Daemon's `bareos-fd-config` volume as shown in Chapter 6.
 
 ### Step 2: Set up the storage path with correct SELinux type
 
@@ -1479,8 +1543,8 @@ sudo mkdir -p /srv/bareos-storage/volumes
 sudo chown bareos:bareos /srv/bareos-storage/volumes
 
 # Apply the container_file_t SELinux type so containers can write here.
-# In production you would define a custom bareos_store_t type via a
-# policy module, but container_file_t works for this lab.
+# This is the standard type for content shared with containers and is the
+# one this course uses everywhere for the storage directory.
 sudo semanage fcontext -a -t container_file_t "/srv/bareos-storage/volumes(/.*)?"
 sudo restorecon -Rv /srv/bareos-storage/volumes
 
@@ -1498,7 +1562,6 @@ MARIADB_ROOT_PASSWORD=BareosProd2026Root!
 MARIADB_DATABASE=bareos
 MARIADB_USER=bareos
 MARIADB_PASSWORD=BareosProd2026DB!
-MARIADB_HOST=%
 EOF
 
 # Create bareos.env
@@ -1526,11 +1589,12 @@ ls -la /home/bareos/.config/bareos/
 Write each file from Section 6 into `/home/bareos/.config/containers/systemd/`. The complete list:
 
 ```bash
-# List the files to create
+# List the files to create (core daemons; WebUI files added separately)
 ls /home/bareos/.config/containers/systemd/
-# bareos-db.volume
-# bareos-store.volume
-# bareos-net.network
+# bareos-db-data.volume
+# bareos-working.volume
+# bareos-fd-config.volume
+# bareos.network
 # bareos-db.container
 # bareos-director.container
 # bareos-storage.container
@@ -1570,9 +1634,10 @@ ls /run/user/1001/systemd/generator/bareos-*.service
 # Enable and start the full stack
 # Start in dependency order: volumes and network first, then DB, then Director
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user enable --now \
-  bareos-db-volume.service \
-  bareos-store-volume.service \
-  bareos-net-network.service
+  bareos-db-data-volume.service \
+  bareos-working-volume.service \
+  bareos-fd-config-volume.service \
+  bareos-network.service
 
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user enable --now \
   bareos-db.service
@@ -1586,7 +1651,9 @@ for i in $(seq 1 24); do
   sleep 5
 done
 
-# Start the Director (it will wait for DB health automatically via Notify=healthy)
+# Start the Director. Because it declares After= + Requires= on
+# bareos-db.service (which uses Notify=healthy), systemd holds the
+# Director until MariaDB reports healthy.
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user enable --now \
   bareos-director.service
 
@@ -1747,9 +1814,9 @@ In this chapter, you learned:
 
 - **Lookup paths**: rootless Quadlet files live at `~/.config/containers/systemd/` and are processed by the `podman-user-generator` during `systemctl --user daemon-reload`.
 
-- **Dependency ordering** using `After=`, `Requires=`, `BindsTo=`, and `Wants=` to ensure the MariaDB container is healthy before the Director starts.
+- **Dependency ordering** using `After=` (ordering) together with `Requires=`/`Wants=` (the dependency that pulls a unit in), plus `Notify=healthy` on `bareos-db` so the Director only starts once MariaDB reports healthy. `BindsTo=` is available for hard teardown coupling but is stronger than the Director needs.
 
-- **The complete Bareos Quadlet stack**: six files (two volumes, one network, three containers) that define the entire backup infrastructure declaratively.
+- **The complete Bareos Quadlet stack**: ten files (one network, four named volumes, and five containers) that define the entire backup infrastructure declaratively. The backup archives use a direct bind mount to a dedicated host disk rather than a named volume.
 
 - **Environment files** at mode 600 for secrets management, separating sensitive credentials from unit files.
 
