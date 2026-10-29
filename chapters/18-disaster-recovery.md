@@ -164,7 +164,7 @@ Here is the Director job definition:
 
 Job {
   Name = "BackupCatalog"
-  JobDefs = "DefaultJob"
+  JobDefs = "StandardBackup"
   Level = Full                    # Always Full — the catalog changes every day
   FileSet = "Catalog"             # Special FileSet that includes the dump file
   Schedule = "WeeklyCycleAfterBackup"
@@ -339,26 +339,25 @@ Bareos writes bootstrap files for jobs that include a `Write Bootstrap` directiv
 
 You should configure Bareos to email the bootstrap file to an administrator after each important job. This way, even if the entire host is destroyed, you have the bootstrap files in your inbox and can perform a catalog-less restore on any new host.
 
-To enable bootstrap email, add to your Messages resource:
+To email job reports (and keep bootstrap files available off-host), add to your Messages resource on the **host** path from Chapter 6:
 
 ```
-# /home/bareos/.config/bareos/bareos-dir.d/messages/Standard.conf
+# /etc/bareos/bareos-dir.d/messages/Standard.conf
 
 Messages {
   Name = Standard
   # ... other directives ...
 
-  # Mail the job report to the admin. The Mail Command below emails the
-  # job summary; the bootstrap file written by the job's "Write Bootstrap"
-  # directive remains on disk (see Section 4) for catalog-less restore.
+  # Mail the job *report* to the admin. Bareos does not automatically attach
+  # the .bsr file; copy bootstrap files off-host separately (rsync, git, or
+  # a script that mails /var/lib/bareos/*.bsr after successful jobs).
   Mail Command = "/usr/sbin/bsmtp -h localhost -f \"\(Bareos\) %r\" -s \"Bareos: %t %e of %c %l\" %r"
-  # "Mail On Error = yes" is the saner default for routine jobs — it emails
-  # only on failure. Use "Mail On Success = yes" instead only if you truly
-  # want a message after every successful job (it is noisy at scale).
-  Mail On Error = yes
+  # Prefer MailOnError for routine jobs (only failures). Use Mail = ... = all
+  # only if you truly want a message after every successful job.
+  MailOnError = "bareos-admin@example.com" = all
   Operator Command = "/usr/sbin/bsmtp -h localhost -f \"\(Bareos\) %r\" -s \"Bareos: Intervention needed for %j\" %r"
-  Operator = "bareos-admin@example.com"
-  Mail = "bareos-admin@example.com"
+  Operator = "bareos-admin@example.com" = all
+  Mail = "bareos-admin@example.com" = all, !skipped
 }
 ```
 
@@ -1278,11 +1277,17 @@ When the Catalog is unavailable or corrupted, bootstrap files are your lifeline.
 # You only need: the volume file(s) and the bootstrap file.
 
 # Copy the bootstrap file to the host (from email, git, or offsite backup)
-cp /mnt/backup-drive/bootstrap/BackupCatalog.bsr /tmp/
+cp /mnt/backup-drive/bootstrap/BackupCatalog.bsr /tmp/BackupCatalog.bsr
+
+# bextract runs *inside* the SD container — copy the .bsr in first
+sudo -u bareos bash -c '
+  XDG_RUNTIME_DIR=/run/user/1001
+  podman cp /tmp/BackupCatalog.bsr bareos-storage:/tmp/BackupCatalog.bsr
+'
 
 # Run bextract inside the Storage Daemon container.
 # -c: config directory (the SD config dir inside the container)
-# -b: bootstrap file
+# -b: bootstrap file (path *inside* the container after podman cp)
 # -V: volume name (the file in /var/lib/bareos/storage/)
 # The last two arguments are: device-name output-directory.
 # Use the Device NAME (FileStorage), not a filesystem path.
@@ -1571,10 +1576,14 @@ LOG_FILE="/var/log/bareos-sync.log"
 
 echo "$(date): Starting offsite sync..." >> "$LOG_FILE"
 
+# WARNING: --delete removes remote files that are gone locally. Combined with
+# Bareos volume recycling, a mistaken prune/recycle on the primary can wipe
+# the only offsite copy. Prefer a second retention window offsite (omit
+# --delete, or sync into dated snapshot directories) unless you have tested
+# recycle + offsite retention together.
 rsync \
   --archive \
-  --delete \           # Remove files on destination that no longer exist locally
-  --checksum \         # Verify by checksum (slower but safer)
+  --checksum \
   --human-readable \
   --log-file="$LOG_FILE" \
   --timeout=300 \
@@ -1586,6 +1595,8 @@ EOF
 
 chmod 750 /home/bareos/.config/bareos/scripts/sync-offsite.sh
 ```
+
+> If you later re-introduce `rsync --delete`, gate it behind an explicit `ALLOW_OFFSITE_DELETE=yes` env check and keep an independent immutable/object-lock copy of recent Full volumes.
 
 ### rclone to Cloud Object Storage (S3-compatible)
 

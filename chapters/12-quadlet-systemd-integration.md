@@ -331,11 +331,13 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload
 
 This is equivalent to telling systemd: "Re-run all generators and reload my unit database." Without this step, systemd will not see your changes.
 
-After a `daemon-reload`, you enable and start units as normal:
+After a `daemon-reload`, **start** Quadlet-generated units (do not `enable` them):
 
 ```bash
-sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user enable --now bareos-director.service
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start bareos-director.service
 ```
+
+Boot-start comes from `[Install] WantedBy=default.target` inside each `.container` / `.volume` / `.network` file. `systemctl --user enable` on a Quadlet-generated unit fails with "Unit file does not exist" (see Chapter 4). Use `enable` only for real on-disk units such as `podman-auto-update.timer`.
 
 > **Important:** The `.service` suffix in `systemctl` commands refers to the *generated* service, not the `.container` file. The generated service name always matches the Quadlet file name with the extension replaced by `.service`. So `bareos-director.container` → `bareos-director.service`.
 
@@ -760,7 +762,9 @@ EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 # The SD listens on 9103 for Director connections.
 PublishPort=9103:9103
 
-HealthCmd=/usr/local/bin/healthcheck.sh
+# Prefer a TCP check — official Bareos storage images do not ship
+# /usr/local/bin/healthcheck.sh. Adjust if your image provides one.
+HealthCmd=bash -c 'exec 3<>/dev/tcp/127.0.0.1/9103'
 HealthInterval=30s
 HealthStartPeriod=45s
 
@@ -826,7 +830,10 @@ Volume=/:/hostfs:ro
 # stop commands against the host container runtime (Chapter 10, Sec 3).
 Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock
 
+# bareos.env for daemon passwords; db.env so Chapter 10/14 hooks can
+# use MARIADB_ROOT_PASSWORD inside the FD (same pattern as Chapter 6).
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
+EnvironmentFile=/home/bareos/.config/bareos/db.env
 
 # A confined container_t process cannot read host files under /hostfs
 # that carry arbitrary SELinux labels, and / cannot be relabeled. A
@@ -835,8 +842,8 @@ EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 # /hostfs is read-only, so no host write access is granted.
 SecurityLabelDisable=true
 
-# The FD listens on 9102 for Director connections.
-PublishPort=9102:9102
+# The FD listens on 9102 for Director connections (localhost for lab).
+PublishPort=127.0.0.1:9102:9102
 
 Label=io.containers.autoupdate=registry
 Label=app=bareos
@@ -1622,7 +1629,7 @@ for image in \
 done
 ```
 
-### Step 6: Reload and enable services
+### Step 6: Reload and start services
 
 ```bash
 # Reload the user daemon (triggers Quadlet generator)
@@ -1631,15 +1638,16 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload
 # Verify that the generated service files exist
 ls /run/user/1001/systemd/generator/bareos-*.service
 
-# Enable and start the full stack
-# Start in dependency order: volumes and network first, then DB, then Director
-sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user enable --now \
+# Start the full stack (do not `enable` Quadlet units — boot-start comes from
+# [Install] WantedBy=default.target after daemon-reload + linger).
+# Order: volumes and network first, then DB, then Director.
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start \
   bareos-db-data-volume.service \
   bareos-working-volume.service \
   bareos-fd-config-volume.service \
   bareos-network.service
 
-sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user enable --now \
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start \
   bareos-db.service
 
 # Wait for MariaDB to become healthy (up to 120 seconds)
@@ -1654,11 +1662,11 @@ done
 # Start the Director. Because it declares After= + Requires= on
 # bareos-db.service (which uses Notify=healthy), systemd holds the
 # Director until MariaDB reports healthy.
-sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user enable --now \
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start \
   bareos-director.service
 
 # Start Storage Daemon and File Daemon
-sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user enable --now \
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start \
   bareos-storage.service \
   bareos-fd.service
 ```

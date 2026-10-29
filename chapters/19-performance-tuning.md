@@ -1652,19 +1652,13 @@ Pool {
   # Set this based on your expected data volume and retention period.
   Maximum Volumes = 100
 
-  # LabelFormat tells Bareos the naming convention for new volumes.
-  # The %% expands to a zero-padded sequence number.
+  # Label Format tells Bareos the naming convention for new volumes.
   # Example: "Full-" produces Full-0001, Full-0002, ...
   Label Format = "Full-"
 
-  # AutoLabel is the most important setting for unattended operation.
-  # When Bareos needs a new volume and none are available, instead of
-  # pausing and waiting for an operator, it automatically creates and
-  # labels a new volume file.
-  #
-  # The value specifies which media type triggers auto-labeling.
-  # Set it to your MediaType (e.g., "File" for disk-based storage).
-  AutoLabel = File
+  # Unattended labeling requires Label Media = yes on the *Device* resource
+  # in the Storage Daemon (Chapter 6 / Chapter 16) — there is no Pool
+  # "AutoLabel" directive. Pair Device Label Media with this Label Format.
 }
 
 Pool {
@@ -1675,7 +1669,6 @@ Pool {
   Volume Retention = 30 days      # Keep Incrementals for 30 days
   Maximum Volumes = 200
   Label Format = "Incr-"
-  AutoLabel = File
 }
 
 Pool {
@@ -1686,7 +1679,6 @@ Pool {
   Volume Retention = 90 days
   Maximum Volumes = 50
   Label Format = "Diff-"
-  AutoLabel = File
 }
 ```
 
@@ -2538,7 +2530,7 @@ Performance tuning Bareos is a systematic process: measure first, identify the b
 - **Data spooling** primarily benefits tape (it keeps the drive streaming and avoids shoe-shining) and interleaving concurrent jobs onto one device (it keeps each job contiguous). For a single disk-to-disk job it adds an extra write + read and de-spools before the job ends, so it is usually neutral or slightly slower — not a speed-up. The spooling knob that *does* reliably help disk-to-disk is **`Spool Attributes = yes`**, which batches catalog inserts and shortens the catalog-update phase.
 - **cgroup v2 resource limits** in Quadlet files protect other workloads on shared hosts without requiring any kernel-level changes — `Memory=`, `MemorySwap=` (subject to the rootless swap-delegation caveat), and the cgroup-v2-native `CPUWeight=` are all you need.
 - **MariaDB tuning** — `innodb_buffer_pool_size`, `innodb_flush_log_at_trx_commit = 2`, and `innodb_log_file_size` — transforms catalog update performance for jobs with millions of files.
-- **Auto-labeling** (`AutoLabel = File` in the Pool) eliminates manual intervention and backup window interruptions caused by unlabeled volumes.
+- **Auto-labeling** (Device `Label Media = yes` plus Pool `Label Format`) eliminates manual intervention and backup window interruptions caused by unlabeled volumes.
 - **TCP buffer tuning** (host sysctls), the Bareos-level `Maximum Network Buffer Size` on both FD and SD, and optionally jumbo frames improve network throughput for large backup streams across a LAN.
 
 The three labs give you a repeatable measurement framework. Run Lab 19-1 first, record the baseline, then apply each optimization from subsequent sections and re-run the benchmark. Keep the performance log updated — after six months of incremental tuning, you will have a clear record of what worked, what did not, and by how much.

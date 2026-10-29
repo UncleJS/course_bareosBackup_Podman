@@ -515,11 +515,11 @@ If you needed a port below 1024 (e.g., port 443 for HTTPS), you would need to ei
 
 ### Container-to-Container Networking in Rootless Mode
 
-When multiple rootless containers are connected to the same Podman network (as our Bareos containers are on the `bareos` network), they communicate *through pasta* using the user-space stack. Each container gets its own IP address on the network's subnet (10.89.10.0/24 in our case), and the embedded `aardvark-dns` service resolves container names.
+When multiple rootless containers join the same user-defined network (our `bareos.network` Quadlet), Podman uses **netavark** with a bridge in the network namespace and **aardvark-dns** for name resolution. Each container gets an IP on the subnet (10.89.10.0/24 in Chapter 6).
 
-Packets between containers on the same rootless network flow through pasta, not through a kernel bridge. This means:
+**pasta** is primarily how a rootless container reaches the *host* network stack (and published ports), not how two containers on the same Quadlet bridge talk to each other. East-west traffic on `bareos.network` stays inside that network:
 
-1. Two containers talking to each other on the `bareos` network go: container A → pasta → container B. This is faster than going out to the host network and back, but slower than a kernel bridge.
+1. Director → `bareos-db:3306` is bridge/DNS traffic on the user network, not "container A → pasta → container B". Misdiagnosing latency as "pasta overhead" will send you down the wrong path.
 
 2. For Bareos's typical workload (metadata queries from Director to MariaDB, job coordination), this performance difference is negligible.
 

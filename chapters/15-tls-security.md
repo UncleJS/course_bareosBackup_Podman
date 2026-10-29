@@ -1012,6 +1012,15 @@ Director {
 
 The `Messages` resource only defines where log messages go (to the Director). No separate TLS configuration is needed here — the Director connection is already covered by the `Director` resource above.
 
+### 12.4 FD → Storage Daemon (data channel)
+
+The File Daemon opens an **outbound** TLS connection to the Storage Daemon when a job runs. In Bareos, that leg is driven by:
+
+1. **Director `Storage` resource** — TLS client settings the Director tells the FD to use when contacting the SD (see Section 10).
+2. **Storage Daemon listener** — TLS server settings in Section 11 (`TLS Enable` / `TLS Require` / certificates on the SD).
+
+The stock File Daemon does **not** need a separate `Storage { }` TLS stanza for the data channel when the Director passes the connection parameters. After enabling TLS on the Director Storage resource and on the SD, run a Full job and confirm the job log shows a successful connection to the SD with no TLS handshake errors. If you only enable TLS on DIR↔FD and forget the Storage/SD side, backup **metadata** paths are encrypted while the **data** path may still fail or remain misconfigured — always verify with a real job, not only `openssl s_client` against 9102.
+
 ---
 
 [↑ Back to Table of Contents](#table-of-contents)
@@ -1854,10 +1863,10 @@ TLS in Bareos transforms your backup infrastructure from a potential data exfilt
 
 The key architectural facts to remember:
 
-- **Four connections require TLS:** bconsole→DIR, DIR→FD, DIR→SD, FD→SD
-- **Both ends must be configured:** enabling TLS on the server without configuring the client results in a connection failure, not a fallback to plaintext
+- **Four connections need TLS in production:** bconsole→DIR, DIR→FD, DIR→SD, and FD→SD (data). Configure Director Storage + SD listener for the data leg (Section 12.4); do not assume enabling DIR↔FD alone encrypts backups.
+- **Both peers must agree:** enabling TLS on one side without the other typically fails the connection rather than silently falling back to plaintext — but only if `TLS Require = yes` is set on the resources you care about.
 - **TLS-PSK is the encrypted default** (no certificates) — configuring `TLS Certificate`/`TLS Key`/`TLS CA Certificate File` switches the handshake to certificate-based cipher suites instead of PSK, adding cryptographic identity verification
-- **`TLS Require = yes` is mandatory in production** — otherwise a misconfigured client can connect without encryption
+- **`TLS Require = yes` in production** on every daemon resource that should refuse plaintext. Without it, a peer that does not offer TLS may still connect in cleartext. Chapter 21 may temporarily use `TLS Enable = No` only while wiring the host FD — re-apply this chapter afterward.
 
 The certificate hierarchy for Bareos is simple:
 - A single internal CA signs all certificates

@@ -267,7 +267,9 @@ sudo chown -R bareos:bareos /etc/bareos/bareos-fd.d
 sudo systemctl restart bareos-fd.service
 ```
 
-Use the same password you stored in `/home/bareos/.config/bareos/bareos.env` / Director client config from Chapter 6 (or generate a new shared secret and update both sides). Enable TLS later with Chapter 15 patterns (cert files on the host for the FD; bind-mounts already used for container daemons).
+Use the same password you stored in `/home/bareos/.config/bareos/bareos.env` / Director client config from Chapter 6 (or generate a new shared secret and update both sides).
+
+> **Lab only:** `TLS Enable = No` above is for first wiring. Before treating this hybrid layout as production, apply [Chapter 15](./15-tls-security.md) to the host FD certificates and the Director `Client` / Storage resources so DIR↔FD and FD→SD are encrypted with `TLS Require = yes`.
 
 ### Director Client Resource
 

@@ -100,7 +100,7 @@ This is called **crash-inconsistent** backup, and it is the default outcome if y
 
 When your database runs in a container, the situation has additional complexity:
 
-1. The data is stored in a **named volume** (e.g., `bareos_mariadb_data`). Bareos can see this volume's path on disk, but it cannot know whether the database engine has flushed its buffers.
+1. The data is stored in a **named volume** (e.g., `bareos-db-data`). Bareos can see this volume's path on disk, but it cannot know whether the database engine has flushed its buffers.
 2. The container filesystem is managed by the container runtime. Writes from inside the container may be in the page cache and not yet reflected in the files Bareos reads.
 3. Container restarts change the environment entirely — environment variables like `MARIADB_ROOT_PASSWORD` that were only present at container creation are gone unless re-injected.
 
@@ -282,7 +282,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman build -t localhost/bareos-fd-podman:24 .
 ```
 
-Then override the File Daemon's image without editing the Chapter 6 unit, using a systemd **drop-in**. Drop-ins are covered in [Chapter 12](./12-quadlet-systemd-deep-dive.md); create `~/.config/containers/systemd/bareos-fd.container.d/10-image.conf`:
+Then override the File Daemon's image without editing the Chapter 6 unit, using a systemd **drop-in**. Drop-ins are covered in [Chapter 12](./12-quadlet-systemd-integration.md); create `~/.config/containers/systemd/bareos-fd.container.d/10-image.conf`:
 
 ```ini
 [Container]
@@ -1303,14 +1303,22 @@ As the `bareos` user (or via `sudo -u bareos` / `machinectl shell bareos@`):
 # Set the required runtime dir
 export XDG_RUNTIME_DIR=/run/user/1001
 
-# Pull and start a simple test container
+# Create a named volume (required — FileSet below backs up this path)
+podman volume create test-nginx_data
+
+# Pull and start a simple test container with the volume attached
 podman run -d \
     --name test-nginx \
     --publish 8080:80 \
+    -v test-nginx_data:/usr/share/nginx/html:Z \
     docker.io/library/nginx:latest
+
+# Seed a file so the volume is non-empty for the backup job
+podman exec test-nginx sh -c 'echo "nginx-lab-$(date -Iseconds)" > /usr/share/nginx/html/index.html'
 
 # Verify it is running
 podman ps --filter name=test-nginx
+podman volume inspect test-nginx_data --format '{{.Mountpoint}}'
 ```
 
 ### Step 2: Create pause/unpause hook scripts
@@ -1369,12 +1377,12 @@ Create a job configuration file at `/etc/bareos/bareos-dir.d/job/backup-test-ngi
 #
 Job {
   Name                = "backup-test-nginx"
-  JobDefs             = "DefaultJob"
+  JobDefs             = "StandardBackup"
   Client              = "bareos-fd"
   FileSet             = "FileSet-nginx-data"
   Storage             = "File"
   Pool                = "Full"
-  Schedule            = "WeeklyCycle"
+  Schedule            = "WeeklyCycleAfterBackup"
   Type                = Backup
   Level               = Incremental
 
@@ -1511,12 +1519,12 @@ Because the container runs with `SecurityLabelDisable=true`, no host-side SELinu
 #
 Job {
   Name      = "backup-mariadb"
-  JobDefs   = "DefaultJob"
+  JobDefs   = "StandardBackup"
   Client    = "bareos-fd"
   FileSet   = "FileSet-mariadb"
   Storage   = "File"
   Pool      = "Full"
-  Schedule  = "WeeklyCycle"
+  Schedule  = "WeeklyCycleAfterBackup"
   Type      = Backup
 
   # -------------------------------------------------------------------------
@@ -1571,7 +1579,7 @@ FileSet {
     # Raw MariaDB volume data (consistent because we paused the container).
     # This is a HOST path, so it carries the /hostfs/ prefix. Adjust to match
     # your actual named volume.
-    File = "/hostfs/home/bareos/.local/share/containers/storage/volumes/bareos_mariadb_data/_data"
+    File = "/hostfs/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data"
   }
 
   Exclude {
@@ -1648,12 +1656,12 @@ sudo chmod 750 /etc/bareos/scripts/backup-postgres.sh
 #
 Job {
   Name      = "backup-postgres"
-  JobDefs   = "DefaultJob"
+  JobDefs   = "StandardBackup"
   Client    = "bareos-fd"
   FileSet   = "FileSet-postgres"
   Storage   = "File"
   Pool      = "Full"
-  Schedule  = "WeeklyCycle"
+  Schedule  = "WeeklyCycleAfterBackup"
   Type      = Backup
 
   RunScript {

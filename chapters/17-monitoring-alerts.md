@@ -192,9 +192,9 @@ Two common email strategies:
 
 **`Mail = addr = all`** — sends an email for every job, regardless of outcome. This is appropriate for small environments where every job is reviewed. Becomes noise in large environments running hundreds of jobs daily.
 
-**`Mail On Error = addr = all`** — only sends email when a job ends with a non-OK status (errors, warnings, or cancellation). In large environments this is the preferred approach, combined with a weekly summary report.
+**`MailOnError = addr = all`** — only sends email when a job ends with a non-OK status (errors, warnings, or cancellation). In large environments this is the preferred approach, combined with a weekly summary report.
 
-**Best practice**: Configure `Mail On Error` for routine jobs and `Mail` (mail-always) for the Monthly/Yearly full backups.
+**Best practice**: Configure `MailOnError` for routine jobs and `Mail` (mail-always) for the Monthly/Yearly full backups.
 
 ---
 
@@ -270,7 +270,7 @@ Messages {
 
   # Send a SECOND email only if there were errors.
   # This goes to a pager/on-call address that needs immediate attention.
-  Mail On Error = "oncall@example.com" = error, fatal
+  MailOnError = "oncall@example.com" = error, fatal
   # Only sends if the job encountered actual errors — not just warnings.
 
   # ── Catalog ───────────────────────────────────────────────────
@@ -316,7 +316,7 @@ Messages {
   Mail Command = "/usr/bin/bsmtp -h smtp.example.com:587 -f \"(Bareos) %r\" -s \"Bareos daemon: %t %e\" %r"
 
   # Email on daemon-level errors (Director crash, config error, etc.)
-  Mail On Error = "backup-alerts@example.com" = error, fatal, terminate
+  MailOnError = "backup-alerts@example.com" = error, fatal, terminate
 
   # Always write daemon events to the log
   Append = "/var/log/bareos/bareos.log" = all, !skipped, !restored
@@ -1014,7 +1014,8 @@ WantedBy=default.target
 
 ```bash
 XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload
-XDG_RUNTIME_DIR=/run/user/1001 systemctl --user enable --now bareos-exporter
+# Quadlet unit: start only — boot via [Install] WantedBy=default.target
+XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start bareos-exporter
 
 # Verify metrics endpoint
 curl -s http://localhost:9625/metrics | head -40
@@ -1369,15 +1370,16 @@ Environment=XDG_RUNTIME_DIR=/run/user/1001
 journalctl --user -u bareos-director -u bareos-storage -f --output=cat | \
 while IFS= read -r line; do
   if echo "$line" | grep -qiE "(error|fatal|failed|Termination: Backup Error)"; then
-    echo "BAREOS ALERT: $line" | \
-      msmtp backup-alerts@example.com <<< "Subject: Bareos Error Detected
-From: bareos@example.com
-To: backup-alerts@example.com
-
-Bareos journal alert on $(hostname) at $(date):
-
-$line
-"
+    # Build a minimal RFC822 message for msmtp (stdin is the full message)
+    {
+      echo "Subject: Bareos Error Detected"
+      echo "From: bareos@example.com"
+      echo "To: backup-alerts@example.com"
+      echo
+      echo "Bareos journal alert on $(hostname) at $(date):"
+      echo
+      echo "$line"
+    } | msmtp -t
   fi
 done
 ```
@@ -1419,17 +1421,13 @@ if ! podman inspect --format '{{.State.Running}}' "${CONTAINER}" 2>/dev/null | g
 fi
 
 # ── 2. Run bconsole status director ───────────────────────────────
-STATUS_OUTPUT=$(timeout "${TIMEOUT}" podman exec "${CONTAINER}" \
-  bconsole <<'EOF' 2>&1
-status director
-quit
-EOF
-)
-
-if [[ $? -ne 0 ]]; then
+STATUS_OUTPUT=$(
+  timeout "${TIMEOUT}" podman exec "${CONTAINER}" \
+    bconsole <<< $'status director\nquit' 2>&1
+) || {
   echo "CRITICAL: bconsole did not respond within ${TIMEOUT} seconds"
   exit 2
-fi
+}
 
 # ── 3. Check Director response ────────────────────────────────────
 # Match loosely on "is OK" — the full line is "The Director daemon is OK."
@@ -1439,13 +1437,12 @@ if ! echo "${STATUS_OUTPUT}" | grep -q "is OK"; then
   exit 2
 fi
 
-# ── 4. Check for failed jobs in last hour ─────────────────────────
-FAILED_JOBS=$(timeout "${TIMEOUT}" podman exec "${CONTAINER}" \
-  bconsole <<'EOF' 2>&1
-list jobs days=1
-quit
-EOF
-| grep -c " E " || true)
+# ── 4. Check for failed jobs in last day ──────────────────────────
+FAILED_JOBS=$(
+  timeout "${TIMEOUT}" podman exec "${CONTAINER}" \
+    bconsole <<< $'list jobs days=1\nquit' 2>&1 \
+  | grep -c " E " || true
+)
 
 if [[ "${FAILED_JOBS}" -gt 5 ]]; then
   echo "WARNING: ${FAILED_JOBS} jobs failed in the last 24 hours"
@@ -1925,11 +1922,11 @@ Running Bareos in containers under SELinux enforcing mode requires careful atten
 getsebool container_manage_cgroup
 getsebool container_connect_any
 
-# Allow all containers to make network connections to any port
-# (Use this if the specific policy below is insufficient)
-sudo setsebool -P container_connect_any=1
+# Prefer port labels first (same-network Bareos traffic rarely needs this —
+# see Chapter 20). Only enable the boolean if AVC denials persist:
+# sudo setsebool -P container_connect_any=1
 
-# More restrictive: allow containers to connect to SMTP port 587
+# Allow containers to connect to SMTP port 587
 sudo semanage port -a -t smtp_port_t -p tcp 587
 # Note: port 25 is already defined as smtp_port_t in most policies.
 # Port 587 (SUBMISSION) may need to be added explicitly.
@@ -2054,9 +2051,11 @@ If the test fails, check that the relay host/port in the `bsmtp -h` argument is 
 ### Step 2: Write the Messages Resource Configuration
 
 ```bash
-BAREOS_CONFIG="$HOME/.local/share/containers/storage/volumes/bareos-director-config/_data"
+# Chapter 6 bind-mounts host /etc/bareos/bareos-dir.d into the Director (read-only
+# in the container). Edit on the host — there is no bareos-director-config volume.
+BAREOS_CONFIG="/etc/bareos"
 
-cat > "${BAREOS_CONFIG}/bareos-dir.d/messages/Standard.conf" << 'MSGCONF'
+sudo -u bareos tee "${BAREOS_CONFIG}/bareos-dir.d/messages/Standard.conf" > /dev/null << 'MSGCONF'
 Messages {
   Name = "Standard"
 
@@ -2069,7 +2068,7 @@ Messages {
   Mail = "backup-alerts@example.com" = all, !skipped, !restored
 
   # Additional email to on-call if there are errors
-  Mail On Error = "oncall@example.com" = error, fatal
+  MailOnError = "oncall@example.com" = error, fatal
 
   # Store in catalog for WebUI visibility
   Catalog = all, !skipped, !restored
@@ -2143,18 +2142,17 @@ We'll simulate a failure by running a job pointing at a non-existent path.
 
 ```bash
 # Add a temporary "broken" fileset that references a path that doesn't exist
-sudo -u bareos bash -c '
-DIR_VOL="$HOME/.local/share/containers/storage/volumes/bareos-director-config/_data"
-cat > "${DIR_VOL}/bareos-dir.d/fileset/broken-fileset.conf" << EOF
+# Edit on the host — Chapter 6 mounts /etc/bareos/bareos-dir.d read-only into the Director
+sudo -u bareos tee /etc/bareos/bareos-dir.d/fileset/broken-fileset.conf > /dev/null << 'EOF'
 FileSet {
   Name = "BrokenFileSet"
   Include {
     Options { signature = MD5 }
-    File = "/nonexistent/path/that/does/not/exist"
+    File = "/hostfs/nonexistent/path/that/does/not/exist"
   }
 }
 EOF
-cat > "${DIR_VOL}/bareos-dir.d/job/broken-job.conf" << EOF
+sudo -u bareos tee /etc/bareos/bareos-dir.d/job/broken-job.conf > /dev/null << 'EOF'
 Job {
   Name     = "BrokenTestJob"
   Type     = Backup
@@ -2163,10 +2161,10 @@ Job {
   Storage  = File
   Pool     = "Full"
   Messages = "Standard"
+  JobDefs  = "StandardBackup"
   # No Schedule — this job is run manually below.
 }
 EOF
-'
 
 # Reload the Director to pick up the new config
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
@@ -2256,11 +2254,9 @@ Even a failed job may have written a partial volume. Check:
 Clean up the test resources:
 
 ```bash
-sudo -u bareos bash -c '
-DIR_VOL="$HOME/.local/share/containers/storage/volumes/bareos-director-config/_data"
-rm -f "${DIR_VOL}/bareos-dir.d/fileset/broken-fileset.conf"
-rm -f "${DIR_VOL}/bareos-dir.d/job/broken-job.conf"
-'
+sudo -u bareos rm -f \
+  /etc/bareos/bareos-dir.d/fileset/broken-fileset.conf \
+  /etc/bareos/bareos-dir.d/job/broken-job.conf
 
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman exec bareos-director bconsole <<< "reload"
@@ -2439,9 +2435,10 @@ QUADLET
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now bareos-exporter
-systemctl --user enable --now prometheus
-systemctl --user enable --now grafana
+# Quadlet containers: start only (WantedBy=default.target handles boot)
+systemctl --user start bareos-exporter
+systemctl --user start prometheus
+systemctl --user start grafana
 
 # Wait for containers to start
 sleep 15
@@ -2513,7 +2510,7 @@ This chapter covered the complete monitoring and alerting stack for a production
 
 **The SLA reporting script closes the loop**: Automated daily SLA reports that compare actual backup behavior against defined thresholds catch slow degradation that might not trigger real-time alerts — such as gradually increasing backup duration or slowly declining file counts.
 
-**SELinux must be configured before network connections work**: The `container_connect_any` boolean or specific port type assignments (`smtp_port_t` for SMTP, `http_port_t` for monitoring ports) must be set before containers can make external network connections. Always check `ausearch -m avc -ts recent` when troubleshooting connectivity.
+**SELinux and outbound connections:** Same-network Bareos traffic on `bareos.network` rarely needs `container_connect_any` (see Chapter 20). Prefer labeling specific ports (`smtp_port_t`, `http_port_t`) over enabling that boolean globally. Always check `ausearch -m avc -ts recent` when troubleshooting connectivity.
 
 In the next chapter, we will cover disaster recovery scenarios — restoring from backups when the Bareos Director itself has been lost, and strategies for protecting the catalog database.
 

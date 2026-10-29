@@ -102,8 +102,8 @@ The following is the minimum recommended specification for the lab host. You can
 |---|---|---|
 | CPU | 2 vCPUs | 4 vCPUs |
 | RAM | 4 GB | 8 GB |
-| OS disk | 20 GB | 40 GB |
-| Backup storage disk | 20 GB | 100 GB (separate partition or volume) |
+| OS disk | 30 GB | 50 GB (images + logs grow quickly) |
+| Backup storage disk | 50 GB | 100 GB (separate partition or volume) |
 | Network | 1 NIC with host-only or NAT | 2 NICs (one for management, one for backup traffic) |
 
 ### Operating System

@@ -363,7 +363,7 @@ This approach keeps the image export process separate from the Bareos file trans
 ```
 Job {
   Name    = "backup-container-images"
-  JobDefs = "DefaultJob"
+  JobDefs = "StandardBackup"
   Client  = "bareos-fd"
   FileSet = "FileSet-container-images"
   Storage = "File"
@@ -796,25 +796,27 @@ chown -R bareos:bareos /home/bareos/.config
 
 ### Step 4: Restore volume data
 
-Restore the database volumes (covered in Chapter 10's database backup approach):
+Restore the database volumes (covered in Chapter 10's database backup approach). Catalog paths use the `/hostfs` prefix when backed up by the containerized FD:
 
 ```bash
-# Restore MariaDB volume data
+# Restore MariaDB volume data (canonical volume name from Chapter 6)
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole << 'EOF'
 restore
 5
 jobid=<last-data-backup-jobid>
-mark /home/bareos/.local/share/containers/storage/volumes/bareos_mariadb_data/_data
+mark /hostfs/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data
 done
 yes
 EOF
 
-# Copy to named volume location
+# Copy to named volume location (prefer creating via Quadlet/volume unit)
 export XDG_RUNTIME_DIR=/run/user/1001
-sudo -u bareos podman volume create bareos_mariadb_data
+sudo -u bareos podman volume create bareos-db-data
 
-VOLUME_DATA="/home/bareos/.local/share/containers/storage/volumes/bareos_mariadb_data/_data"
-sudo cp -r /tmp/bareos-restores${VOLUME_DATA}/. "${VOLUME_DATA}/"
+VOLUME_DATA=$(sudo -u bareos podman volume inspect bareos-db-data --format '{{.Mountpoint}}')
+# Restored tree includes the /hostfs prefix from the FileSet
+sudo cp -a /tmp/bareos-restores/hostfs/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data/. \
+  "${VOLUME_DATA}/"
 sudo chown -R bareos:bareos "${VOLUME_DATA}"
 ```
 
@@ -824,8 +826,8 @@ sudo chown -R bareos:bareos "${VOLUME_DATA}"
 # Reload systemd to pick up Quadlet files
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload
 
-# Start the services
-sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start bareos-mariadb
+# Start the services (canonical names from Chapter 6)
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start bareos-db
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start bareos-director
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start bareos-storage
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start bareos-fd
@@ -926,34 +928,38 @@ FileSet {
       OneFS       = no
     }
 
-    # 1. IMAGE ARCHIVES (populated by export-images.sh RunScript hook)
+    # Paths below are as seen *inside* the containerized FD (/hostfs = host /).
+    # Prefer staging exports under a path the FD can see without a special mount
+    # (export-images.sh writes inside the FD at /var/tmp/... — see Lab 11-2).
+
+    # 1. IMAGE ARCHIVES (populated by export-images.sh RunScript hook inside FD)
     File = "/var/tmp/bareos-image-exports"
 
-    # 2. VOLUME DATA — MariaDB
-    File = "/home/bareos/.local/share/containers/storage/volumes/bareos_mariadb_data/_data"
+    # 2. VOLUME DATA — MariaDB catalog (canonical name from Chapter 6)
+    File = "/hostfs/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data"
 
-    # 3. VOLUME DATA — Bareos Director catalog
-    File = "/home/bareos/.local/share/containers/storage/volumes/bareos_director_config/_data"
+    # 3. VOLUME DATA — Bareos working dir (bootstrap / catalog dumps on volume)
+    File = "/hostfs/home/bareos/.local/share/containers/storage/volumes/bareos-working/_data"
 
     # 4. RUNTIME CONFIGURATION — Quadlet files
-    File = "/home/bareos/.config/containers/systemd"
+    File = "/hostfs/home/bareos/.config/containers/systemd"
 
-    # 5. DATABASE DUMPS (from Chapter 10 hooks)
+    # 5. DATABASE DUMPS (from Chapter 10 hooks; often FD-local /var/tmp)
     File = "/var/tmp/bareos-dumps"
 
-    # 6. Bareos configuration files
-    File = "/etc/bareos"
+    # 6. Bareos Director/SD configuration on the host
+    File = "/hostfs/etc/bareos"
   }
 
   Exclude {
     # Exclude the container storage itself (we export images separately)
-    File = "/home/bareos/.local/share/containers/storage/overlay"
-    File = "/home/bareos/.local/share/containers/storage/overlay-containers"
+    File = "/hostfs/home/bareos/.local/share/containers/storage/overlay"
+    File = "/hostfs/home/bareos/.local/share/containers/storage/overlay-containers"
     # Standard exclusions
-    File = "/proc"
-    File = "/sys"
-    File = "/dev"
-    File = "/run"
+    File = "/hostfs/proc"
+    File = "/hostfs/sys"
+    File = "/hostfs/dev"
+    File = "/hostfs/run"
   }
 }
 ```
@@ -966,12 +972,12 @@ FileSet {
 #
 Job {
   Name      = "backup-complete-stack"
-  JobDefs   = "DefaultJob"
+  JobDefs   = "StandardBackup"
   Client    = "bareos-fd"
   FileSet   = "FileSet-complete-container-backup"
   Storage   = "File"
   Pool      = "Full"
-  Schedule  = "WeeklyCycle"
+  Schedule  = "WeeklyCycleAfterBackup"
   Type      = Backup
 
   # Step 1: Dump MariaDB (from Chapter 10)
@@ -1051,7 +1057,7 @@ This ensures that even if someone updates the `:24` tag in the registry, your co
 
 ### Quadlet and image pull policies
 
-Quadlet supports a `PullPolicy` option that controls when Podman checks for newer images:
+Quadlet uses the `Pull=` directive (not Docker Compose's `PullPolicy`) to control when Podman checks for newer images:
 
 ```ini
 [Container]
@@ -1060,17 +1066,17 @@ Image=docker.io/bareos/bareos-director:24
 # "missing" (default): only pull if not in local storage
 # "never": never pull, fail if not in local storage (best for air-gapped restore)
 # "always": always pull (ignores local cache)
-PullPolicy=missing
+Pull=missing
 ```
 
-For disaster recovery scenarios where you have loaded images from archives, set `PullPolicy=missing` (the default) or `PullPolicy=never`. The default `missing` is usually appropriate: it uses the local image if present, falls back to the registry if not.
+For disaster recovery scenarios where you have loaded images from archives, set `Pull=missing` (the default) or `Pull=never`. The default `missing` is usually appropriate: it uses the local image if present, falls back to the registry if not.
 
 ### Quadlet file backup as part of image backup job
 
-Since Quadlet files encode the image name, tag, and runtime configuration, they are an essential component of your image backup. Always include them in your Bareos FileSet:
+Since Quadlet files encode the image name, tag, and runtime configuration, they are an essential component of your image backup. Always include them in your Bareos FileSet (with `/hostfs` for the containerized FD):
 
 ```
-File = "/home/bareos/.config/containers/systemd"
+File = "/hostfs/home/bareos/.config/containers/systemd"
 ```
 
 When you restore, copy these files back before running `systemctl --user daemon-reload`, and systemd will regenerate the container units from the Quadlet definitions.
@@ -1161,13 +1167,15 @@ FileSet {
       Compression = GZIP1
     }
 
-    # All image archives and their metadata files
-    File = "/var/tmp/bareos-image-exports"
+    # Manual Lab 11-1 exports on the *host* under /var/tmp — prefix /hostfs
+    # so the containerized FD can read them. Lab 11-2 writes the same path
+    # *inside* the FD (no /hostfs) when export-images.sh runs as a client hook.
+    File = "/hostfs/var/tmp/bareos-image-exports"
   }
 
   Exclude {
-    File = "/proc"
-    File = "/sys"
+    File = "/hostfs/proc"
+    File = "/hostfs/sys"
   }
 }
 ```
@@ -1179,7 +1187,7 @@ Create `/etc/bareos/bareos-dir.d/job/backup-images-manual.conf`:
 ```
 Job {
   Name      = "backup-images-manual"
-  JobDefs   = "DefaultJob"
+  JobDefs   = "StandardBackup"
   Client    = "bareos-fd"
   FileSet   = "FileSet-container-images"
   Storage   = "File"
@@ -1255,6 +1263,10 @@ Save this at `/etc/bareos/scripts/export-images.sh` on the **host** (accessible 
 # =============================================================================
 
 set -euo pipefail
+
+# Talk to the host rootless Podman via the socket mounted into bareos-fd
+# (Chapter 6/10). Without this, podman may use a local client that sees no images.
+export CONTAINER_HOST="${CONTAINER_HOST:-unix:///run/podman/podman.sock}"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -1537,12 +1549,12 @@ sudo restorecon /etc/bareos/scripts/cleanup-image-exports.sh
 #
 Job {
   Name      = "backup-container-images"
-  JobDefs   = "DefaultJob"
+  JobDefs   = "StandardBackup"
   Client    = "bareos-fd"
   FileSet   = "FileSet-container-images"
   Storage   = "File"
   Pool      = "Full"
-  Schedule  = "WeeklyCycle"
+  Schedule  = "WeeklyCycleAfterBackup"
   Type      = Backup
 
   # Export all local images to staging directory before backup
@@ -1657,8 +1669,8 @@ SecurityLabelDisable=true
 Volume=/var/tmp:/var/tmp
 Volume=/home/bareos/.local/share/containers/storage/volumes:/mnt/volumes
 
-# Rootless Podman socket — same path the export/load scripts expect
-Volume=/run/podman/podman.sock:/run/podman/podman.sock
+# Rootless Podman socket — host path for UID 1001 (same as Chapter 6)
+Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock
 
 Environment=XDG_RUNTIME_DIR=/run/user/1001
 Environment=CONTAINER_HOST=unix:///run/podman/podman.sock

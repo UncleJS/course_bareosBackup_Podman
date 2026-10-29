@@ -233,8 +233,8 @@ To keep the cache always current, add a `RunScript` to your backup jobs (see [Ch
 
 ```
 RunScript {
-  Runs When   = After
-  Runs On Client = No
+  RunsWhen     = After
+  RunsOnClient = No
   Command     = ".bvfs_update"
 }
 ```

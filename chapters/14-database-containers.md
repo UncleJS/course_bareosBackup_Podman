@@ -454,6 +454,37 @@ chmod +x /etc/bareos/scripts/pre-mariadb-backup.sh
 chmod +x /etc/bareos/scripts/post-mariadb-backup.sh
 ```
 
+Wire both scripts into the Job. The **After** hook must set `RunsOnFailure = yes` so a failed backup still restarts MariaDB — otherwise a mid-job failure leaves the catalog database down:
+
+```
+Job {
+  Name = "BackupMariaDB-Physical"
+  JobDefs = "StandardBackup"
+  Client = "bareos-fd"
+  FileSet = "MariaDB-Physical"
+  Storage = "File"
+  Pool = "Full"
+  Type = Backup
+  Level = Full
+
+  RunScript {
+    Command = "/etc/bareos/scripts/pre-mariadb-backup.sh"
+    RunsWhen = Before
+    RunsOnClient = yes
+    FailJobOnError = yes
+  }
+
+  RunScript {
+    Command = "/etc/bareos/scripts/post-mariadb-backup.sh"
+    RunsWhen = After
+    RunsOnClient = yes
+    RunsOnSuccess = yes
+    RunsOnFailure = yes
+    FailJobOnError = no
+  }
+}
+```
+
 ### 5.3 The Physical Data Path
 
 The Bareos FileSet for a physical backup points to the volume's data directory on the host. Because this is a **host** path and the File Daemon sees the host filesystem under `/hostfs` (Chapter 6), the `File =` line carries the `/hostfs/` prefix:
@@ -464,7 +495,7 @@ File = /hostfs/home/bareos/.local/share/containers/storage/volumes/bareos-db-dat
 
 (The underlying host path is `/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data/`.)
 
-**SELinux consideration:** The `_data/` directory is labeled `container_file_t`. If the Bareos File Daemon runs in a container, it will have a `container_t` domain, which can read `container_file_t` files. If the FD runs natively on the host (not in a container), you may need to add a policy or relabel the path. For our course setup (FD in a container), no extra steps are needed.
+**SELinux consideration:** The `_data/` directory is labeled `container_file_t`. The course File Daemon uses `SecurityLabelDisable=true` (Chapter 6), so MCS/`container_t` pairing is not what grants access — DAC (and for host FD, Chapter 21's `CAP_DAC_READ_SEARCH`) matters more. MariaDB files are often mode `600` owned by subordinate UID `100998`; confirm the FD can read them before relying on a cold physical FileSet. Prefer logical dumps (Section 4 / Chapter 10) when possible.
 
 ---
 
@@ -1032,7 +1063,7 @@ Job {
   Level = Full             # Logical dumps are always Full; no incremental possible
   Client = bareos-fd
   FileSet = "MariaDB-Dump"
-  Schedule = "WeeklyCycle"
+  Schedule = "WeeklyCycleAfterBackup"
   Storage = File
   Pool = Full
   Priority = 10
@@ -1154,7 +1185,7 @@ Job {
   Level = Full
   Client = bareos-fd
   FileSet = "PostgreSQL-Dump"
-  Schedule = "WeeklyCycle"
+  Schedule = "WeeklyCycleAfterBackup"
   Storage = File
   Pool = Full
   Priority = 10
@@ -1522,7 +1553,7 @@ Job {
   Level = Full
   Client = bareos-fd
   FileSet = "MariaDB-Dump"
-  Schedule = "WeeklyCycle"
+  Schedule = "WeeklyCycleAfterBackup"
   Storage = File
   Pool = Full
   Priority = 10

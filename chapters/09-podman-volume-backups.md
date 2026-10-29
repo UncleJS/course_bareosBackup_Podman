@@ -122,7 +122,7 @@ ls -Zd /home/bareos/.local/share/containers/storage/volumes/myapp-data/_data
 # Output: system_u:object_r:container_file_t:s0  _data/
 ```
 
-The `container_file_t` label is how containers normally reach volume data: a container running under `container_t` can read `container_file_t` files. Our File Daemon is a container too, but it does not rely on that category match — it is started with `SecurityLabelDisable=true` (set in [Chapter 6](./06-installing-bareos-podman.md)), which turns off SELinux label separation for the FD container so it can read the host's `/hostfs` view regardless of the label on each file. The host filesystem is bind-mounted read-only at `/hostfs` inside the FD container, so volume paths are accessed as `/hostfs/home/bareos/.local/share/containers/storage/volumes/...`. **No custom SELinux policy module is required.**
+The `container_file_t` label is how containers normally reach volume data: a container running under `container_t` can read `container_file_t` files. Our File Daemon is a container too, but it does not rely on that category match — it is started with `SecurityLabelDisable=true` (set in [Chapter 6](./06-bareos-in-podman.md)), which turns off SELinux label separation for the FD container so it can read the host's `/hostfs` view regardless of the label on each file. The host filesystem is bind-mounted read-only at `/hostfs` inside the FD container, so volume paths are accessed as `/hostfs/home/bareos/.local/share/containers/storage/volumes/...`. **No custom SELinux policy module is required.**
 
 ---
 
@@ -195,30 +195,32 @@ This is the most important concept in Podman volume backup. Get it wrong and the
 
 ### Understanding the Mapping
 
-When a rootless container writes a file as container-root (UID 0), that UID maps to the first subordinate UID of the Podman user. For the `bareos` user with sub-UID range `100000-165535`:
+Rootless Podman maps container UIDs as documented in [Chapter 13](./13-rootless-podman-specifics.md). For the `bareos` user (host UID 1001) with sub-UID range `100000-165535`:
 
 ```
-Container UID 0  (root)       → Host UID 100000
-Container UID 1               → Host UID 100001
-Container UID 1000 (appuser)  → Host UID 101000
+Container UID 0  (root)       → Host UID 1001     (the bareos user itself)
+Container UID 1               → Host UID 100000
+Container UID 999 (mysql)     → Host UID 100998
+Container UID 1000 (appuser)  → Host UID 100999
 ...
 ```
 
-Files in a named volume are owned by `100000` on the host:
+Files written as **container root** appear as owned by **1001** on the host. Files written as a non-root container user (for example MariaDB as UID 999) appear under the subordinate pool (`100000+`):
 
 ```bash
 ls -lan /home/bareos/.local/share/containers/storage/volumes/myapp-data/_data/
-# Output: drwxr-xr-x. 2 100000 100000  ...  _data/
-#          -rw-r--r--. 1 100000 100000  ...  config.json
+# Container-root files:   drwxr-xr-x. 2 1001   1001   ...  _data/
+# App-user (UID 999) files: -rw-r-----. 1 100998 100998 ...  ibdata1
 ```
 
-The Bareos File Daemon runs as the `bareos` user (UID 1001) **inside its container**. Through the read-only `/hostfs` bind-mount it reads files owned by UID 100000 on the host. Two things make this work:
-- **File mode bits**: the world-readable bit on the files lets a non-owning UID read them
-- **SELinux is not in the way**: the FD container is started with `SecurityLabelDisable=true` (Chapter 6), so SELinux label separation does not constrain its host reads — the `container_file_t` label on each volume file is irrelevant to the FD
+The Bareos File Daemon runs as UID 1001 **inside its container**. Through the read-only `/hostfs` bind-mount:
+- Files owned by **1001** (container-root) are owned by the same host UID the FD process maps to — readable without special mode bits
+- Files owned by **100000+** need world/group-readable bits **or** the FD must run with enough privilege (container FD with `SecurityLabelDisable`, or host FD with `CAP_DAC_READ_SEARCH` in Chapter 21)
+- **SELinux is not in the way** for the container FD: `SecurityLabelDisable=true` (Chapter 6) means `container_file_t` on volume files does not block those reads
 
 ### How bareos-fd Gets Access
 
-The `bareos-fd` container runs with the host filesystem bind-mounted read-only at `/hostfs`, and is launched with `SecurityLabelDisable=true` (set when the FD container was created in [Chapter 6](./06-installing-bareos-podman.md)). With label separation disabled, the FD reads everything under `/hostfs` — bind mounts and `container_file_t`-labeled named-volume data alike — without any custom SELinux policy. **No custom SELinux module is required.**
+The `bareos-fd` container runs with the host filesystem bind-mounted read-only at `/hostfs`, and is launched with `SecurityLabelDisable=true` (set when the FD container was created in [Chapter 6](./06-bareos-in-podman.md)). With label separation disabled, the FD reads everything under `/hostfs` — bind mounts and `container_file_t`-labeled named-volume data alike — without any custom SELinux policy. **No custom SELinux module is required.**
 
 > **Note for host RPM FD users:** This advantage is specific to the *containerized* FD. A host-installed `bareos-fd` RPM service runs in the `bareos_t` domain and *would* need an explicit SELinux allow rule to read `container_file_t` volume files — that is the only scenario where a custom policy module enters the picture. See [Chapter 13](./13-rootless-podman-specifics.md) for details.
 
@@ -265,7 +267,7 @@ FileSet {
 
 **Cons:**
 - Files may be in an inconsistent state if the container is actively writing
-- Files are owned by subordinate UIDs (100000+) — may confuse administrators looking at the catalog
+- Non-root container UIDs map to subordinate host UIDs (100000+) — may confuse administrators looking at the catalog
 
 ### When to Use
 
@@ -633,9 +635,9 @@ VOLUME_PATH=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman volume inspect testapp-data --format '{{.Mountpoint}}')
 echo "Volume data path: ${VOLUME_PATH}"
 
-# Step 3: Inspect ownership — files are owned by sub-UID 100000.
-# The containerized FD reads them through /hostfs with SecurityLabelDisable (Ch6),
-# so no host-side privilege or SELinux module is needed.
+# Step 3: Inspect ownership — alpine as container-root maps to host UID 1001
+# (the bareos user). Non-root app UIDs would show as 100000+. The containerized
+# FD reads them through /hostfs with SecurityLabelDisable (Ch6).
 ls -lan "${VOLUME_PATH}"
 
 # Step 4: Create a FileSet for this volume
@@ -661,7 +663,7 @@ Job {
   JobDefs = "StandardBackup"
   Client = bareos-fd
   FileSet = "TestApp-Volume"
-  Schedule = "WeeklyBackup"
+  Schedule = "WeeklyCycleAfterBackup"
 }
 JEOF
 
@@ -791,14 +793,13 @@ sudo cp -a \
   "${NEW_VOLUME_PATH}/"
 
 # Step 5: Fix ownership.
-# This lab's files were all written as container-root, which maps to the first
-# sub-UID (100000). Flattening every file to that single sub-UID is therefore
-# correct HERE. If the volume held files owned by *several* container UIDs
-# (e.g. an appuser at UID 1000 -> sub-UID 101000), a blanket chown would corrupt
-# ownership — in that case restore preserving the stored owners, or use the
-# export/`podman volume import` strategy which round-trips ownership faithfully.
-BAREOS_SUBUID=$(grep bareos /etc/subuid | cut -d: -f2)
-sudo chown -R ${BAREOS_SUBUID}:${BAREOS_SUBUID} "${NEW_VOLUME_PATH}"
+# This lab's files were written as container-root, which maps to host UID 1001
+# (the bareos user). Restoring ownership to bareos:bareos is correct HERE.
+# If the volume held files owned by *several* container UIDs (e.g. mysql UID 999
+# → host 100998), a blanket chown would corrupt ownership — preserve the stored
+# owners from the catalog, or use export/`podman volume import`, which
+# round-trips ownership faithfully.
+sudo chown -R bareos:bareos "${NEW_VOLUME_PATH}"
 
 # Step 6: Verify the data is back
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
@@ -823,7 +824,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman volume rm testapp-data
 In this chapter you learned the full spectrum of Podman volume backup strategies:
 
 - **Named volumes vs. bind mounts**: Named volumes live in `~/.local/share/containers/storage/volumes/<name>/_data/`. Bind mounts live at explicit host paths and are simplest to back up.
-- **The UID mapping problem**: Files in named volumes are owned by subordinate UIDs (100000+). The containerized `bareos-fd` reads them through its read-only `/hostfs` view; because the FD container runs with `SecurityLabelDisable=true` (Chapter 6), SELinux label separation does not constrain those reads and **no custom SELinux module is needed**. The `bareos_t`/custom-policy story applies only to a host-installed FD RPM, not to our container.
+- **The UID mapping problem**: Container root maps to host UID **1001** (`bareos`); other container UIDs map into the subordinate pool (`100000+`). The containerized `bareos-fd` reads them through `/hostfs` with `SecurityLabelDisable=true` (Chapter 6) — **no custom SELinux module is needed**. The `bareos_t`/custom-policy story applies only to a host-installed FD RPM (or Chapter 21).
 - **Strategy 1 (direct path backup)**: Add `_data` paths to the FileSet. Simple, works for live backups of stateless applications.
 - **Strategy 2 (sidecar export)**: A temporary container exports the volume to a tar file, which is then backed up. Good for complex, stateful applications.
 - **Strategy 3 (`podman volume export`)**: Podman's built-in export command creates a portable tar archive. Simplest restore path via `podman volume import`.

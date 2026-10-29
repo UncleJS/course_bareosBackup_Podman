@@ -249,9 +249,9 @@ XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole
 The `list joblog` output is the primary diagnostic tool. An example of a failing job log looks like:
 
 ```
-24-Feb 10:15 bareos-dir JobId 42: Start Backup JobId 42, Job=BackupClient1.2026-02-24_10.15.00_00
+24-Feb 10:15 bareos-dir JobId 42: Start Backup JobId 42, Job=BackupLocalHost.2026-02-24_10.15.00_00
 24-Feb 10:15 bareos-dir JobId 42: Using Device "FileStorage" to write.
-24-Feb 10:15 bareos-dir JobId 42: Connecting to Client bareos-client1 at 192.168.1.50:9102
+24-Feb 10:15 bareos-dir JobId 42: Connecting to Client bareos-fd at 192.168.1.50:9102
 24-Feb 10:15 bareos-fd JobId 42: Fatal error: Failed to authenticate with Director at ...
 24-Feb 10:15 bareos-dir JobId 42: Fatal error: Bad response to Hello command: ERR=...
 ```
@@ -304,14 +304,14 @@ sudo ausearch -m avc -ts recent -c bareos-dir
 In the job log:
 
 ```
-Fatal error: bsock.c:NNNN Connecting to Client bareos-client1 at 192.168.1.50:9102 failed.
+Fatal error: bsock.c:NNNN Connecting to Client bareos-fd at 192.168.1.50:9102 failed.
 ERR=Connection refused
 ```
 
 Or:
 
 ```
-Fatal error: bsock.c:NNNN Connecting to Client bareos-client1 at 192.168.1.50:9102 failed.
+Fatal error: bsock.c:NNNN Connecting to Client bareos-fd at 192.168.1.50:9102 failed.
 ERR=No route to host
 ```
 
@@ -406,11 +406,11 @@ Authorization in Bareos is mutual: the Director authenticates to the File Daemon
 
 **Cause 1: Password mismatch.**
 
-The most common cause. The password in `/etc/bareos/bareos-dir.d/client/bareos-client1.conf` does not match the password in `/etc/bareos/bareos-fd.d/director/bareos-dir.conf`.
+The most common cause. The password in `/etc/bareos/bareos-dir.d/client/bareos-fd.conf` does not match the password in `/etc/bareos/bareos-fd.d/director/bareos-dir.conf`.
 
 ```bash
 # Check the password on the Director side
-podman exec bareos-director grep -A5 "Client {" /etc/bareos/bareos-dir.d/client/bareos-client1.conf
+podman exec bareos-director grep -A5 "Client {" /etc/bareos/bareos-dir.d/client/bareos-fd.conf
 
 # Check the password on the FD side
 podman exec bareos-fd grep -A5 "Director {" /etc/bareos/bareos-fd.d/director/bareos-dir.conf
@@ -422,7 +422,7 @@ The `Name` field in the Director's `Client` resource must match the `Name` field
 
 ```bash
 # Director's view of the client name
-podman exec bareos-director grep "Name" /etc/bareos/bareos-dir.d/client/bareos-client1.conf
+podman exec bareos-director grep "Name" /etc/bareos/bareos-dir.d/client/bareos-fd.conf
 
 # FD's own name
 podman exec bareos-fd grep "Name" /etc/bareos/bareos-fd.d/fileDaemon/bareos-fd.conf
@@ -632,9 +632,9 @@ These limits exist to prevent the Storage Daemon from being overwhelmed and to a
 Increase the `Maximum Concurrent Jobs` value in the relevant resource. Be conservative — more concurrent jobs means more simultaneous I/O, which can make all jobs slower.
 
 ```
-# In /etc/bareos/bareos-dir.d/client/bareos-client1.conf
+# In /etc/bareos/bareos-dir.d/client/bareos-fd.conf
 Client {
-  Name = bareos-client1
+  Name = bareos-fd
   ...
   Maximum Concurrent Jobs = 5    # increase from default of 1
 }
@@ -684,7 +684,7 @@ journalctl --user -u bareos-fd -n 50 --no-pager
 
 # Test TCP connectivity from the Director container to the FD
 XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
-  nc -zv bareos-client1 9102
+  nc -zv bareos-fd 9102
 ```
 
 ### Waiting for Mount
@@ -863,9 +863,10 @@ XDG_RUNTIME_DIR=/run/user/1001 podman inspect bareos-director \
   --format '{{.State.ExitCode}} {{.State.Error}}'
 
 # Run the container interactively to see startup errors
+# (Chapter 6 bind-mounts host /etc/bareos/bareos-dir.d — not a named config volume)
 XDG_RUNTIME_DIR=/run/user/1001 podman run --rm -it \
   --name bareos-director-debug \
-  -v bareos-director-config:/etc/bareos:Z \
+  -v /etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z \
   docker.io/bareos/bareos-director:24 bash
 ```
 
@@ -964,14 +965,14 @@ When Podman runs a container as a non-root user (rootless), the UIDs inside the 
 The Bareos daemon processes inside containers typically run as UID 0 or a specific UID. Files written by these processes will be owned by the mapped host UID. If you inspect a named volume on the host, you will see files owned by these sub-UIDs:
 
 ```bash
-# Inspect files in a named volume
-ls -la ~/.local/share/containers/storage/volumes/bareos-director-config/_data/
+# Inspect files in a named volume (example: MariaDB catalog data)
+ls -la ~/.local/share/containers/storage/volumes/bareos-db-data/_data/
 
-# Output might show:
-# -rw-r--r-- 1 100000 100000  ... bareos-dir.conf
+# Output might show for mysql UID 999 inside the container:
+# -rw-r----- 1 100998 100998  ... ibdata1
 ```
 
-This is normal and expected. Do not `chown` these files to the `bareos` user — doing so will break the container's ability to read them.
+Director config itself lives on the host at `/etc/bareos/bareos-dir.d` (Chapter 6), not in a named volume. Named-volume ownership by subordinate UIDs is normal — do not blindly `chown` to `bareos` unless you understand the UID map (Chapter 13).
 
 ### Restores Landing as Wrong User
 
@@ -1318,7 +1319,7 @@ If backup traffic is saturating the network, Bareos supports bandwidth limiting:
 # Maximum Bandwidth Per Job = 50 mb/s
 
 # Or in bconsole, set it for a running job:
-*setbandwidth client=bareos-client1 limit=50000
+*setbandwidth client=bareos-fd limit=50000
 ```
 
 ---
@@ -1352,7 +1353,7 @@ When Bareos crashes or is forcefully killed mid-job, the catalog retains the job
 *purge jobs jobid=42
 
 # After canceling, restart the backup normally
-*run job=BackupClient1 level=Full yes
+*run job=BackupLocalHost level=Full yes
 ```
 
 ### Check for Stale Lock Files
@@ -1406,7 +1407,7 @@ When a job is killed (container killed, host rebooted, OOM killer) mid-execution
 *truncate storage=File volume=Vol-0001
 
 # Step 5: Run a new Full backup to ensure all data is protected
-*run job=BackupClient1 level=Full yes
+*run job=BackupLocalHost level=Full yes
 ```
 
 ### Preventing Data Loss After a Kill
@@ -1531,10 +1532,10 @@ If the migration script itself fails (e.g., due to a DB corruption), restore fro
 
 ```
 # Estimate how many files and bytes a backup would involve without running it
-*estimate job=BackupClient1 level=Full
+*estimate job=BackupLocalHost level=Full
 
 # More detailed listing
-*estimate job=BackupClient1 level=Full listing
+*estimate job=BackupLocalHost level=Full listing
 ```
 
 ### query — Run Catalog Queries
@@ -1547,7 +1548,7 @@ If the migration script itself fails (e.g., due to a DB corruption), restore fro
 ### run — Start Jobs
 
 ```
-*run job=BackupClient1 level=Full yes      # Run a Full backup immediately
+*run job=BackupLocalHost level=Full yes      # Run a Full backup immediately
 *run job=RestoreFiles yes                   # Run a restore job
 ```
 
@@ -1667,10 +1668,8 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 **Cause:** The password typed at login does not match the `Password` in the Console resource (`webui-admin.conf`) in the Director config.
 
 ```bash
-# Check the Console resource password
-DIR_VOL=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman volume inspect bareos-director-config --format "{{.Mountpoint}}")
-grep -A5 "Console {" "${DIR_VOL}/bareos-dir.d/console/webui-admin.conf"
+# Check the Console resource password (host path from Chapter 6)
+grep -A5 "Console {" /etc/bareos/bareos-dir.d/console/webui-admin.conf
 ```
 
 The `Name` field in the Console resource is the login **username**. Make sure you are using `webui-admin` as the username (not `admin` or `bareos`).
@@ -1679,7 +1678,7 @@ If the Console resource is missing entirely:
 
 ```bash
 # Recreate it — see Chapter 6 Section 12 for the full block
-cat > "${DIR_VOL}/bareos-dir.d/console/webui-admin.conf" << 'EOF'
+sudo -u bareos tee /etc/bareos/bareos-dir.d/console/webui-admin.conf > /dev/null << 'EOF'
 Console {
   Name     = "webui-admin"
   Password = "your_strong_password_here"
@@ -1816,25 +1815,22 @@ In this lab, you will intentionally introduce a password mismatch between the Di
 ### Step 1: Record the Current Password
 
 ```bash
-# Find the current FD client password in the Director's config
-XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
-  grep -A 10 "Client {" /etc/bareos/bareos-dir.d/client/bareos-client1.conf | grep Password
+# Find the current FD client password on the host (config is bind-mounted read-only)
+grep -A 10 "Client {" /etc/bareos/bareos-dir.d/client/bareos-fd.conf | grep Password
 ```
 
-Note the password value. You will restore it at the end.
+Note the password value. You will restore it from the `.bak` copy in Step 7.
 
 ### Step 2: Introduce a Wrong Password
 
 Edit the Director-side client configuration to use a deliberately wrong password:
 
 ```bash
-# Edit the Director's client config (inside the named volume)
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bash
-
-# Inside the container:
-vi /etc/bareos/bareos-dir.d/client/bareos-client1.conf
-# Change the Password field to "WRONGPASSWORD"
-exit
+# Director config is bind-mounted read-only from the host — edit on the host
+sudo -u bareos cp -a /etc/bareos/bareos-dir.d/client/bareos-fd.conf \
+  /etc/bareos/bareos-dir.d/client/bareos-fd.conf.bak
+sudo -u bareos sed -i 's/Password = .*/Password = "WRONGPASSWORD"/' \
+  /etc/bareos/bareos-dir.d/client/bareos-fd.conf
 ```
 
 ### Step 3: Reload the Director
@@ -1846,9 +1842,9 @@ XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director bconsole <<< "reload"
 ### Step 4: Trigger a Backup and Observe the Error
 
 ```bash
-# Run a backup (it should fail)
+# Run a backup (it should fail) — course job name from Chapter 7
 XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole <<EOF
-run job=BackupClient1 level=Full yes
+run job=BackupLocalHost level=Full yes
 wait
 messages
 quit
@@ -1886,16 +1882,16 @@ journalctl --user -u bareos-fd -n 30 --no-pager | grep -i "auth\|password\|error
 ### Step 7: Restore the Correct Password
 
 ```bash
-# Edit the config back to the original password
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bash -c \
-  "vi /etc/bareos/bareos-dir.d/client/bareos-client1.conf"
+# Restore the original client config on the host
+sudo -u bareos mv /etc/bareos/bareos-dir.d/client/bareos-fd.conf.bak \
+  /etc/bareos/bareos-dir.d/client/bareos-fd.conf
 
 # Reload
 XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director bconsole <<< "reload"
 
 # Verify with a successful backup
 XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole <<EOF
-run job=BackupClient1 level=Full yes
+run job=BackupLocalHost level=Full yes
 wait
 messages
 quit
@@ -2107,7 +2103,7 @@ XDG_RUNTIME_DIR=/run/user/1001 systemctl --user stop bareos-director
 XDG_RUNTIME_DIR=/run/user/1001 podman run --rm \
   --env-file /home/bareos/.config/bareos/db.env \
   --network bareos \
-  -v bareos-director-config:/etc/bareos:ro,Z \
+  -v /etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z \
   docker.io/bareos/bareos-director:24 \
   dbcheck -c /etc/bareos/bareos-dir.conf -v 2>&1 | head -100
 
@@ -2115,7 +2111,7 @@ XDG_RUNTIME_DIR=/run/user/1001 podman run --rm \
 XDG_RUNTIME_DIR=/run/user/1001 podman run --rm \
   --env-file /home/bareos/.config/bareos/db.env \
   --network bareos \
-  -v bareos-director-config:/etc/bareos:ro,Z \
+  -v /etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z \
   docker.io/bareos/bareos-director:24 \
   dbcheck -c /etc/bareos/bareos-dir.conf -b -f -v
 ```

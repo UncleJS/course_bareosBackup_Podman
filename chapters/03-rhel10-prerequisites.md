@@ -823,8 +823,22 @@ sudo tee /etc/firewalld/services/bareos.xml > /dev/null <<'FWEOF'
 FWEOF
 
 sudo firewall-cmd --reload
+# Assign the primary NIC to internal (replace ens3 if your interface differs —
+# check with: nmcli -t -f DEVICE,TYPE device | grep ethernet).
+PRIMARY_IF=$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null \
+  | awk -F: '$2=="ethernet"{print $1; exit}')
+PRIMARY_IF=${PRIMARY_IF:-ens3}
+sudo firewall-cmd --permanent --zone=internal --add-interface="${PRIMARY_IF}" || true
 sudo firewall-cmd --permanent --zone=internal --add-service=bareos
 sudo firewall-cmd --reload
+
+echo "=== Step 10b: Backup storage directory ==="
+# Full disk partition/mount is in Section 7. For a lab VM with enough space on
+# the root filesystem, creating the directory here is enough for Lab 3-2.
+# If you already mounted a dedicated disk at /srv/bareos-storage, skip mkdir.
+sudo mkdir -p /srv/bareos-storage/{volumes,archive}
+sudo chown -R bareos:bareos /srv/bareos-storage
+sudo chmod 750 /srv/bareos-storage /srv/bareos-storage/{volumes,archive}
 
 echo "=== Step 11: Kernel tuning ==="
 sudo tee /etc/sysctl.d/90-bareos.conf > /dev/null <<'SYSCTL'
@@ -904,11 +918,18 @@ SEL=$(getenforce)
 # 3. Firewalld active
 systemctl is-active firewalld >/dev/null 2>&1 && check "firewalld is running" PASS || check "firewalld is running" FAIL
 
-# 4. Bareos ports open
-FW_OUT=$(sudo firewall-cmd --zone=internal --list-ports 2>/dev/null)
-echo "$FW_OUT" | grep -q "9101/tcp" && check "Port 9101 open in firewall" PASS || check "Port 9101 open in firewall" FAIL
-echo "$FW_OUT" | grep -q "9102/tcp" && check "Port 9102 open in firewall" PASS || check "Port 9102 open in firewall" FAIL
-echo "$FW_OUT" | grep -q "9103/tcp" && check "Port 9103 open in firewall" PASS || check "Port 9103 open in firewall" FAIL
+# 4. Bareos service in internal zone (ports come from the service, not --list-ports)
+FW_SVC=$(sudo firewall-cmd --zone=internal --list-services 2>/dev/null)
+echo "$FW_SVC" | grep -qw "bareos" && check "bareos service in internal zone" PASS \
+  || check "bareos service in internal zone" FAIL
+# Optional detail: confirm the service definition lists 9101/9102/9103
+FW_INFO=$(sudo firewall-cmd --info-service=bareos 2>/dev/null || true)
+echo "$FW_INFO" | grep -q "9101" && check "bareos service includes 9101" PASS \
+  || check "bareos service includes 9101" FAIL
+echo "$FW_INFO" | grep -q "9102" && check "bareos service includes 9102" PASS \
+  || check "bareos service includes 9102" FAIL
+echo "$FW_INFO" | grep -q "9103" && check "bareos service includes 9103" PASS \
+  || check "bareos service includes 9103" FAIL
 
 # 5. Bareos user exists
 id bareos >/dev/null 2>&1 && check "bareos user exists" PASS || check "bareos user exists" FAIL
@@ -920,8 +941,13 @@ grep -q bareos /etc/subgid && check "subgid configured for bareos" PASS || check
 # 7. Lingering enabled
 loginctl show-user bareos 2>/dev/null | grep -q "Linger=yes" && check "Lingering enabled for bareos" PASS || check "Lingering enabled for bareos" FAIL
 
-# 8. Storage mount exists
-mountpoint -q /srv/bareos-storage && check "/srv/bareos-storage is mounted" PASS || check "/srv/bareos-storage is mounted" FAIL
+# 8. Storage path exists (dedicated disk mount from §7 is preferred in production;
+# lab VMs may use a directory on the root filesystem created in Lab 3-1)
+if mountpoint -q /srv/bareos-storage 2>/dev/null || [[ -d /srv/bareos-storage/volumes ]]; then
+  check "/srv/bareos-storage ready (mounted or directory present)" PASS
+else
+  check "/srv/bareos-storage ready (mounted or directory present)" FAIL
+fi
 
 # 9. Storage ownership
 OWNER=$(stat -c '%U' /srv/bareos-storage 2>/dev/null)

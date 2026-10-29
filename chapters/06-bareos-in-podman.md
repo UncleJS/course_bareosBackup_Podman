@@ -115,8 +115,9 @@ sudo chown -R bareos:bareos /etc/bareos
 sudo chmod -R 750 /etc/bareos
 sudo chmod -R 640 /etc/bareos/bareos-dir.d /etc/bareos/bareos-sd.d
 
-# Set correct SELinux context for Bareos config
-sudo semanage fcontext -a -t bareos_etc_t "/etc/bareos(/.*)?"
+# Bind-mounted into containers with :Z/:z — use container_file_t (not bareos_etc_t,
+# which is for a host RPM Bareos install, not this container layout).
+sudo semanage fcontext -a -t container_file_t "/etc/bareos(/.*)?"
 sudo restorecon -Rv /etc/bareos
 
 # Create the env file directory for the bareos user
@@ -146,12 +147,13 @@ sudo -u bareos tee /home/bareos/.config/bareos/bareos.env > /dev/null <<'EOF'
 BAREOS_SD_PASSWORD=CHANGEME_SD_PASSWORD
 BAREOS_FD_PASSWORD=CHANGEME_FD_PASSWORD
 BAREOS_DIRECTOR_PASSWORD=CHANGEME_DIRECTOR_PASSWORD
-BAREOS_MONITOR_PASSWORD=CHANGEME_MONITOR_PASSWORD
 EOF
 sudo chmod 600 /home/bareos/.config/bareos/bareos.env
 ```
 
 > **Security**: Replace all `CHANGEME_*` values with strong random passwords in the next section. Never use these placeholder values.
+>
+> **Important:** `EnvironmentFile=` injects variables into the **container process environment** (MariaDB, optional hook scripts). Bareos **does not** expand shell environment variables inside `.conf` files. Every `Password =` / `DBPassword =` line below must be filled with the **same literal string** you put in `db.env` / `bareos.env`.
 
 ---
 
@@ -177,14 +179,21 @@ openssl rand -base64 32 | tr -d '=/+' | head -c 32
 # Bareos File Daemon password
 openssl rand -base64 32 | tr -d '=/+' | head -c 32
 
-# Bareos Director/Console password
-openssl rand -base64 32 | tr -d '=/+' | head -c 32
-
-# Bareos Monitor password
+# Bareos Director/Console password (also used for bconsole and WebUI console auth)
 openssl rand -base64 32 | tr -d '=/+' | head -c 32
 ```
 
-Update `/home/bareos/.config/bareos/db.env` and `/home/bareos/.config/bareos/bareos.env` with the generated values.
+Update `/home/bareos/.config/bareos/db.env` and `/home/bareos/.config/bareos/bareos.env` with the generated values, then copy the **same** values into every Bareos config file that still shows `CHANGEME_*` (Bareos conf files do not read the env files):
+
+| Secret | Put in env file | Also put the same literal in |
+|---|---|---|
+| MariaDB root | `db.env` → `MARIADB_ROOT_PASSWORD` | (container only; hooks in Ch 10 also need it in the FD — see FD `EnvironmentFile`) |
+| MariaDB bareos user | `db.env` → `MARIADB_PASSWORD` | `bareos-dir.d/catalog/MyCatalog.conf` (`DBPassword`); schema init `--env db_password=…` |
+| SD password | `bareos.env` → `BAREOS_SD_PASSWORD` | `bareos-sd.d/director/bareos-dir.conf`; `bareos-dir.d/storage/File.conf` |
+| FD password | `bareos.env` → `BAREOS_FD_PASSWORD` | FD volume `bareos-fd.d/director/bareos-dir.conf`; `bareos-dir.d/client/bareos-fd.conf` |
+| Director / console | `bareos.env` → `BAREOS_DIRECTOR_PASSWORD` | `bareos-dir.d/director/bareos-dir.conf`; `console/admin-console.conf`; host `/etc/bareos/bconsole.conf`; WebUI console resource |
+
+Miss one place and you get `Authorization key rejected` or a silent catalog connect failure.
 
 ---
 
@@ -380,8 +389,9 @@ Volume=bareos-working.volume:/var/lib/bareos
 # Connect to the Bareos internal network
 Network=bareos.network
 
-# Publish Storage Daemon port
-PublishPort=9103:9103
+# Publish Storage Daemon port (localhost-only until Chapter 15 TLS;
+# remote FDs need a reachable address — see Chapter 21)
+PublishPort=127.0.0.1:9103:9103
 
 # Resource limits
 Memory=512m
@@ -510,8 +520,8 @@ Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,z
 # Connect to the Bareos internal network
 Network=bareos.network
 
-# Expose Director port (for bconsole connections)
-PublishPort=9101:9101
+# Expose Director port for host bconsole (localhost-only until Chapter 15 TLS)
+PublishPort=127.0.0.1:9101:9101
 
 # The Director needs to resolve the SD and DB by container name
 # (handled automatically by Quadlet network DNS)
@@ -537,7 +547,7 @@ EOF
 
 ### Director Configuration Files
 
-These are the core Director configuration files. They reference passwords from environment variables set via `EnvironmentFile`.
+These are the core Director configuration files. Replace every `CHANGEME_*` placeholder with the **literal** password from the matching env file (see the checklist in Section 3). The Director Quadlet `EnvironmentFile=` lines do **not** substitute into these `.conf` files.
 
 **Director identity:**
 
@@ -823,6 +833,13 @@ Volume=/:/hostfs:ro
 # `podman exec` against containers running on the host.
 Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock
 
+# ── Secrets for hook scripts (Chapter 10/14) ───────────────────────
+# MARIADB_ROOT_PASSWORD and related vars must be in the FD environment
+# so ClientRunBeforeJob dump scripts can authenticate. This expands the
+# FD blast radius — treat db.env as highly sensitive (see Chapter 10).
+EnvironmentFile=/home/bareos/.config/bareos/db.env
+EnvironmentFile=/home/bareos/.config/bareos/bareos.env
+
 # ── SELinux ───────────────────────────────────────────────────────
 # Relabeling / is impossible, and a confined container_t process cannot
 # read host files that carry arbitrary labels. Disabling label
@@ -851,6 +868,8 @@ EOF
 >
 > **Production alternative:** If you prefer a host RPM File Daemon with `CAP_DAC_READ_SEARCH` (no `/hostfs`, no `SecurityLabelDisable`) while keeping Director/SD/DB/WebUI in containers, see [Chapter 21](./21-host-file-daemon.md).
 
+> **Threat model (container FD):** This unit combines (1) `SecurityLabelDisable=true`, (2) a read-only `/hostfs` mount of the entire host, (3) the rootless Podman API socket, and (4) from Chapter 10 onward, `db.env` with `MARIADB_ROOT_PASSWORD`. Compromise of the FD process is therefore close to full control of the `bareos` user's containers and readable host files. Treat the FD image, hooks, and env files as high-value secrets; prefer Chapter 21's host FD when you need SELinux confinement on the backup agent.
+
 ### Start the File Daemon
 
 ```bash
@@ -858,9 +877,11 @@ EOF
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   systemctl --user daemon-reload
 
-# Enable (auto-start at boot) and start immediately
+# Start immediately. Boot-start comes from [Install] WantedBy=default.target in the
+# .container file after daemon-reload (with linger enabled) — do not use
+# `systemctl --user enable` on Quadlet-generated units (see Chapter 4).
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  systemctl --user enable --now bareos-fd.service
+  systemctl --user start bareos-fd.service
 
 # Verify it is running
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
@@ -963,10 +984,10 @@ sleep 5
 sudo -u bareos XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR} \
   systemctl --user start bareos-fd.service
 
-# Enable all services to start at boot
-sudo -u bareos XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR} \
-  systemctl --user enable bareos-db.service bareos-storage.service \
-  bareos-director.service bareos-fd.service
+# Boot-start: each .container file already has [Install] WantedBy=default.target.
+# After daemon-reload (above) and with linger enabled for the bareos user, those
+# units start at boot. Do not run `systemctl --user enable` on Quadlet-generated
+# services — it fails with "Unit file does not exist" (Chapter 4).
 ```
 
 ### Verifying Container Status
@@ -980,11 +1001,13 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 Expected output:
 ```
 NAMES              STATUS                   PORTS
-bareos-director    Up 2 minutes             0.0.0.0:9101->9101/tcp
-bareos-storage     Up 3 minutes             0.0.0.0:9103->9103/tcp
-bareos-fd          Up 1 minute
+bareos-director    Up 2 minutes             127.0.0.1:9101->9101/tcp
+bareos-storage     Up 3 minutes             127.0.0.1:9103->9103/tcp
+bareos-fd          Up 1 minute              127.0.0.1:9102->9102/tcp
 bareos-db          Up 4 minutes (healthy)   127.0.0.1:3306->3306/tcp
 ```
+
+> **Lab vs production:** Publishing only on `127.0.0.1` keeps Director/SD/FD ports off the LAN until you enable TLS in Chapter 15. Containers still reach each other by name on `bareos.network`. For a remote host FD, publish selectively or terminate TLS at a reverse proxy — do not copy the early-lab `TLS Enable = No` config onto a reachable NIC.
 
 ### Checking Container Logs
 
@@ -1264,9 +1287,9 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   systemctl --user daemon-reload
 
-# Enable and start
+# Start (boot-start via [Install] WantedBy=default.target — no enable)
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  systemctl --user enable --now bareos-webui
+  systemctl --user start bareos-webui
 
 # Verify the container is running
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
@@ -1378,10 +1401,8 @@ echo "Starting File Daemon..."
 bareos_run systemctl --user start bareos-fd.service
 sleep 5
 
-# Step 9: Enable all services
-bareos_run systemctl --user enable \
-  bareos-db.service bareos-storage.service \
-  bareos-director.service bareos-webui.service bareos-fd.service
+# Step 9: Boot-start is already wired by [Install] WantedBy=default.target in
+# each .container file (after daemon-reload + linger). No systemctl enable.
 
 # Step 10: Verify
 echo ""
@@ -1468,14 +1489,14 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 In this chapter you deployed the complete Bareos stack as rootless Podman containers:
 
 - **Architecture**: Director + Storage Daemon + MariaDB + File Daemon + WebUI — all five components running as rootless Podman containers on a dedicated Quadlet-managed bridge network.
-- **Secrets management**: Passwords stored in mode-600 environment files, never in Quadlet unit files. All placeholder values must be replaced with generated random passwords.
+- **Secrets management**: Passwords live in mode-600 env files for the container runtime (MariaDB, hooks) and as **matching literals** in Bareos `.conf` files — Bareos does not expand env vars in conf. Use the Section 3 checklist so every daemon agrees.
 - **MariaDB catalog**: Dedicated named volume for data persistence; health check ensures Director starts only when DB is ready.
 - **Storage Daemon**: Bind-mounted to `/srv/bareos-storage/volumes` on the dedicated backup disk, using `:z` SELinux label for shared access.
 - **Director**: Reads `/etc/bareos/bareos-dir.d/` as a read-only bind mount. Connects to SD and DB by container name (DNS-resolved within the Quadlet network).
 - **File Daemon**: Deployed as `bareos-fd` container (`bareos-client:24` image) on the Quadlet network. The host filesystem is bind-mounted at `/hostfs` (read-only) so FileSet paths use the `/hostfs/` prefix. The Podman socket is mounted so hook scripts can manage containers from within the FD. For the production alternative — host RPM File Daemon with `CAP_DAC_READ_SEARCH`, while Director/SD/DB/WebUI stay containerized — see [Chapter 21](./21-host-file-daemon.md).
 - **Catalog initialization**: Run `create_bareos_database` and `grant_bareos_privileges` scripts in a temporary Director container before the Director starts.
 - **WebUI**: Deployed as `bareos-webui` container (port 9100), authenticated to the Director via a dedicated `Console` resource with the `webui-admin` profile. Configuration in the `bareos-webui-config` named volume.
-- **All services enabled**: `systemctl --user enable` ensures all containers start at boot via lingering.
+- **Boot-start**: `[Install] WantedBy=default.target` in each `.container` file plus linger — not `systemctl --user enable` on Quadlet units.
 - **bconsole**: Installed via RPM, connects to the Director on port 9101 — essential for scripting and diagnostics.
 
 ---

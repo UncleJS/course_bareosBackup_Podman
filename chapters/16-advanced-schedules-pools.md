@@ -467,15 +467,9 @@ Pool {
 
 ## 6. Multiple Pool Strategy: Daily, Weekly, Monthly, Yearly
 
-Here is a complete four-pool configuration suitable for a production GFS rotation. All files live at `/home/bareos/.config/containers/systemd/` for Quadlet, and Bareos Director configuration goes inside the Director container's configuration volume.
+Here is a complete four-pool configuration suitable for a production GFS rotation. Quadlet units live under `/home/bareos/.config/containers/systemd/`. Director configuration is edited on the **host** at `/etc/bareos/bareos-dir.d/` (Chapter 6 bind-mounts that tree read-only into the Director container).
 
-The Bareos Director container mounts its configuration from a named volume. You can find the actual data path at:
-
-```
-~/.local/share/containers/storage/volumes/bareos-director-config/_data/
-```
-
-Create a file `/home/bareos/.config/containers/systemd/bareos-director-config/_data/bareos-dir.d/pool/gfs-pools.conf` (or whichever path maps into your container's `/etc/bareos/bareos-dir.d/pool/` directory).
+Create `/etc/bareos/bareos-dir.d/pool/gfs-pools.conf` as the `bareos` user.
 
 ### Pool Configurations
 
@@ -1239,23 +1233,14 @@ FileSet {
 
     # ── File/Directory Specifications ─────────────────────────────
 
-    File = /etc
-    # Back up the entire /etc directory and all subdirectories.
-
-    File = /home
-    # All home directories.
-
-    File = /var/log
-    # System logs.
-
-    File = /var/lib/bareos
-    # Bareos state files (catalog bootstrap, etc.).
-
-    File = /root
-    # Root's home directory.
-
-    File = /usr/local
-    # Locally installed software.
+    # Containerized FD (Chapters 6–20): prefix host paths with /hostfs.
+    # Host FD (Chapter 21): drop the /hostfs prefix.
+    File = /hostfs/etc
+    File = /hostfs/home
+    File = /hostfs/var/log
+    File = /hostfs/var/lib/bareos
+    File = /hostfs/root
+    File = /hostfs/usr/local
 
     # ── Wildcard and Regex Patterns in Include ────────────────────
     # Note: Wildcards in File specifications match differently than
@@ -1263,49 +1248,27 @@ FileSet {
   }
 
   Exclude {
-    # Paths to exclude from backup entirely.
-    # These are matched against the full absolute path.
+    # Paths to exclude — use /hostfs when the FD is containerized (Chapter 6).
 
-    File = /proc
-    # Kernel process filesystem — not real files.
+    File = /hostfs/proc
+    File = /hostfs/sys
+    File = /hostfs/dev
+    File = /hostfs/run
+    File = /hostfs/tmp
+    File = /hostfs/var/tmp
+    File = /hostfs/var/cache
+    File = /hostfs/var/lib/bareos/storage
+    File = /hostfs/mnt
+    File = /hostfs/media
+    File = /hostfs/lost+found
 
-    File = /sys
-    # Kernel sysfs — not real files.
-
-    File = /dev
-    # Device files — not real files.
-
-    File = /run
-    # Runtime files (PIDs, sockets) — volatile and not useful to back up.
-
-    File = /tmp
-    # Temporary files — no value in backing up.
-
-    File = /var/tmp
-    File = /var/cache
-
-    File = /var/lib/bareos/storage
-    # Don't back up the backup storage directory — this would be circular.
-
-    File = /mnt
-    File = /media
-    # Mount points for external/removable media.
-
-    File = /lost+found
-
-    # Excludes using wildcards (Options blocks inside Exclude)
     Options {
       Exclude         = yes
-      WildDir         = /home/*/.cache
-      # Exclude all .cache directories inside any home directory.
-      WildDir         = /home/*/.local/share/Trash
-      # Exclude trash directories.
-      WildFile        = /home/*/.bash_history
-      # Exclude shell history files (changes every login, low value).
+      WildDir         = /hostfs/home/*/.cache
+      WildDir         = /hostfs/home/*/.local/share/Trash
+      WildFile        = /hostfs/home/*/.bash_history
       RegexFile       = ".*\.pyc$"
-      # Exclude compiled Python bytecode files (regenerated automatically).
       RegexFile       = ".*node_modules.*"
-      # Exclude Node.js module directories (large and reproducible).
     }
   }
 }
@@ -1461,11 +1424,11 @@ ls -laZ /srv/bareos-storage/volumes/
 ### Step 2: Write the Pool Configuration
 
 ```bash
-# Enter the Director config volume (accessible as bareos user)
-BAREOS_CONFIG="$HOME/.local/share/containers/storage/volumes/bareos-director-config/_data"
+# Host path from Chapter 6 (not a named director-config volume)
+BAREOS_CONFIG="/etc/bareos"
 
 # Write the GFS pools config
-cat > "${BAREOS_CONFIG}/bareos-dir.d/pool/gfs-pools.conf" << 'POOLCONF'
+sudo -u bareos tee "${BAREOS_CONFIG}/bareos-dir.d/pool/gfs-pools.conf" > /dev/null << 'POOLCONF'
 Pool {
   Name                = "Daily"
   Pool Type           = Backup
@@ -1528,7 +1491,7 @@ POOLCONF
 ### Step 3: Write the Schedule Configuration
 
 ```bash
-cat > "${BAREOS_CONFIG}/bareos-dir.d/schedule/gfs-schedule.conf" << 'SCHEDCONF'
+sudo -u bareos tee "${BAREOS_CONFIG}/bareos-dir.d/schedule/gfs-schedule.conf" > /dev/null << 'SCHEDCONF'
 Schedule {
   Name = "GFS-Daily"
   Run = Level=Incremental Pool=Daily Mon-Sat at 23:00
@@ -1554,7 +1517,7 @@ SCHEDCONF
 ### Step 4: Write the Job Configurations
 
 ```bash
-cat > "${BAREOS_CONFIG}/bareos-dir.d/job/backup-gfs.conf" << 'JOBCONF'
+sudo -u bareos tee "${BAREOS_CONFIG}/bareos-dir.d/job/backup-gfs.conf" > /dev/null << 'JOBCONF'
 Job {
   Name            = "Backup-Linux-Daily"
   Type            = Backup
@@ -1685,9 +1648,9 @@ XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole
 ### Step 2: Add the Virtual Full Job
 
 ```bash
-BAREOS_CONFIG="$HOME/.local/share/containers/storage/volumes/bareos-director-config/_data"
+BAREOS_CONFIG="/etc/bareos"
 
-cat >> "${BAREOS_CONFIG}/bareos-dir.d/job/backup-gfs.conf" << 'VFJOB'
+sudo -u bareos tee -a "${BAREOS_CONFIG}/bareos-dir.d/job/backup-gfs.conf" > /dev/null << 'VFJOB'
 
 Job {
   Name            = "VirtualFull-Linux"
@@ -1733,8 +1696,10 @@ Watch the job log. You will NOT see a "Connecting to Client" message — this co
 ```
 Start Backup JobId 4, Job=VirtualFull-Linux...
 Using Device "FileStorage" to write.
-Consolidating the Full + Incrementals from pools "Monthly"/"Daily" into pool "Weekly"
+Consolidating prior Full + Incrementals into the Virtual Full target pool
 ```
+
+> **Verify on your stack:** Virtual Full behavior is sensitive to job chain and pool settings. Confirm against Bareos 24 docs that your Prior Job / pool selection matches what you expect before relying on a cross-pool merge in production. If the job fails selecting candidates, keep Full and Incrementals in one pool first, then introduce multi-pool GFS after the Virtual Full succeeds.
 
 ### Step 4: Verify in bconsole
 
@@ -1767,9 +1732,9 @@ This lab sets up a Copy Job that duplicates the Weekly pool to a second pool cal
 ### Step 1: Add the Offsite Pool
 
 ```bash
-BAREOS_CONFIG="$HOME/.local/share/containers/storage/volumes/bareos-director-config/_data"
+BAREOS_CONFIG="/etc/bareos"
 
-cat >> "${BAREOS_CONFIG}/bareos-dir.d/pool/gfs-pools.conf" << 'OFFSITEPOOL'
+sudo -u bareos tee -a "${BAREOS_CONFIG}/bareos-dir.d/pool/gfs-pools.conf" > /dev/null << 'OFFSITEPOOL'
 
 Pool {
   Name                = "Offsite-Weekly"
@@ -1791,7 +1756,7 @@ OFFSITEPOOL
 ### Step 2: Add the Copy Job
 
 ```bash
-cat >> "${BAREOS_CONFIG}/bareos-dir.d/job/backup-gfs.conf" << 'COPYJOB'
+sudo -u bareos tee -a "${BAREOS_CONFIG}/bareos-dir.d/job/backup-gfs.conf" > /dev/null << 'COPYJOB'
 
 Job {
   Name            = "Copy-Weekly-to-Offsite"
@@ -1809,7 +1774,7 @@ Job {
 }
 COPYJOB
 
-cat >> "${BAREOS_CONFIG}/bareos-dir.d/schedule/gfs-schedule.conf" << 'COPYSCHED'
+sudo -u bareos tee -a "${BAREOS_CONFIG}/bareos-dir.d/schedule/gfs-schedule.conf" > /dev/null << 'COPYSCHED'
 
 Schedule {
   Name = "GFS-Copy"
