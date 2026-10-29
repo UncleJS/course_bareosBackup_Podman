@@ -545,11 +545,11 @@ After restoring volume data from a backup, you need to put it back into the name
 ### Restore to a Temporary Path, Then Import
 
 ```bash
-# Step 1: Restore using bconsole to a temporary location
-bconsole <<'EOF'
+# Step 1: Restore using bconsole to the host-visible staging dir (Ch6 / Ch8)
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'EOF'
 restore client=bareos-fd \
   file=/hostfs/home/bareos/.local/share/containers/storage/volumes/myapp-data/_data \
-  select current all done where=/tmp/volume-restore-temp yes
+  select current all done where=/var/tmp/bareos-restores/volume-restore-temp yes
 wait
 quit
 EOF
@@ -562,7 +562,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman run --rm \
     -v myapp-data:/target:Z \
-    -v /tmp/volume-restore-temp/hostfs/home/bareos/.local/share/containers/storage/volumes/myapp-data/_data:/source:ro,Z \
+    -v /var/tmp/bareos-restores/volume-restore-temp/hostfs/home/bareos/.local/share/containers/storage/volumes/myapp-data/_data:/source:ro,Z \
     docker.io/library/alpine:3.19 sh -c "rm -rf /target/* && cp -a /source/. /target/"
 
 # Step 4: Restart the container
@@ -574,7 +574,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman exec myapp ls /app/data/
 
 # Step 6: Cleanup
-rm -rf /tmp/volume-restore-temp
+rm -rf /var/tmp/bareos-restores/volume-restore-temp
 ```
 
 ### Restore via podman volume import (export strategy)
@@ -582,11 +582,11 @@ rm -rf /tmp/volume-restore-temp
 If you used the `podman volume export` strategy, restore is simpler:
 
 ```bash
-# Restore the archive from Bareos to a temp path
-bconsole <<'EOF'
+# Restore the archive from Bareos to the host-visible staging dir
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'EOF'
 restore client=bareos-fd \
   file=/hostfs/var/lib/bareos/volume-exports/myapp-data.tar \
-  select current all done where=/tmp/volume-tar-restore yes
+  select current all done where=/var/tmp/bareos-restores/volume-tar-restore yes
 wait
 quit
 EOF
@@ -597,13 +597,13 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman stop myapp
 # Import the tar back into the volume
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman volume import myapp-data \
-  /tmp/volume-tar-restore/hostfs/var/lib/bareos/volume-exports/myapp-data.tar
+  /var/tmp/bareos-restores/volume-tar-restore/hostfs/var/lib/bareos/volume-exports/myapp-data.tar
 
 # Restart
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman start myapp
 
 # Cleanup
-rm -rf /tmp/volume-tar-restore
+rm -rf /var/tmp/bareos-restores/volume-tar-restore
 ```
 
 ---
@@ -778,8 +778,8 @@ ls -la "${NEW_VOLUME_PATH}"
 # The catalog path carries the /hostfs prefix, so prepend it to ${VOLUME_PATH}.
 # Note the heredoc terminator is UNQUOTED (BEOF, not 'BEOF') so ${VOLUME_PATH}
 # expands; a single-quoted <<'BEOF' would pass the literal string to bconsole.
-bconsole <<BEOF
-restore client=bareos-fd file=/hostfs${VOLUME_PATH} select current all done where=/tmp/volume-restore-lab yes
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<BEOF
+restore client=bareos-fd file=/hostfs${VOLUME_PATH} select current all done where=/var/tmp/bareos-restores/volume-restore-lab yes
 wait
 messages
 quit
@@ -787,9 +787,9 @@ BEOF
 
 # Step 4: Copy restored data into the volume.
 # The restored tree contains the extra /hostfs level, so it lives under
-# /tmp/volume-restore-lab/hostfs${VOLUME_PATH}.
+# /var/tmp/bareos-restores/volume-restore-lab/hostfs${VOLUME_PATH}.
 sudo cp -a \
-  "/tmp/volume-restore-lab/hostfs${VOLUME_PATH}/." \
+  "/var/tmp/bareos-restores/volume-restore-lab/hostfs${VOLUME_PATH}/." \
   "${NEW_VOLUME_PATH}/"
 
 # Step 5: Fix ownership.
@@ -811,7 +811,7 @@ echo ""
 echo "Restore of named volume complete!"
 
 # Cleanup
-rm -rf /tmp/volume-restore-lab
+rm -rf /var/tmp/bareos-restores/volume-restore-lab
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 podman volume rm testapp-data
 ```
 

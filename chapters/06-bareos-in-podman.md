@@ -45,7 +45,7 @@
   - [Step 2 — Create the WebUI Configuration Volume](#step-2-create-the-webui-configuration-volume)
   - [Step 3 — Write the Quadlet File](#step-3-write-the-quadlet-file)
   - [Step 4 — Start the WebUI and Verify](#step-4-start-the-webui-and-verify)
-- [13. Lab 6-1: Full Deployment Walkthrough](#13-lab-6-1-full-deployment-walkthrough)
+- [13. Lab 6-1: Start-and-Verify Smoke Test](#13-lab-6-1-start-and-verify-smoke-test)
 - [14. Lab 6-2: Verifying Inter-Container Connectivity](#14-lab-6-2-verifying-inter-container-connectivity)
 - [15. Summary](#15-summary)
 
@@ -792,6 +792,14 @@ EOF
 
 ### Quadlet File for the File Daemon
 
+Create the host-visible restore staging directory before first start (Chapter 8 uses `Where=/var/tmp/bareos-restores`):
+
+```bash
+sudo mkdir -p /var/tmp/bareos-restores
+sudo chown bareos:bareos /var/tmp/bareos-restores
+sudo chmod 750 /var/tmp/bareos-restores
+```
+
 ```bash
 sudo -u bareos tee /home/bareos/.config/containers/systemd/bareos-fd.container > /dev/null <<'EOF'
 # bareos-fd.container — Bareos File Daemon (client)
@@ -827,6 +835,15 @@ Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,z
 # Example: to back up /home on the host, use File = /hostfs/home
 # No :z — Podman cannot relabel /, so a relabel request fails startup.
 Volume=/:/hostfs:ro
+
+# ── Writable restore staging (Chapter 8+) ──────────────────────────
+# /hostfs is read-only, so test restores cannot write there. This
+# bind-mount gives the FD a host-visible destination for Where=.
+# Create on the host before first start:
+#   sudo mkdir -p /var/tmp/bareos-restores
+#   sudo chown bareos:bareos /var/tmp/bareos-restores
+#   sudo chmod 750 /var/tmp/bareos-restores
+Volume=/var/tmp/bareos-restores:/var/tmp/bareos-restores:z
 
 # ── Podman socket ─────────────────────────────────────────────────
 # Allows ClientRunBeforeJob scripts (Chapter 10) to call
@@ -1089,7 +1106,7 @@ Storage Daemon bareos-sd is connected at bareos-storage:9103
 
 *status client=bareos-fd
 
-Connecting to Client bareos-fd at 127.0.0.1:9102
+Connecting to Client bareos-fd at bareos-fd:9102
 ...
 ```
 
@@ -1169,9 +1186,11 @@ Profile {
 EOF
 fi
 
-# Reload the Director to pick up the new Console resource
-sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
-  podman exec bareos-director bconsole <<< "reload"
+# Reload the Director to pick up the new Console resource.
+# Use the host bconsole (Chapter 6 §11 installs /etc/bareos/bconsole.conf).
+# The Director container does not mount that conf, so in-container bconsole
+# often lacks matching credentials — prefer host bconsole for reload.
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< "reload"
 ```
 
 ### Step 2 — Create the WebUI Configuration Volume
@@ -1317,15 +1336,15 @@ You should see the Bareos WebUI dashboard. If your Director has no jobs yet, the
 
 [↑ Back to Table of Contents](#table-of-contents)
 
-## 13. Lab 6-1: Full Deployment Walkthrough
+## 13. Lab 6-1: Start-and-Verify Smoke Test
 
-This lab consolidates all steps into a sequential deployment script. Use this when deploying on a fresh system.
+> **Scope:** This lab is a **smoke test**, not a from-scratch installer. Complete **Sections 2–12 first** so the following already exist on the host: Quadlet units under `/home/bareos/.config/containers/systemd/`, env files (`bareos.env`, `db.env`), `/etc/bareos/bareos-dir.d` / `bareos-sd.d` / scripts, WebUI console password resources, `/srv/bareos-storage/volumes`, and `/var/tmp/bareos-restores` (restore staging). Chapter 3 must already have created the `bareos` user with linger. If any of those are missing, go back — do not expect this script alone to deploy Bareos.
 
 ```bash
 #!/bin/bash
-# lab-06-deploy-bareos.sh
-# Full Bareos-in-Podman deployment script (including WebUI)
-# Run as root on a prepared RHEL 10 host (see Chapter 3)
+# lab-06-smoke-test.sh
+# Start units created in Sections 2–12 and verify connectivity (including WebUI).
+# Run as root on a prepared RHEL 10 host (see Chapter 3 + this chapter's earlier sections).
 
 set -euo pipefail
 
@@ -1337,9 +1356,25 @@ bareos_run() {
   sudo -u "${BAREOS_USER}" XDG_RUNTIME_DIR="${BAREOS_XDG}" "$@"
 }
 
-echo "=== Deploying Bareos in Podman ==="
+echo "=== Bareos-in-Podman smoke test (requires Sections 2–12 artifacts) ==="
 
-# Step 1: Pull images
+# Preflight: refuse to continue if Quadlets / env / staging are missing
+for f in \
+  /home/bareos/.config/containers/systemd/bareos-db.container \
+  /home/bareos/.config/containers/systemd/bareos-director.container \
+  /home/bareos/.config/bareos/bareos.env \
+  /home/bareos/.config/bareos/db.env \
+  /etc/bareos/bareos-dir.d \
+  /var/tmp/bareos-restores
+do
+  if [[ ! -e "${f}" ]]; then
+    echo "ERROR: missing required path ${f}"
+    echo "Complete Sections 2–12 (and create restore staging) before this lab."
+    exit 1
+  fi
+done
+
+# Step 1: Pull images (idempotent)
 echo "Pulling container images..."
 bareos_run podman pull docker.io/bareos/bareos-director:24
 bareos_run podman pull docker.io/bareos/bareos-storage:24
@@ -1365,10 +1400,11 @@ for i in $(seq 1 12); do
   sleep 5
 done
 
-# Step 4: Initialize catalog schema
+# Step 4: Initialize catalog schema (skip if tables already exist — see Section 9)
 # The Bareos DB scripts read db_* vars, not MARIADB_* — pass them explicitly.
 # db_password must equal MARIADB_PASSWORD in db.env and DBPassword in MyCatalog.conf.
-echo "Initializing Bareos catalog schema..."
+# Replace CHANGEME_* with your real passwords before first run.
+echo "Initializing Bareos catalog schema (first boot only)..."
 bareos_run podman run --rm \
   --network bareos \
   --env db_address=bareos-db \
@@ -1379,7 +1415,8 @@ bareos_run podman run --rm \
   docker.io/bareos/bareos-director:24 \
   bash -c '/usr/lib/bareos/scripts/create_bareos_database \
         && /usr/lib/bareos/scripts/make_bareos_tables \
-        && /usr/lib/bareos/scripts/grant_bareos_privileges'
+        && /usr/lib/bareos/scripts/grant_bareos_privileges' \
+  || echo "NOTE: schema init reported an error — OK if the catalog was already initialized."
 
 # Step 5: Start Storage Daemon
 echo "Starting Storage Daemon..."
@@ -1410,7 +1447,7 @@ echo "=== Verifying deployment ==="
 bareos_run podman ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
 echo ""
-echo "=== Testing bconsole connection ==="
+echo "=== Testing bconsole connection (host bconsole + Section 11 conf) ==="
 sudo -u bareos XDG_RUNTIME_DIR="${BAREOS_XDG}" bconsole <<< "status director" | head -5
 
 echo ""
@@ -1418,7 +1455,7 @@ echo "=== Testing WebUI endpoint ==="
 curl -sI http://localhost:9100/bareos-webui/ | head -3
 
 echo ""
-echo "=== Deployment complete! ==="
+echo "=== Smoke test complete ==="
 echo "WebUI is available at: http://localhost:9100/bareos-webui"
 echo "Login: webui-admin / <password from Section 12, Step 1>"
 ```

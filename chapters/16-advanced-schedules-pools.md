@@ -331,7 +331,7 @@ If no record is found, the level is promoted to Full. This is why keeping `Job R
 ### Checking Level Decisions in bconsole
 
 ```
-*list jobs client=myserver-fd fileset=LinuxAll
+*list jobs client=bareos-fd fileset=LinuxAll
 ```
 
 This shows recent job history for the client, including the Level column. You can verify that incrementals are correctly referencing the previous backup.
@@ -601,7 +601,7 @@ Job {
   Name            = "Backup-Linux-GFS"
   Type            = Backup
   Level           = Incremental    # default; Schedule overrides this per run
-  Client          = myserver-fd
+  Client          = bareos-fd
   FileSet         = "LinuxAll"
   Schedule        = "GFS-Schedule"
   Storage         = File
@@ -824,7 +824,7 @@ Pruning removes catalog records that have exceeded their retention period. It do
 **Prune Files** removes individual file records from the `File` table in the catalog:
 
 ```
-*prune files client=myserver-fd
+*prune files client=bareos-fd
 ```
 
 The File table grows rapidly in large backups because it stores one row per backed-up file (path, checksums, attributes, permissions). For a server backing up 500,000 files daily, that's 15 million rows per month. Pruning file records is the most impactful operation for catalog performance.
@@ -834,7 +834,7 @@ After file records are pruned, you can still restore entire jobs (because the jo
 **Prune Jobs** removes job summary records from the `Job` table:
 
 ```
-*prune jobs client=myserver-fd
+*prune jobs client=bareos-fd
 ```
 
 Once a job record is pruned, Bareos no longer knows that job ran. The volume that job was written to may not be recyclable yet (Volume Retention may not have expired), but the catalog has no reference to it. This is why `Volume Retention` must always be >= `Job Retention` — if you prune job records before Volume Retention expires, you can end up with volumes that are never recycled (their job records are gone but the volume hasn't aged out).
@@ -852,9 +852,9 @@ This is typically the last step before recycling. After a volume's job records a
 Set `Auto Prune = yes` on both the **Client** resource and the **Pool** resource:
 
 ```hcl
-# /etc/bareos/bareos-dir.d/client/myserver-fd.conf
+# /etc/bareos/bareos-dir.d/client/bareos-fd.conf
 Client {
-  Name           = "myserver-fd"
+  Name           = "bareos-fd"
   Address        = "bareos-fd"
   Port           = 9102
   Password       = "{{ fd_password }}"
@@ -876,7 +876,7 @@ Client {
 Before running prune, you can preview with:
 
 ```
-*list jobs client=myserver-fd
+*list jobs client=bareos-fd
 *list files jobid=<n>
 ```
 
@@ -1033,15 +1033,17 @@ Job {
   # Level=Full copies only Full backup jobs.
   # Level=Incremental would copy incrementals.
 
-  Client          = myserver-fd
+  Client          = bareos-fd
   # The client whose backups should be copied.
 
   FileSet         = "LinuxAll"
 
   Schedule        = "WeeklyCopySchedule"
 
-  Storage         = FileStorage-Offsite
-  # Destination storage daemon (different from source).
+  Storage         = File-Offsite
+  # Destination Director Storage resource (not a Device name). Define it like
+  # Chapter 6's Storage { Name = File ... } but pointed at an offsite Device /
+  # SD. The lab stack's on-site resource remains Name = File.
 
   Pool            = Daily
   # SOURCE pool — where jobs are read from.
@@ -1071,7 +1073,7 @@ Pool {
   Volume Retention    = 30 days
   Auto Prune          = yes
   Recycle             = yes
-  Storage             = FileStorage-Offsite
+  Storage             = File-Offsite
 }
 ```
 
@@ -1084,7 +1086,7 @@ Job {
   # After successful migration, source job is marked as "migrated"
   # and the source volume may be purged/recycled.
 
-  Client          = myserver-fd
+  Client          = bareos-fd
   FileSet         = "LinuxAll"
   Pool            = Daily          # source
   Next Pool       = Archive        # destination
@@ -1137,7 +1139,7 @@ Job {
   Level           = VirtualFull
   # Forces a virtual full synthesis.
 
-  Client          = myserver-fd
+  Client          = bareos-fd
   FileSet         = "LinuxAll"
   Schedule        = "WeeklyVirtualFull"
   Storage         = File
@@ -1165,7 +1167,7 @@ Schedule {
 Run Backup job
 JobName:  VirtualFull-Linux
 Level:    VirtualFull
-Client:   myserver-fd
+Client:   bareos-fd
 ...
 OK to run? (yes/mod/no): yes
 Job queued. JobId=47
@@ -1522,7 +1524,7 @@ Job {
   Name            = "Backup-Linux-Daily"
   Type            = Backup
   Level           = Incremental
-  Client          = myserver-fd
+  Client          = bareos-fd
   FileSet         = "LinuxAll-Advanced"
   Schedule        = "GFS-Daily"
   Storage         = File
@@ -1535,7 +1537,7 @@ Job {
   Name            = "Backup-Linux-Weekly"
   Type            = Backup
   Level           = Differential
-  Client          = myserver-fd
+  Client          = bareos-fd
   FileSet         = "LinuxAll-Advanced"
   Schedule        = "GFS-Weekly"
   Storage         = File
@@ -1548,7 +1550,7 @@ Job {
   Name            = "Backup-Linux-Monthly"
   Type            = Backup
   Level           = Full
-  Client          = myserver-fd
+  Client          = bareos-fd
   FileSet         = "LinuxAll-Advanced"
   Schedule        = "GFS-Monthly"
   Storage         = File
@@ -1561,7 +1563,7 @@ Job {
   Name            = "Backup-Linux-Yearly"
   Type            = Backup
   Level           = Full
-  Client          = myserver-fd
+  Client          = bareos-fd
   FileSet         = "LinuxAll-Advanced"
   Schedule        = "GFS-Yearly"
   Storage         = File
@@ -1635,7 +1637,7 @@ XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole
 ```
 
 ```
-*list jobs client=myserver-fd
+*list jobs client=bareos-fd
 +-------+------------------------+-----+-------+-----------+----------+-------+
 | JobId | Name                   | Lev | Files | Bytes     | Status   | Finis |
 +-------+------------------------+-----+-------+-----------+----------+-------+
@@ -1656,7 +1658,7 @@ Job {
   Name            = "VirtualFull-Linux"
   Type            = Backup
   Level           = VirtualFull
-  Client          = myserver-fd
+  Client          = bareos-fd
   FileSet         = "LinuxAll-Advanced"
   Storage         = File
   Pool            = Weekly
@@ -1705,7 +1707,7 @@ Consolidating prior Full + Incrementals into the Virtual Full target pool
 
 ```
 # List all jobs — VirtualFull shows as Level=V
-*list jobs client=myserver-fd
+*list jobs client=bareos-fd
 +-------+------------------------+-----+-------+-----------+
 | JobId | Name                   | Lev | Files | Bytes     |
 +-------+------------------------+-----+-------+-----------+
@@ -1762,7 +1764,7 @@ Job {
   Name            = "Copy-Weekly-to-Offsite"
   Type            = Copy
   Level           = Full
-  Client          = myserver-fd
+  Client          = bareos-fd
   FileSet         = "LinuxAll-Advanced"
   Schedule        = "GFS-Copy"
   Storage         = File

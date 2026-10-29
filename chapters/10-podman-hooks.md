@@ -442,7 +442,7 @@ Always check the exit code and verify the container is actually paused before pr
 ```bash
 /usr/bin/podman pause mariadb
 if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to pause container mariadb" >&2
+    echo "ERROR: Failed to pause container bareos-db" >&2
     exit 1
 fi
 
@@ -663,7 +663,7 @@ Below is a complete, production-ready hook script for dumping a MariaDB containe
 #   - Podman socket bind-mounted at /run/podman/podman.sock (inside container)
 #     (host path: /run/user/1001/podman/podman.sock → mounted via bareos-fd.container)
 #   - MARIADB_ROOT_PASSWORD environment variable set (via bareos-fd env config)
-#   - Container named "mariadb" must be running
+#   - Container named "bareos-db" must be running
 #
 # Exit codes:
 #   0 = success, backup can proceed
@@ -679,7 +679,7 @@ export CONTAINER_HOST=unix:///run/podman/podman.sock
 # ---------------------------------------------------------------------------
 # Configuration — adjust these variables for your environment
 # ---------------------------------------------------------------------------
-CONTAINER_NAME="mariadb"
+CONTAINER_NAME="bareos-db"
 DUMP_DIR="/var/tmp/bareos-dumps"
 DUMP_FILE="${DUMP_DIR}/mariadb-all-databases-$(date '+%Y%m%d-%H%M%S').sql"
 LATEST_LINK="${DUMP_DIR}/mariadb-latest.sql"
@@ -1124,7 +1124,7 @@ set -uo pipefail
 # Talk to the host Podman via the mounted socket (remote mode).
 export CONTAINER_HOST=unix:///run/podman/podman.sock
 
-CONTAINERS_TO_UNPAUSE="mariadb"  # space-separated list
+CONTAINERS_TO_UNPAUSE="bareos-db"  # space-separated list
 PODMAN="/usr/bin/podman"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [unpause] $*"; }
@@ -1294,6 +1294,7 @@ This lab demonstrates the pause/unpause workflow using a simple container. You w
 - Bareos Director, Storage Daemon, and File Daemon are running as rootless Podman containers (UID 1001)
 - The bareos-fd container has the Podman socket bind-mounted
 - `XDG_RUNTIME_DIR=/run/user/1001` is set in the bareos user's environment
+- **Derived FD image required:** Section 3's `localhost/bareos-fd-podman:24` (stock `bareos-client:24` has no `podman` CLI). Confirm with `podman exec bareos-fd which podman` before the lab.
 
 ### Step 1: Start a test container
 
@@ -1468,8 +1469,9 @@ In this lab you will configure the complete MariaDB dump workflow: the pre-backu
 
 ### Prerequisites
 
-- A MariaDB container named `mariadb` is running (from earlier chapters)
-- The Bareos File Daemon has `MARIADB_ROOT_PASSWORD` available in its environment (the variable name used in `db.env`)
+- The course catalog MariaDB container `bareos-db` is running (Chapter 6), **or** another MariaDB you point `CONTAINER_NAME` at
+- The Bareos File Daemon has `MARIADB_ROOT_PASSWORD` available in its environment (from `db.env`)
+- **Derived FD image required:** `localhost/bareos-fd-podman:24` with Podman socket mounted (Section 3 / Lab 10-1 prerequisites)
 
 ### Step 1: Install the dump hook scripts
 

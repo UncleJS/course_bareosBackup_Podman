@@ -326,7 +326,7 @@ In this chapter you learned:
 - **RHEL 10** is the target platform because it represents the current enterprise Linux standard, with Podman as the native container runtime and SELinux always enforced.
 - **Running Bareos in Podman containers** provides isolation, portability, version flexibility, rootless security, and native systemd integration through Quadlet.
 - The **File Daemon** runs as a container (`bareos-fd`) alongside the Director and Storage Daemon — with the host filesystem bind-mounted read-only so all local data is accessible for backup. Remote clients would install the FD via RPM.
-- By the end of this course you will have built a complete, production-quality Bareos deployment protecting Podman container workloads on RHEL 10.
+- By the end of this course you will have built a complete Bareos deployment protecting Podman workloads on RHEL 10. Treat **Chapter 15 (TLS)** and **Chapter 21 (host FD hybrid)** as the hardening gates before calling the stack production-ready — early labs intentionally run with TLS off and a container FD.
 
 ---
 

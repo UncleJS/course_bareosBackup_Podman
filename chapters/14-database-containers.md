@@ -402,6 +402,8 @@ through the mounted Podman socket.
 
 ### 5.2 Pre/Post Scripts
 
+> **Warning:** In this course `bareos-db` is also the **Bareos catalog**. Stopping it during a job freezes Director catalog I/O (WebUI, `bconsole` status, concurrent jobs). Use this cold-copy pattern only against a **dedicated application** MariaDB container, or schedule a dedicated maintenance window with no other Bareos jobs. Prefer logical dumps (Section 4 / Chapter 7 `BackupCatalog`) for the catalog itself.
+
 ```bash
 #!/bin/bash
 # /etc/bareos/scripts/pre-mariadb-backup.sh
@@ -1073,7 +1075,10 @@ Job {
   # The script must complete (exit 0) before Bareos reads any files.
   ClientRunBeforeJob = "/etc/bareos/scripts/mariadb-pre-backup.sh"
 
-  # On failure, run an alerting script (this one runs on the Director).
+  # On failure, run an alerting script on the Director (optional).
+  # Create a minimal stub before reload, or omit this line until Chapter 17:
+  #   printf '#!/bin/sh\necho "FAIL: $*" >&2\n' | sudo tee /etc/bareos/scripts/notify-failure.sh
+  #   sudo chmod 755 /etc/bareos/scripts/notify-failure.sh
   RunAfterFailedJob = "/etc/bareos/scripts/notify-failure.sh MariaDB-Backup"
 
   # Write Messages here
@@ -1129,7 +1134,7 @@ echo "[$(date)] Starting PostgreSQL pg_dumpall..."
 
 # pg_dumpall requires no password if pg_hba.conf allows the connection,
 # or set PGPASSWORD in the environment.
-# pg-password.txt is bind-mounted into bareos-fd alongside the other secrets.
+# Password file is bind-mounted into bareos-fd (see host setup below).
 /usr/bin/podman exec \
     --env PGPASSWORD="$(cat /etc/bareos/pg-password.txt)" \
     bareos-pg \
@@ -1148,10 +1153,14 @@ exit 0
 ```
 
 ```bash
-# Store the password securely (on the host; bind-mounted into bareos-fd)
+# Store the password on the host, then mount it into bareos-fd at the path
+# the hook reads (/etc/bareos/pg-password.txt).
 echo -n "PostgresRootPass" > /home/bareos/.config/bareos/pg-password.txt
 chmod 600 /home/bareos/.config/bareos/pg-password.txt
 chmod 750 /etc/bareos/scripts/pg-pre-backup.sh
+
+# Add to bareos-fd.container [Container] (then daemon-reload + restart FD):
+# Volume=/home/bareos/.config/bareos/pg-password.txt:/etc/bareos/pg-password.txt:ro,Z
 ```
 
 ### 13.2 The Bareos FileSet
@@ -1192,6 +1201,7 @@ Job {
 
   # podman exec → must run on the client (File Daemon).
   ClientRunBeforeJob = "/etc/bareos/scripts/pg-pre-backup.sh"
+  # Optional — requires /etc/bareos/scripts/notify-failure.sh (see MariaDB job note).
   RunAfterFailedJob = "/etc/bareos/scripts/notify-failure.sh PostgreSQL-Backup"
 
   Messages = Standard
@@ -1348,14 +1358,14 @@ Restoring from a `mariadb-dump` output requires:
 # Select the backup of the MariaDB dump
 # Choose: 5 (Select the most recent backup for a client)
 # Select the file: /var/tmp/bareos-dumps/mariadb-latest.sql.gz
-# Confirm the restore directory (e.g., /tmp/bareos-restore/)
+# Confirm the restore directory: /var/tmp/bareos-restores (Ch6/Ch8 host-visible staging)
 *run
 *wait
 ```
 
 After the restore, the dump file will be at:
 ```
-/tmp/bareos-restore/var/tmp/bareos-dumps/mariadb-latest.sql.gz
+/var/tmp/bareos-restores/var/tmp/bareos-dumps/mariadb-latest.sql.gz
 ```
 
 ### 15.3 Step 2: Decompress and Restore
@@ -1365,7 +1375,7 @@ export XDG_RUNTIME_DIR=/run/user/1001
 source /home/bareos/.config/bareos/db.env
 
 # Copy the dump file to a working location on the host
-cp /tmp/bareos-restore/var/tmp/bareos-dumps/mariadb-latest.sql.gz \
+cp /var/tmp/bareos-restores/var/tmp/bareos-dumps/mariadb-latest.sql.gz \
     /home/bareos/restore-dump.sql.gz
 
 # Restore all databases (this will DROP and recreate all databases)
@@ -1431,7 +1441,7 @@ afterward — it can silently miss data.
 
 ### 16.1 Retrieve the Dump File
 
-Same as MariaDB: use `bconsole restore` to retrieve `/var/tmp/bareos-dumps/pg-latest.sql.gz` (it lands under the restore directory, e.g. `/tmp/bareos-restore/var/tmp/bareos-dumps/pg-latest.sql.gz`), then copy it to a working location such as `/home/bareos/pg-restore.sql.gz`.
+Same as MariaDB: use `bconsole restore` with `Where=/var/tmp/bareos-restores` to retrieve `/var/tmp/bareos-dumps/pg-latest.sql.gz` (it lands at `/var/tmp/bareos-restores/var/tmp/bareos-dumps/pg-latest.sql.gz`), then copy it to a working location such as `/home/bareos/pg-restore.sql.gz`.
 
 ### 16.2 Restore All Databases
 
@@ -1489,8 +1499,7 @@ The script lives at `/etc/bareos/scripts/` (bind-mounted into `bareos-fd`) and
 runs inside the FD container as a `ClientRunBeforeJob` hook:
 
 ```bash
-# As the bareos user
-su - bareos
+# bareos uses /sbin/nologin — do not su - bareos. Use sudo -u with XDG_RUNTIME_DIR.
 export XDG_RUNTIME_DIR=/run/user/1001
 
 sudo install -d -m 0750 /etc/bareos/scripts
@@ -1686,7 +1695,7 @@ Enter the file to restore (use 'mark', 'lsmark', 'done'):
 $ mark /var/tmp/bareos-dumps/mariadb-latest.sql.gz
 $ done
 
-Restoring to /tmp/bareos-restore/ ...
+Restoring to /var/tmp/bareos-restores/ ...
 Run Restore job
 JobId: ...
 *yes
@@ -1698,9 +1707,9 @@ JobId: ...
 ```bash
 source /home/bareos/.config/bareos/db.env
 
-# Find the restored file
-ls /tmp/bareos-restore/var/tmp/bareos-dumps/
-cp /tmp/bareos-restore/var/tmp/bareos-dumps/mariadb-latest.sql.gz \
+# Find the restored file (host-visible Ch6/Ch8 staging)
+ls /var/tmp/bareos-restores/var/tmp/bareos-dumps/
+cp /var/tmp/bareos-restores/var/tmp/bareos-dumps/mariadb-latest.sql.gz \
     /home/bareos/restore-lab14.sql.gz
 
 # Extract ONLY the lab14_test section from the all-databases dump, then import it.
@@ -1760,10 +1769,14 @@ podman exec -it bareos-director bconsole
 **Step 3: Note the bootstrap file location**
 
 ```bash
-# The BackupCatalog job writes its bootstrap to a fixed name (see §14.2)
-ls -la /var/lib/bareos/bareos-catalog.bsr
+# BackupCatalog writes the bootstrap onto the shared bareos-working volume
+# (inside containers: /var/lib/bareos/). On the host that is NOT /var/lib/bareos —
+# use the named-volume path (Chapter 18 documents the same layout):
+BSR_HOST=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+  podman volume inspect bareos-working --format '{{.Mountpoint}}')/bareos-catalog.bsr
+ls -la "${BSR_HOST}"
 # This file is critical — back it up separately!
-cat /var/lib/bareos/bareos-catalog.bsr
+cat "${BSR_HOST}"
 ```
 
 The bootstrap file tells Bareos which Volume and byte offset contains the catalog backup — enabling catalog-less restore.

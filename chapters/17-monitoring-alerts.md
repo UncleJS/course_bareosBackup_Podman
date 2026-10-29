@@ -144,7 +144,7 @@ Bareos has a built-in mechanism to send email reports for every backup job. This
 A typical email subject line looks like:
 
 ```
-Bareos: myserver-fd-sd Full OK -- Files=98,234 Bytes=4,234,234,123 Termination: OK
+Bareos: bareos-fd Full OK -- Files=98,234 Bytes=4,234,234,123 Termination: OK
 ```
 
 The email body contains a complete job summary:
@@ -156,8 +156,8 @@ Bareos 24.0.1 (01Jun24): ...
   JobId:                  42
   Job:                    Backup-Linux-Monthly.2025-07-06_01.00.01
   Backup Level:           Full
-  Client:                 "myserver-fd" 24.0.1 (01Jun24) x86_64-pc-linux-gnu,gnu,...
-  FileSet:                "LinuxAll-Advanced" 2025-06-01 12:00:01
+  Client:                 "bareos-fd" 24.0.1 (01Jun24) x86_64-pc-linux-gnu,gnu,...
+  FileSet:                "RHEL10-Standard" 2025-06-01 12:00:01
   Pool:                   "Monthly" (From Job resource)
   Catalog:                "MyCatalog" (From Client resource)
   Storage:                "FileStorage" (From Job resource)

@@ -435,6 +435,8 @@ Smoke-test restores with `Where=/tmp/bareos-restores` owned by `bareos`. Product
 
 **Pass criteria:** Active host unit, capability present, port 9102 listening, container FD stopped.
 
+**TLS status:** Lab 21-1 may still use `TLS Enable = No` from Section 6. That is **not** a production pass. After wiring works, complete [Chapter 15](./15-tls-security.md) for the host FD (DIR↔FD and FD→SD) before treating the hybrid stack as finished.
+
 ---
 
 [↑ Back to Table of Contents](#table-of-contents)
@@ -480,6 +482,8 @@ Smoke-test restores with `Where=/tmp/bareos-restores` owned by `bareos`. Product
    ```
 
 **Pass criteria:** Director status OK to host FD; Full job terminates `T`; restore tree has `/tmp/bareos-restores/etc/hosts` with matching content.
+
+**Lab incomplete for production until TLS:** Re-apply Chapter 15 certificates/`TLS Require = yes` on the host FD and Director `Client` / Storage resources. Leaving `TLS Enable = No` after Lab 21-2 is acceptable only as a learning checkpoint, not a hardening completion.
 
 ---
 

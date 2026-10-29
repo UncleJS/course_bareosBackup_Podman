@@ -411,7 +411,7 @@ $ done                   # proceed
 # 5. Bareos asks for restore parameters.
 #    IMPORTANT: by default it restores to the ORIGINAL path.
 #    To restore to a different path (recommended for safety), set:
-*restore ... where=/tmp/bareos-restore
+*restore ... where=/var/tmp/bareos-restores
 ```
 
 ### Restore Job Resource for Single-File Restores
@@ -433,8 +433,8 @@ Job {
   Pool = Default
   Messages = Standard
   # Where= overrides the restore path. Leaving it blank restores to original paths.
-  # Setting it here provides a safe default; you can override at restore time.
-  Where = /tmp/bareos-restore
+  # Use the Chapter 6/8 host-visible staging directory for safe tests.
+  Where = /var/tmp/bareos-restores
 }
 ```
 
@@ -445,17 +445,18 @@ Job {
 *list jobid=<restore_job_id>
 *list files jobid=<restore_job_id>
 
-# On the host, verify the restored file
-ls -la /tmp/bareos-restore/
+# On the host, verify the restored file (Where under /var/tmp/bareos-restores)
+# Host FileSet paths appear under .../hostfs/...
+ls -la /var/tmp/bareos-restores/
 
 # Check file ownership and SELinux context
-ls -laZ /tmp/bareos-restore/var/www/html/index.html
+ls -laZ /var/tmp/bareos-restores/hostfs/var/www/html/index.html
 
 # If SELinux context is wrong, re-label:
-sudo restorecon -Rv /tmp/bareos-restore/
+sudo restorecon -Rv /var/tmp/bareos-restores/
 
 # Move the file to its final destination
-sudo mv /tmp/bareos-restore/var/www/html/index.html /var/www/html/
+sudo mv /var/tmp/bareos-restores/hostfs/var/www/html/index.html /var/www/html/
 sudo restorecon /var/www/html/index.html
 ```
 
@@ -642,8 +643,11 @@ id bareos
 # 5. Set up subordinate UID/GID ranges for rootless Podman.
 #    These allow the bareos user's containers to map to a large UID range
 #    for user namespace isolation.
-echo "bareos:100000:65536" >> /etc/subuid
-echo "bareos:100000:65536" >> /etc/subgid
+# Prefer usermod so you do not duplicate ranges if the user already exists (Chapter 3)
+sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 bareos 2>/dev/null || true
+# Only append manually if the lines are truly missing:
+grep -q '^bareos:' /etc/subuid || echo "bareos:100000:65536" | sudo tee -a /etc/subuid
+grep -q '^bareos:' /etc/subgid || echo "bareos:100000:65536" | sudo tee -a /etc/subgid
 
 # Verify
 grep bareos /etc/subuid /etc/subgid
@@ -1652,9 +1656,9 @@ When Bareos backs up a file, it stores the SELinux extended attributes (the `sec
 ### Re-labeling After Restore
 
 ```bash
-# After a restore to /tmp/bareos-restore, re-label everything
+# After a restore to /var/tmp/bareos-restores, re-label everything
 # according to the policy's default contexts for those paths
-sudo restorecon -Rv /tmp/bareos-restore/
+sudo restorecon -Rv /var/tmp/bareos-restores/
 
 # For specific directories that have known correct contexts:
 # Example: restoring /var/www/html/
@@ -1699,6 +1703,12 @@ sudo semodule -i bareos-restore-local.pp
 
 **Prerequisites**: Bareos is running, at least one `Full` backup job has completed successfully.
 
+> **Destructive lab — read before Step 3.** This exercise **stops Director/DB and renames the live `bareos-db-data` volume** on the machine you are using. Prefer a spare/clone VM. On a shared or production-like host, stop now and use Lab 18-2's rebuild narrative instead. Before renaming the volume, type the confirmation below (exact string):
+> ```bash
+> read -r -p 'Type DESTROY-LAB-CATALOG to continue: ' CONFIRM
+> [[ "${CONFIRM}" == "DESTROY-LAB-CATALOG" ]] || { echo 'Aborted.'; exit 1; }
+> ```
+
 ### Step 1: Run the BackupCatalog Job
 
 ```bash
@@ -1731,6 +1741,10 @@ sudo -u bareos bash -c '
 ### Step 3: Simulate Catalog Loss
 
 ```bash
+# Guardrail (required)
+read -r -p 'Type DESTROY-LAB-CATALOG to continue: ' CONFIRM
+[[ "${CONFIRM}" == "DESTROY-LAB-CATALOG" ]] || { echo 'Aborted.'; exit 1; }
+
 sudo -u bareos bash -c '
   XDG_RUNTIME_DIR=/run/user/1001
   systemctl --user stop bareos-director.service bareos-db.service

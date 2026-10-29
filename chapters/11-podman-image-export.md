@@ -479,18 +479,18 @@ The export process involves two separate processes that each need access to the 
 1. **The export script** (`/etc/bareos/scripts/export-images.sh`) runs in the bareos-fd domain and writes image archives to the staging directory
 2. **Bareos-fd** reads those archives to include them in the backup stream
 
-Both processes run as UID 1001 in the `bareos_t` SELinux domain (or the domain of the bareos-fd container). The staging directory must be writable by this domain.
+For the **container FD** (Chapter 6), the process runs as `container_t` with `SecurityLabelDisable=true`, so host SELinux types on `/var/tmp` are largely bypassed for that agent. The `bareos_t` / `tmp_t` discussion below applies when you use a **host RPM File Daemon** (Chapter 21) or when export scripts run on the host outside the label-disabled container.
 
-### Default `/var/tmp/` behavior
+### Default `/var/tmp/` behavior (host RPM FD)
 
-The `/var/tmp/` directory and its contents have type `tmp_t`. The `bareos_t` domain is generally allowed to read and write `tmp_t` files. Verify this:
+The `/var/tmp/` directory and its contents have type `tmp_t`. The `bareos_t` domain is generally allowed to read and write `tmp_t` files. Verify this on a host FD install:
 
 ```bash
-# Check what SELinux rules allow bareos_t to do with tmp_t
+# Check what SELinux rules allow bareos_t to do with tmp_t (host FD / Chapter 21)
 sudo sesearch --allow --source bareos_t --target tmp_t 2>/dev/null | head -20
 ```
 
-If you see `write`, `create`, `unlink` in the output, you're fine.
+If you see `write`, `create`, `unlink` in the output, you're fine for a host FD.
 
 ### Creating the export directory with correct labels
 
@@ -755,13 +755,16 @@ yes
 EOF
 ```
 
-Bareos will restore the files to the configured restore prefix (e.g., `/tmp/bareos-restores/var/tmp/bareos-image-exports/`).
+Bareos will restore the files under the Chapter 6 staging prefix (e.g. `Where=/var/tmp/bareos-restores` → `/var/tmp/bareos-restores/var/tmp/bareos-image-exports/` for FD-internal export paths, or `.../hostfs/var/tmp/...` if the FileSet used `/hostfs`).
 
 ### Step 2: Load each image archive
 
 ```bash
 export XDG_RUNTIME_DIR=/run/user/1001
-RESTORE_DIR="/tmp/bareos-restores/var/tmp/bareos-image-exports"
+# Prefer the host-visible staging directory from Chapter 6 / Chapter 8
+RESTORE_DIR="/var/tmp/bareos-restores/var/tmp/bareos-image-exports"
+# If Lab 11-1 backed up via /hostfs/var/tmp/..., use:
+# RESTORE_DIR="/var/tmp/bareos-restores/hostfs/var/tmp/bareos-image-exports"
 
 # Load all image archives
 for archive in "${RESTORE_DIR}"/*.tar; do
@@ -789,8 +792,11 @@ done
 yes
 EOF
 
-# Copy to correct location
-cp -r /tmp/bareos-restores/home/bareos/.config /home/bareos/
+# Copy to correct location (host-visible Where=/var/tmp/bareos-restores)
+# Catalog path may be /hostfs/home/bareos/... when backed up by the container FD
+cp -r /var/tmp/bareos-restores/hostfs/home/bareos/.config /home/bareos/ \
+  2>/dev/null \
+  || cp -r /var/tmp/bareos-restores/home/bareos/.config /home/bareos/
 chown -R bareos:bareos /home/bareos/.config
 ```
 
@@ -800,13 +806,13 @@ Restore the database volumes (covered in Chapter 10's database backup approach).
 
 ```bash
 # Restore MariaDB volume data (canonical volume name from Chapter 6)
+# Use host-visible staging: set RestoreFiles Where=/var/tmp/bareos-restores (Ch8)
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole << 'EOF'
-restore
-5
-jobid=<last-data-backup-jobid>
-mark /hostfs/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data
-done
-yes
+restore client=bareos-fd \
+  file=/hostfs/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data \
+  select current all done where=/var/tmp/bareos-restores yes
+wait
+quit
 EOF
 
 # Copy to named volume location (prefer creating via Quadlet/volume unit)
@@ -815,7 +821,7 @@ sudo -u bareos podman volume create bareos-db-data
 
 VOLUME_DATA=$(sudo -u bareos podman volume inspect bareos-db-data --format '{{.Mountpoint}}')
 # Restored tree includes the /hostfs prefix from the FileSet
-sudo cp -a /tmp/bareos-restores/hostfs/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data/. \
+sudo cp -a /var/tmp/bareos-restores/hostfs/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data/. \
   "${VOLUME_DATA}/"
 sudo chown -R bareos:bareos "${VOLUME_DATA}"
 ```
@@ -1230,7 +1236,7 @@ This lab configures the complete automated image export workflow using the `expo
 
 ### The complete `export-images.sh` script
 
-Save this at `/etc/bareos/scripts/export-images.sh` on the **host** (accessible inside `bareos-fd` via the `Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,Z` bind mount in `bareos-fd.container` — see [Chapter 10, Section 3](10-podman-hooks.md#3-hook-execution-context)):
+Save this at `/etc/bareos/scripts/export-images.sh` on the **host** (accessible inside `bareos-fd` via the `Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,z` bind mount in `bareos-fd.container` — see [Chapter 10, Section 3](10-podman-hooks.md#3-hook-execution-context)):
 
 ```bash
 #!/bin/bash
@@ -1720,8 +1726,8 @@ EOF
 ### Step 4: Locate the restored archive
 
 ```bash
-# Files are typically restored to /tmp/bareos-restores + original path
-ls /tmp/bareos-restores/var/tmp/bareos-image-exports/
+# Files are typically restored to /var/tmp/bareos-restores + original path
+ls /var/tmp/bareos-restores/var/tmp/bareos-image-exports/
 # bareos-bareos-director-24-20260224.tar
 # bareos-bareos-director-24-20260224.meta
 ```
@@ -1731,7 +1737,7 @@ ls /tmp/bareos-restores/var/tmp/bareos-image-exports/
 ```bash
 export XDG_RUNTIME_DIR=/run/user/1001
 
-ARCHIVE="/tmp/bareos-restores/var/tmp/bareos-image-exports/bareos-bareos-director-24-20260224.tar"
+ARCHIVE="/var/tmp/bareos-restores/var/tmp/bareos-image-exports/bareos-bareos-director-24-20260224.tar"
 
 # Load the image
 sudo -u bareos podman load --input "${ARCHIVE}"
@@ -1773,7 +1779,7 @@ fi
 
 ```bash
 # Restore the Quadlet files (also backed up by Bareos)
-QUADLET_RESTORE="/tmp/bareos-restores/home/bareos/.config/containers/systemd"
+QUADLET_RESTORE="/var/tmp/bareos-restores/hostfs/home/bareos/.config/containers/systemd"
 sudo cp -r "${QUADLET_RESTORE}/." /home/bareos/.config/containers/systemd/
 sudo chown -R bareos:bareos /home/bareos/.config/
 ```

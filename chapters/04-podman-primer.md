@@ -588,7 +588,7 @@ Label=app=bareos
 # the runtime network simply "bareos" — the name manual podman commands use.
 NetworkName=bareos
 Driver=bridge
-Subnet=10.89.0.0/24
+Subnet=10.89.10.0/24
 Gateway=10.89.0.1
 Label=app=bareos
 ```

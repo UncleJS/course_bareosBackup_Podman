@@ -677,120 +677,43 @@ Certificates expire (our certificates are valid for 365 days). When you rotate a
 
 ### 9.2 Updated Quadlet Files with TLS Mounts
 
-#### Director Container
+> **Do not replace the Chapter 6 Quadlet units wholesale.** Keep the drop-in config mounts (`bareos-dir.d`, `bareos-sd.d`, named volumes, scripts, `/hostfs`, restore staging) and **add** the TLS certificate `Volume=` lines below. Keep localhost publishes (`127.0.0.1:9101`, `127.0.0.1:9103`, `127.0.0.1:9102`) until you intentionally expose daemons on the LAN.
+
+#### Director Container (TLS additions on the Chapter 6 unit)
 
 ```ini
 # /home/bareos/.config/containers/systemd/bareos-director.container
-[Unit]
-Description=Bareos Director
-After=network-online.target bareos-db.service
-
-[Container]
-Image=docker.io/bareos/bareos-director:24
-ContainerName=bareos-director
-
-# Configuration bind-mount (includes bareos-dir.conf with TLS settings)
-Volume=/etc/bareos:/etc/bareos:ro,Z
-
-# TLS certificates bind-mount
-# ro: container only reads certs, never writes
-# ca.pem and dh2048.pem are read by multiple containers, so they use the
-#   shared label :z (lowercase). The Director's own key/cert are read by
-#   only this container, so they use the private label :Z (uppercase).
+# Keep Chapter 6: bareos-dir.d, scripts, bareos-working, env files, network deps.
+# ADD these TLS mounts (shared CA/DH use :z; Director key/cert use :Z):
 Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,z
 Volume=/home/bareos/.config/bareos/tls/certs/director.pem:/etc/bareos/tls/director.pem:ro,Z
 Volume=/home/bareos/.config/bareos/tls/private/director.key:/etc/bareos/tls/director.key:ro,Z
 Volume=/home/bareos/.config/bareos/tls/dh2048.pem:/etc/bareos/tls/dh2048.pem:ro,z
-
-# State and log volumes (named volume from Chapter 6, mounted at /var/lib/bareos)
-# No :z/:Z — bareos-working.volume is a named volume shared by DIR/SD/FD
-Volume=bareos-working.volume:/var/lib/bareos
-Volume=bareos-director-log:/var/log/bareos:Z
-
-EnvironmentFile=/home/bareos/.config/bareos/bareos.env
-Network=bareos.network
-PublishPort=9101:9101
-
-[Service]
-Restart=always
-
-[Install]
-WantedBy=default.target
+# Keep Chapter 6 publish binding:
+PublishPort=127.0.0.1:9101:9101
 ```
 
-#### Storage Daemon Container
+#### Storage Daemon Container (TLS additions)
 
 ```ini
 # /home/bareos/.config/containers/systemd/bareos-storage.container
-[Unit]
-Description=Bareos Storage Daemon
-After=network-online.target
-
-[Container]
-Image=docker.io/bareos/bareos-storage:24
-ContainerName=bareos-storage
-
-Volume=/etc/bareos:/etc/bareos:ro,Z
-
-# Storage Daemon TLS certificates
-# ca.pem and dh2048.pem are shared across containers -> :z; the SD's own
-#   key/cert are read only here -> :Z
+# Keep Chapter 6: bareos-sd.d, storage bind, bareos-working.
 Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,z
 Volume=/home/bareos/.config/bareos/tls/certs/storage.pem:/etc/bareos/tls/storage.pem:ro,Z
 Volume=/home/bareos/.config/bareos/tls/private/storage.key:/etc/bareos/tls/storage.key:ro,Z
 Volume=/home/bareos/.config/bareos/tls/dh2048.pem:/etc/bareos/tls/dh2048.pem:ro,z
-
-# Working directory (named volume shared by DIR/SD/FD, from Chapter 6)
-Volume=bareos-working.volume:/var/lib/bareos
-
-# Storage volume for backup data
-Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
-
-Network=bareos.network
-PublishPort=9103:9103
-
-[Service]
-Restart=always
-
-[Install]
-WantedBy=default.target
+PublishPort=127.0.0.1:9103:9103
 ```
 
-#### File Daemon Container
+#### File Daemon Container (TLS additions)
 
 ```ini
 # /home/bareos/.config/containers/systemd/bareos-fd.container
-[Unit]
-Description=Bareos File Daemon
-After=network-online.target
-
-[Container]
-Image=docker.io/bareos/bareos-client:24
-ContainerName=bareos-fd
-
-# FD config and working volumes (named volumes from Chapter 6)
-Volume=bareos-fd-config.volume:/etc/bareos
-Volume=bareos-working.volume:/var/lib/bareos
-
-# File Daemon TLS certificates
-# ca.pem is shared across containers -> :z; the FD's own key/cert -> :Z
+# Keep Chapter 6: fd-config, working, scripts, /hostfs:ro, restore staging, socket.
 Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,z
 Volume=/home/bareos/.config/bareos/tls/certs/client.pem:/etc/bareos/tls/client.pem:ro,Z
 Volume=/home/bareos/.config/bareos/tls/private/client.key:/etc/bareos/tls/client.key:ro,Z
-
-# Host filesystem — read-only; FileSet paths use /hostfs/ prefix
-Volume=/:/hostfs:ro
-
-# Podman socket — allows hook scripts to manage containers
-Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock
-
-Network=bareos.network
-
-[Service]
-Restart=always
-
-[Install]
-WantedBy=default.target
+PublishPort=127.0.0.1:9102:9102
 ```
 
 ### 9.3 Reload Systemd to Apply Quadlet Changes
@@ -912,7 +835,7 @@ Storage {
 The Storage Daemon listens for two types of incoming connections: from the Director (port 9103) and from File Daemons (also port 9103 — they share the SD listener). Both connection types go to the same listener, so a single TLS configuration covers both.
 
 ```
-# /etc/bareos/bareos-sd.d/storagedeamon/bareos-sd.conf
+# /etc/bareos/bareos-sd.d/storage/bareos-sd.conf
 
 Storage {
   Name = bareos-sd
@@ -1209,8 +1132,8 @@ openssl s_client \
 ### 14.4 Running a Test Backup Job to Confirm End-to-End TLS
 
 ```bash
-podman exec bareos-director bconsole << 'EOF'
-run job=BackupClient1 level=Full yes
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole << 'EOF'
+run job=BackupLocalHost level=Full yes
 wait
 messages
 EOF
@@ -1221,7 +1144,7 @@ If TLS is working correctly, the job should complete successfully. If there are 
 ### 14.5 bconsole Status Check
 
 ```bash
-podman exec bareos-director bconsole << 'EOF'
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole << 'EOF'
 status dir
 status storage
 status client
@@ -1602,51 +1525,32 @@ ls -laZ /home/bareos/.config/bareos/tls/certs/ca.pem
 # Should end with: container_file_t:s0
 ```
 
-**Step 2: Update the Director Quadlet file**
+**Step 2: Add TLS mounts to the existing Director Quadlet (do not replace Chapter 6)**
 
-```bash
-cat > /home/bareos/.config/containers/systemd/bareos-director.container << 'EOF'
-[Unit]
-Description=Bareos Director
-After=network-online.target bareos-db.service
+Edit `/home/bareos/.config/containers/systemd/bareos-director.container` and **append** these `Volume=` lines under `[Container]` (keep `Volume=/etc/bareos/bareos-dir.d:...`, env files, `PublishPort=127.0.0.1:9101:9101`, and service deps):
 
-[Container]
-Image=docker.io/bareos/bareos-director:24
-ContainerName=bareos-director
-Volume=/etc/bareos:/etc/bareos:ro,Z
-# Shared across containers -> :z
+```ini
 Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,z
 Volume=/home/bareos/.config/bareos/tls/dh2048.pem:/etc/bareos/tls/dh2048.pem:ro,z
-# Read only by this (Director) container -> :Z
 Volume=/home/bareos/.config/bareos/tls/certs/director.pem:/etc/bareos/tls/director.pem:ro,Z
 Volume=/home/bareos/.config/bareos/tls/private/director.key:/etc/bareos/tls/director.key:ro,Z
 Volume=/home/bareos/.config/bareos/tls/certs/console.pem:/etc/bareos/tls/console.pem:ro,Z
 Volume=/home/bareos/.config/bareos/tls/private/console.key:/etc/bareos/tls/console.key:ro,Z
-# Named volume shared by DIR/SD/FD (no :z/:Z)
-Volume=bareos-working.volume:/var/lib/bareos
-EnvironmentFile=/home/bareos/.config/bareos/bareos.env
-Network=bareos.network
-PublishPort=9101:9101
-
-[Service]
-Restart=always
-
-[Install]
-WantedBy=default.target
-EOF
 ```
 
-**Step 3: Update bareos-dir.conf to enable TLS**
+Repeat the same pattern for `bareos-storage.container` and `bareos-fd.container` using the certificate paths from Section 9 (storage/client key+cert + shared `ca.pem` / `dh2048.pem`). Keep `PublishPort=127.0.0.1:9103:9103` and `127.0.0.1:9102:9102`.
+
+**Step 3: Enable TLS in the Director drop-in (Chapter 6 layout)**
 
 ```bash
-# This configuration update goes into the container-accessible config path
-# Adjust the path for your specific setup:
+# Merge TLS into the existing Director resource under bareos-dir.d (not a monolithic bareos-dir.conf)
+# Replace Password with the same value as BAREOS_DIRECTOR_PASSWORD from bareos.env
 sudo tee /etc/bareos/bareos-dir.d/director/bareos-dir.conf << 'EOF'
 Director {
   Name = bareos-dir
   QueryFile = "/usr/lib/bareos/scripts/query.sql"
   Maximum Concurrent Jobs = 10
-  Password = "DirectorConsolePassword"
+  Password = "CHANGEME_DIRECTOR_PASSWORD"
   Messages = Daemon
 
   TLS Enable = yes
@@ -1692,9 +1596,9 @@ Expected output — all three should show `active (running)`:
 **Step 5: Run a test backup to confirm TLS end-to-end**
 
 ```bash
-podman exec bareos-director bconsole << 'EOF'
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole << 'EOF'
 status dir
-run job=BackupClient1 level=Full yes
+run job=BackupLocalHost level=Full yes
 wait
 messages
 EOF
@@ -1843,9 +1747,8 @@ openssl s_client \
 **Step 7: Run a backup job to confirm the rotated certificate works**
 
 ```bash
-export XDG_RUNTIME_DIR=/run/user/1001
-podman exec bareos-director bconsole << 'EOF'
-run job=BackupClient1 level=Full yes
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole << 'EOF'
+run job=BackupLocalHost level=Full yes
 wait
 messages
 EOF

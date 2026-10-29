@@ -75,7 +75,7 @@ Director
   ├── Query Catalog: "Which Volumes contain those jobs?"
   ├── Instruct Storage Daemon: "Read from Volume Inc-0042, seek to offset 1,234,567"
   │
-  └── Instruct File Daemon: "Receive data and write to /tmp/bareos-restores/hostfs/home/alice/"
+  └── Instruct File Daemon: "Receive data and write to /var/tmp/bareos-restores/hostfs/home/alice/"
 
 Storage Daemon (bareos-storage container)
   │
@@ -211,7 +211,7 @@ In the **Restore** dialog that appears:
 | Field | Recommended value |
 |-------|-------------------|
 | **Client** | The client that will receive the files (can differ from the backup client) |
-| **Restore Location** | `/tmp/bareos-restores` for test restores; `/` for full DR restores |
+| **Restore Location** | `/var/tmp/bareos-restores` for test restores (writable host bind-mount from Chapter 6); `/` only for true DR after File Relocation |
 | **Replace** | `never` for test restores (skip files that already exist); `always` for DR |
 | **Restore Job** | Leave as default (`RestoreFiles`) |
 
@@ -335,7 +335,7 @@ The restore job will require the following Volumes:
 Run Restore job
 JobName:    RestoreFiles
 Bootstrap:  /var/lib/bareos/bareos.restore.1.bsr
-Where:      /tmp/bareos-restores     ← THIS is the restore destination
+Where:      /var/tmp/bareos-restores     ← THIS is the restore destination
 Replace:    Always
 FileSet:    RHEL10-Standard
 Backup Client:  bareos-fd
@@ -349,7 +349,7 @@ Plugin Options: *None*
 OK to run? (yes/mod/no):
 ```
 
-The `Where:` field is where restored files will be written. By default Bareos uses `/tmp/bareos-restores`. You can change this:
+The `Where:` field is where restored files will be written. Bareos's stock default is `/tmp/bareos-restores`, which is **ephemeral inside the FD container** and invisible on the host. This course bind-mounts a writable staging directory at `/var/tmp/bareos-restores` (Chapter 6) so test restores are host-visible for `ls`/`diff`/`cp`. Do **not** use `/hostfs/...` as `Where` — the host mount is read-only. You can change the destination:
 
 ```
 OK to run? (yes/mod/no): mod
@@ -377,11 +377,12 @@ Please enter the full path prefix for restore (/ for none): /mnt/restore-test
 ### Restore Options Explained
 
 **Where**: The path prefix. Bareos prepends this to the path **as stored in the catalog**. Because the FD catalogs host files under `/hostfs/...`, that prefix is part of the stored path and is recreated under `Where`:
-- `Where = /tmp/bareos-restores` → catalog path `/hostfs/etc/passwd` is restored to `/tmp/bareos-restores/hostfs/etc/passwd`
-- `Where = /` → Restore under `/hostfs/...` (i.e. into the FD container's read-only host view — effectively a no-op for the host; for a true live restore you instead use **File Relocation** to strip the `/hostfs` prefix). Use with extreme caution.
-- `Where = /mnt/restore-test` → catalog path `/hostfs/etc/passwd` is restored to `/mnt/restore-test/hostfs/etc/passwd`
+- `Where = /var/tmp/bareos-restores` → catalog path `/hostfs/etc/passwd` is restored to `/var/tmp/bareos-restores/hostfs/etc/passwd` (host-visible via the Chapter 6 bind-mount)
+- `Where = /tmp/bareos-restores` → same tree shape, but **only inside the FD container** — use `podman exec bareos-fd ls ...` to verify, or avoid this path in labs
+- `Where = /` → attempts to write under `/hostfs/...` on the read-only host mount and fails; for a true live restore use **File Relocation** to strip `/hostfs` and write through a writable path (or the Chapter 21 host FD). Use with extreme caution.
+- `Where = /var/tmp/restore-test` → catalog path `/hostfs/etc/passwd` is restored to `/var/tmp/restore-test/hostfs/etc/passwd` (create and bind-mount that directory first if you want host visibility)
 
-> **Note:** Every restored tree therefore contains an extra `hostfs/` level. When verifying restored files, look under `<Where>/hostfs/...`, not `<Where>/...`. To drop the `/hostfs` prefix on restore, use the **File Relocation** wizard option (parameter 10) with a regex such as `!^/hostfs!!`.
+> **Note:** Every restored tree of host paths contains an extra `hostfs/` level. When verifying restored files, look under `<Where>/hostfs/...`, not `<Where>/...`. To drop the `/hostfs` prefix on restore, use the **File Relocation** wizard option (parameter 10) with a regex such as `!^/hostfs!!`.
 
 **Replace**: What to do if the file already exists at the destination:
 - `Always` — Always overwrite (default for recovery situations)
@@ -489,7 +490,7 @@ Job {
   FileSet = "RHEL10-Standard"    # not actually used in restore — the bootstrap drives it
   Pool = Incremental      # not used; volumes are determined by bootstrap
   Messages = Standard
-  Where = /tmp/bareos-restores    # default restore path
+  Where = /var/tmp/bareos-restores    # host-visible staging (Ch6 bind-mount)
 }
 EOF
 ```
@@ -554,14 +555,14 @@ find /etc -type f | wc -l
 
 # Compare restored directory file count
 # (note the extra /hostfs/ level — the catalog path was /hostfs/etc/...)
-find /tmp/bareos-restores/hostfs/etc -type f | wc -l
+find /var/tmp/bareos-restores/hostfs/etc -type f | wc -l
 # Expected: same as source
 
 # Compare total sizes
 du -sh /etc
 # Expected: e.g., 45M
 
-du -sh /tmp/bareos-restores/hostfs/etc
+du -sh /var/tmp/bareos-restores/hostfs/etc
 # Expected: approximately same (minor differences acceptable for /proc-derived files)
 ```
 
@@ -573,8 +574,8 @@ find /home/alice/documents -name "*.docx" -exec md5sum {} \; > /tmp/source-check
 
 # Generate checksums of same files restored
 # (strip both the Where prefix and the /hostfs level so paths line up with the source)
-find /tmp/bareos-restores/hostfs/home/alice/documents -name "*.docx" -exec md5sum {} \; \
-  | sed 's|/tmp/bareos-restores/hostfs||' > /tmp/restored-checksums.txt
+find /var/tmp/bareos-restores/hostfs/home/alice/documents -name "*.docx" -exec md5sum {} \; \
+  | sed 's|/var/tmp/bareos-restores/hostfs||' > /tmp/restored-checksums.txt
 
 # Compare
 diff /tmp/source-checksums.txt /tmp/restored-checksums.txt
@@ -743,7 +744,7 @@ This uses the scripted `restore` form (see Section 9) instead of piping literal 
 
 ```bash
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'EOF'
-restore client=bareos-fd file=/hostfs/tmp/restore-lab-source select current all done where=/tmp/restore-lab-destination yes
+restore client=bareos-fd file=/hostfs/tmp/restore-lab-source select current all done where=/var/tmp/bareos-restores/restore-lab-destination yes
 wait
 messages
 quit
@@ -755,20 +756,21 @@ EOF
 1. Open `http://localhost:9100/bareos-webui` → **Restore**
 2. Select client `bareos-fd`, choose the most recent Full backup
 3. Navigate to `/hostfs/tmp/restore-lab-source` and tick the directory checkbox
-4. Click **Restore**, set Restore Location to `/tmp/restore-lab-destination`, Replace = `never`
+4. Click **Restore**, set Restore Location to `/var/tmp/bareos-restores/restore-lab-destination`, Replace = `never`
 5. Click **Run Restore** and wait for the job to complete in **Jobs → All Jobs**
 
 ```bash
 # Step 6: Verify restoration (same regardless of which method you used)
+# Where under /var/tmp/bareos-restores is host-visible (Ch6 bind-mount).
 # Note the extra /hostfs/ level in the restored tree.
-ls -la /tmp/restore-lab-destination/hostfs/tmp/restore-lab-source/
-cat /tmp/restore-lab-destination/hostfs/tmp/restore-lab-source/testfile1.txt
+ls -la /var/tmp/bareos-restores/restore-lab-destination/hostfs/tmp/restore-lab-source/
+cat /var/tmp/bareos-restores/restore-lab-destination/hostfs/tmp/restore-lab-source/testfile1.txt
 
 echo ""
 echo "Restore lab complete!"
 
 # Cleanup
-sudo rm -rf /tmp/restore-lab-source /tmp/restore-lab-destination
+sudo rm -rf /tmp/restore-lab-source /var/tmp/bareos-restores/restore-lab-destination
 ```
 
 ---
@@ -799,7 +801,7 @@ The scripted `restore` form marks a single file with `file=` pointing at the cat
 
 ```bash
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'BEOF'
-restore client=bareos-fd file=/hostfs/tmp/selective-restore-test/file5.txt select current all done where=/tmp/selective-destination yes
+restore client=bareos-fd file=/hostfs/tmp/selective-restore-test/file5.txt select current all done where=/var/tmp/bareos-restores/selective-destination yes
 wait
 messages
 quit
@@ -811,15 +813,15 @@ BEOF
 1. Open **Restore** → select client → select the Full backup job
 2. Navigate to `/hostfs/tmp/selective-restore-test`
 3. Tick **only** `file5.txt` — leave all other files unticked
-4. Click **Restore**, set Restore Location to `/tmp/selective-destination`, Replace = `never`, click **Run Restore**
+4. Click **Restore**, set Restore Location to `/var/tmp/bareos-restores/selective-destination`, Replace = `never`, click **Run Restore**
 
 ```bash
 # Verify: only file5.txt should be present (note the /hostfs/ level)
-ls -la /tmp/selective-destination/hostfs/tmp/selective-restore-test/
+ls -la /var/tmp/bareos-restores/selective-destination/hostfs/tmp/selective-restore-test/
 # Expected: only file5.txt
 
 # Cleanup
-rm -rf /tmp/selective-restore-test /tmp/selective-destination
+rm -rf /tmp/selective-restore-test /var/tmp/bareos-restores/selective-destination
 ```
 
 ---
@@ -834,7 +836,7 @@ This lab demonstrates recovering `/etc/hosts` to a test directory — safe becau
 
 ```bash
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'BEOF'
-restore client=bareos-fd file=/hostfs/etc/hosts select current all done where=/tmp/etc-recovery-test yes
+restore client=bareos-fd file=/hostfs/etc/hosts select current all done where=/var/tmp/bareos-restores/etc-recovery-test yes
 wait
 messages
 quit
@@ -846,21 +848,21 @@ BEOF
 1. Open **Restore** → select client → select the most recent Full backup
 2. Navigate to `/hostfs/etc` in the file tree
 3. Tick `hosts`
-4. Click **Restore**, set Restore Location to `/tmp/etc-recovery-test`, Replace = `never`, click **Run Restore**
+4. Click **Restore**, set Restore Location to `/var/tmp/bareos-restores/etc-recovery-test`, Replace = `never`, click **Run Restore**
 
 ```bash
 # Verify the file was restored (same for both methods; note the /hostfs/ level)
-ls -la /tmp/etc-recovery-test/hostfs/etc/hosts
-cat /tmp/etc-recovery-test/hostfs/etc/hosts
+ls -la /var/tmp/bareos-restores/etc-recovery-test/hostfs/etc/hosts
+cat /var/tmp/bareos-restores/etc-recovery-test/hostfs/etc/hosts
 
 # Compare with the live file
-diff /etc/hosts /tmp/etc-recovery-test/hostfs/etc/hosts
+diff /etc/hosts /var/tmp/bareos-restores/etc-recovery-test/hostfs/etc/hosts
 # Expected: no differences (assuming hosts hasn't changed since backup)
 
 echo "Restore to alternate path: SUCCESS"
 
 # Cleanup
-rm -rf /tmp/etc-recovery-test
+rm -rf /var/tmp/bareos-restores/etc-recovery-test
 ```
 
 ---
@@ -876,7 +878,7 @@ In this chapter you mastered Bareos restore operations:
 - **Multiple-job restores**: When restoring from an incremental chain, Bareos assembles the most recent version of each file from the correct job automatically.
 - **The bconsole wizard**: `restore` in bconsole provides an interactive virtual filesystem browser. `cd`, `mark`, `unmark`, `find`, and `done` navigate and select files. Essential for scripted and emergency restores.
 - **The WebUI restore browser**: A graphical file-tree browser at **Restore** in the WebUI. The recommended interface for day-to-day restores. Powered by the Bvfs cache — run `.bvfs_update` if the tree is empty or slow.
-- **Restore destination**: Always use `Where = /tmp/bareos-restores` or a custom alternate path during tests. Use `Where = /` only for real disaster recovery.
+- **Restore destination**: Always use `Where = /var/tmp/bareos-restores` (or a subdirectory under it) for test restores so results are host-visible. Avoid bare `/tmp/...` (FD-local only) and never write test restores through `/hostfs` (read-only). Use `Where = /` only for real disaster recovery with File Relocation or a host FD.
 - **Restoring to a different client**: Set `Restore Client` to a different host via `mod` in the wizard, or via the Client field in the WebUI restore dialog.
 - **Verification**: Always verify restored data with file count comparisons, checksum matching, and `diff`.
 - **bscan and bextract**: Emergency tools for recovering data when the Catalog is lost. `bscan` rebuilds the Catalog from Volumes; `bextract` extracts files directly without any Catalog.

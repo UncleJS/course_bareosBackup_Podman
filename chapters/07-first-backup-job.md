@@ -509,6 +509,14 @@ EOF
 ```
 
 > **Critical**: The dump runs **inside the Director container** (`RunsOnClient = no` directs the command to the Director, *not* to the File Daemon). It connects to the `bareos-db` container over the network with `mariadb-dump` and writes a gzipped SQL dump onto the shared `bareos-working` volume. The `bareos-fd` container, which mounts that same volume at `/var/lib/bareos`, then backs the dump up to a Volume. If you ever need to recover the catalog, you restore this dump and import it into a fresh MariaDB instance. (On a traditional RPM install the equivalent stock scripts are `make_catalog_backup.pl` and `delete_catalog_backup`; we do not use them here because there is no local DB socket — the catalog lives in a separate container. We also omit `--events/--routines/--triggers`: the Bareos catalog has none, and the `bareos` DB user lacks the privileges to dump them.)
+>
+> **Preflight:** Confirm the Director image provides the client before the first `BackupCatalog` run:
+> ```bash
+> sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
+>   podman exec bareos-director which mariadb-dump
+> ```
+> If the binary is missing, dump from the DB container instead (pattern used in Chapters 10/14/18):
+> `podman exec bareos-db mariadb-dump ... > /path/on/shared/volume/...`, then keep the FileSet pointed at that dump path.
 
 ---
 
@@ -639,7 +647,8 @@ Example successful job log:
 ```
 24-Feb 22:00 bareos-dir JobId 1: Start Backup JobId 1, Job=BackupLocalHost.2026-02-24_22.00.05_04
 24-Feb 22:00 bareos-dir JobId 1: Using Device "FileStorage" to write.
-24-Feb 22:00 bareos-fd  JobId 1: Connected to Storage at bareos-storage:9103 with TLSv1.3.
+24-Feb 22:00 bareos-fd  JobId 1: Connected to Storage at bareos-storage:9103
+# (Chapter 6 labs still have TLS Enable = No — TLS appears in job logs after Chapter 15.)
 24-Feb 22:00 bareos-fd  JobId 1: Start Accurate Fileset "RHEL10-Standard" OK.
 24-Feb 22:01 bareos-sd  JobId 1: Wrote label to Volume "Full-0001"
 24-Feb 22:03 bareos-dir JobId 1: Created new Volume="Full-0001" in catalog.

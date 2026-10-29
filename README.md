@@ -22,7 +22,7 @@
 
 ## About This Course
 
-This course teaches you how to deploy, configure, operate, and troubleshoot a production-grade [Bareos](https://www.bareos.com/) backup system on Red Hat Enterprise Linux 10 using rootless Podman containers managed by systemd user services (Quadlet).
+This course teaches you how to deploy, configure, operate, and troubleshoot a [Bareos](https://www.bareos.com/) backup system on Red Hat Enterprise Linux 10 using rootless Podman containers managed by systemd user services (Quadlet). Early labs prioritize a working stack (localhost publishes, TLS deferred); Chapters 15 and 21 close the gap to a production-hardened hybrid layout.
 
 Bareos (Backup Archiving REcovery Open Sourced) is an enterprise-class, open-source network backup solution derived from Bacula. It protects files, databases, and application data across multiple clients, stores backups on disk or tape, and provides a rich catalog for tracking every file ever backed up.
 
@@ -227,6 +227,23 @@ chmod 600 /home/bareos/.config/bareos/db.env
 chmod 600 /home/bareos/.config/bareos/bareos.env
 ```
 
+### Canonical Lab Stack Vocabulary
+
+Chapter 6 is the source of truth. Later chapters must reuse these names unless they explicitly introduce a new resource:
+
+| Item | Canonical value |
+|---|---|
+| Network | `bareos` (`NetworkName=bareos`, subnet `10.89.10.0/24`) |
+| Containers | `bareos-director`, `bareos-storage`, `bareos-fd`, `bareos-db`, `bareos-webui` |
+| Client | `bareos-fd` (host FD in Chapter 21: `bareos-fd-host`) |
+| Primary job | `BackupLocalHost` |
+| Primary FileSet | `RHEL10-Standard` |
+| Director Storage resource | `File` (device `FileStorage`) |
+| Env password vars | `BAREOS_DIRECTOR_PASSWORD`, `BAREOS_FD_PASSWORD`, `BAREOS_SD_PASSWORD` in `bareos.env` |
+| Published ports (lab) | `127.0.0.1:9101`, `127.0.0.1:9102`, `127.0.0.1:9103`, `127.0.0.1:9100` (WebUI) |
+| Host FileSet prefix | `/hostfs/...` |
+| Test restore `Where` | `/var/tmp/bareos-restores` (writable bind-mount; `/hostfs` is read-only) |
+
 ---
 
 ## Course Chapter Index
@@ -264,11 +281,11 @@ chmod 600 /home/bareos/.config/bareos/bareos.env
 
 | Chapter | Title | File |
 |---|---|---|
-| 15 | TLS Encryption and Certificates | [chapters/15-tls-security.md](chapters/15-tls-security.md) |
-| 16 | Advanced Schedules and Pools | [chapters/16-advanced-schedules-pools.md](chapters/16-advanced-schedules-pools.md) |
-| 17 | Monitoring and Alerting | [chapters/17-monitoring-alerts.md](chapters/17-monitoring-alerts.md) |
-| 18 | Disaster Recovery | [chapters/18-disaster-recovery.md](chapters/18-disaster-recovery.md) |
-| 19 | Performance Tuning | [chapters/19-performance-tuning.md](chapters/19-performance-tuning.md) |
+| 15 | TLS Encryption and Certificate Management | [chapters/15-tls-security.md](chapters/15-tls-security.md) |
+| 16 | Advanced Schedules, Pools, and Retention | [chapters/16-advanced-schedules-pools.md](chapters/16-advanced-schedules-pools.md) |
+| 17 | Monitoring, Alerting, and Reporting | [chapters/17-monitoring-alerts.md](chapters/17-monitoring-alerts.md) |
+| 18 | Disaster Recovery — Restoring from Scratch | [chapters/18-disaster-recovery.md](chapters/18-disaster-recovery.md) |
+| 19 | Performance Tuning and Optimization | [chapters/19-performance-tuning.md](chapters/19-performance-tuning.md) |
 | 20 | Troubleshooting Guide | [chapters/20-troubleshooting.md](chapters/20-troubleshooting.md) |
 | 21 | Host File Daemon with CAP_DAC_READ_SEARCH | [chapters/21-host-file-daemon.md](chapters/21-host-file-daemon.md) |
 

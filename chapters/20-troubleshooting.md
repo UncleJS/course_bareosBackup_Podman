@@ -1076,19 +1076,23 @@ Common symptoms:
 # Step 1: Stop the Director
 XDG_RUNTIME_DIR=/run/user/1001 systemctl --user stop bareos-director
 
-# Step 2: Run dbcheck in scan-only mode (no changes), verbose
+# Step 2: Run dbcheck in scan-only mode (no changes), verbose.
+# Chapter 6 mounts drop-ins under bareos-dir.d — there is no bareos-dir.conf.
+# Mount that tree and point -c at the directory (or any file that includes it).
 XDG_RUNTIME_DIR=/run/user/1001 podman run --rm \
   --env-file /home/bareos/.config/bareos/db.env \
   --network bareos \
+  -v /etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z \
   docker.io/bareos/bareos-director:24 \
-  dbcheck -c /etc/bareos/bareos-dir.conf -v
+  dbcheck -c /etc/bareos/bareos-dir.d -v
 
 # Step 3: Run dbcheck non-interactively with automatic repairs
 XDG_RUNTIME_DIR=/run/user/1001 podman run --rm \
   --env-file /home/bareos/.config/bareos/db.env \
   --network bareos \
+  -v /etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z \
   docker.io/bareos/bareos-director:24 \
-  dbcheck -c /etc/bareos/bareos-dir.conf -b -f -v
+  dbcheck -c /etc/bareos/bareos-dir.d -b -f -v
 
 # -b = batch mode (run all checks non-interactively, no menu)
 # -f = fix inconsistencies (otherwise dbcheck only reports them)
@@ -1911,38 +1915,42 @@ EOF
 
 ## 23. Lab 20-2: Create and Resolve a SELinux Denial
 
-In this lab, you will create a new directory, give it the wrong SELinux context, observe Bareos failing to write to it, and use `audit2allow` to generate a fix.
+In this lab you deliberately give a **new** Storage Daemon archive path the wrong SELinux label, observe a write denial, then fix it with `semanage`/`restorecon` (the correct approach for labeled storage). Config is edited **on the host** under `/etc/bareos/bareos-sd.d` (Chapter 6 mounts that tree read-only into the container — do not `podman exec` and write inside the image).
 
 ### Prerequisites
 
 - Root access on the RHEL 10 host
-- SELinux is in enforcing mode: `getenforce` should output `Enforcing`
-- Bareos Storage Daemon is running
+- SELinux is in enforcing mode: `getenforce` → `Enforcing`
+- Chapter 6 stack running (`bareos-storage`, `bareos-director`)
+- Host `bconsole` configured as in Chapter 6
 
 ### Step 1: Create a Test Directory with Wrong Context
 
 ```bash
-# Create a new storage directory as root
 sudo mkdir -p /srv/bareos-test-storage
 sudo chown -R bareos:bareos /srv/bareos-test-storage
 
-# Check its current SELinux context
+# Confirm the wrong (or at least non-container) label before labeling
 ls -laZ /srv/bareos-test-storage
-# It will show default_t — the wrong context for Bareos storage
+# Typical: unconfined_u:object_r:var_t:s0 or default_t — not container_file_t
 ```
 
-### Step 2: Add a New Storage Device Pointing to This Directory
+### Step 2: Bind-Mount the Directory into the SD (without `:z`)
+
+Edit `/home/bareos/.config/containers/systemd/bareos-storage.container` and add under `[Container]` (temporary lab mount — **omit** `:z`/`:Z` so Podman does not relabel away the teaching failure):
+
+```ini
+Volume=/srv/bareos-test-storage:/var/lib/bareos/storage-test
+```
+
+Create the Device on the **host** (persists via the Chapter 6 RO bind of `bareos-sd.d`):
 
 ```bash
-# Create a new device config (inside the SD container's config volume)
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-storage bash
-
-# Inside the container, create a new device config:
-cat > /etc/bareos/bareos-sd.d/device/TestDevice.conf << 'EOF'
+sudo tee /etc/bareos/bareos-sd.d/device/TestDevice.conf > /dev/null <<'EOF'
 Device {
   Name = TestDevice
   Media Type = File
-  Archive Device = /srv/bareos-test-storage
+  Archive Device = /var/lib/bareos/storage-test
   LabelMedia = yes
   Random Access = Yes
   AutomaticMount = yes
@@ -1950,85 +1958,83 @@ Device {
   AlwaysOpen = no
 }
 EOF
-exit
 ```
 
-### Step 3: Restart the SD and Try to Use the New Device
+Wire a Director `Storage` resource that points at that device (password must match Chapter 6 SD director password):
 
 ```bash
-XDG_RUNTIME_DIR=/run/user/1001 systemctl --user restart bareos-storage
+sudo tee /etc/bareos/bareos-dir.d/storage/TestStorage.conf > /dev/null <<'EOF'
+Storage {
+  Name = TestStorage
+  Address = bareos-storage
+  SDPort = 9103
+  Password = "CHANGEME_SD_PASSWORD"
+  Device = TestDevice
+  Media Type = File
+  Maximum Concurrent Jobs = 1
+}
+EOF
+```
 
-# In bconsole, label a new volume in the test device
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole <<EOF
+```bash
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user restart bareos-storage
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< "reload"
+```
+
+### Step 3: Trigger the Denial
+
+```bash
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'EOF'
 label storage=TestStorage volume=TestVol-0001 pool=Scratch
 quit
 EOF
 ```
 
-This will fail. The SD will try to create the volume file, SELinux will deny it.
+This should fail: the SD process (container domain) cannot write a `var_t`/`default_t` directory without the proper label or a `:z` remount.
 
 ### Step 4: Find the AVC Denial
 
 ```bash
-# As root, check for recent denials
-sudo ausearch -m avc -ts recent | grep bareos-test
-
-# Get a human-readable explanation
+sudo ausearch -m avc -ts recent | grep -E 'bareos|storage-test|bareos-test' || true
 sudo ausearch -m avc -ts recent | sudo audit2why
-```
-
-**Expected output:**
-```
-type=AVC ... avc: denied { write } for ... comm="bareos-sd" name="bareos-test-storage"
-...
-Was caused by:
-  Missing type enforcement (TE) allow rule.
-  You can use audit2allow to generate a loadable module to allow this access.
 ```
 
 ### Step 5: Apply the Correct Context (The Right Fix)
 
-Rather than using `audit2allow` for this specific case (adding a policy exception), the correct fix is to label the directory with the proper SELinux context:
+Prefer labeling over `audit2allow` for storage paths:
 
 ```bash
-# Apply the correct context
 sudo semanage fcontext -a -t container_file_t "/srv/bareos-test-storage(/.*)?"
 sudo restorecon -Rv /srv/bareos-test-storage
-
-# Verify
 ls -laZ /srv/bareos-test-storage
-# Should now show: container_file_t
+# Expected: ... container_file_t:s0
+
+# Optional equivalent for containers: change the Quadlet Volume to end with :z
+# so Podman content-relabels the mount — then daemon-reload + restart SD.
 ```
 
-### Step 6: Generate an audit2allow Module (Demonstration)
+### Step 6: `audit2allow` (Demonstration Only — Do Not Prefer This Here)
 
-In cases where a correct policy type does not exist, `audit2allow` is the right tool:
+Generate a module to see what a local exception would look like, then **discard it** for this lab. Installing ad-hoc modules for missing labels is the wrong fix when `container_file_t` already exists:
 
 ```bash
-# Generate a policy module
-sudo ausearch -m avc -ts recent | audit2allow -M bareos_local_test
-
-# Review what will be allowed (IMPORTANT: read this before installing)
-cat bareos_local_test.te
-
-# Install the module
-sudo semodule -i bareos_local_test.pp
-
-# Verify
-sudo semodule -l | grep bareos_local_test
+sudo ausearch -m avc -ts recent | audit2allow -M bareos_local_test || true
+# Review bareos_local_test.te if generated — then delete the files; do not semodule -i
+rm -f bareos_local_test.te bareos_local_test.pp
 ```
 
 ### Step 7: Verify the Fix
 
 ```bash
-# Retry the volume labeling
-XDG_RUNTIME_DIR=/run/user/1001 podman exec -it bareos-director bconsole <<EOF
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user restart bareos-storage
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'EOF'
 label storage=TestStorage volume=TestVol-0001 pool=Scratch
 quit
 EOF
-
-# It should succeed now
 ```
+
+Cleanup when finished: remove `TestDevice.conf` / `TestStorage.conf`, drop the lab `Volume=` line, `daemon-reload`, restart SD, and `sudo rm -rf /srv/bareos-test-storage`.
 
 ---
 
@@ -2099,13 +2105,13 @@ EOF
 ```bash
 XDG_RUNTIME_DIR=/run/user/1001 systemctl --user stop bareos-director
 
-# Run dbcheck in verbose scan mode first
+# Run dbcheck in verbose scan mode first (drop-in tree from Chapter 6)
 XDG_RUNTIME_DIR=/run/user/1001 podman run --rm \
   --env-file /home/bareos/.config/bareos/db.env \
   --network bareos \
   -v /etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z \
   docker.io/bareos/bareos-director:24 \
-  dbcheck -c /etc/bareos/bareos-dir.conf -v 2>&1 | head -100
+  dbcheck -c /etc/bareos/bareos-dir.d -v 2>&1 | head -100
 
 # Now run non-interactively with fixes enabled (-b batch, -f fix, -v verbose)
 XDG_RUNTIME_DIR=/run/user/1001 podman run --rm \
@@ -2113,7 +2119,7 @@ XDG_RUNTIME_DIR=/run/user/1001 podman run --rm \
   --network bareos \
   -v /etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z \
   docker.io/bareos/bareos-director:24 \
-  dbcheck -c /etc/bareos/bareos-dir.conf -b -f -v
+  dbcheck -c /etc/bareos/bareos-dir.d -b -f -v
 ```
 
 ### Step 6: Restart and Verify

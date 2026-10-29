@@ -218,7 +218,7 @@ A `.network` file describes a Podman network. It maps to a systemd service that 
 NetworkName=bareos
 
 # The subnet to allocate from this network.
-Subnet=10.89.1.0/24
+Subnet=10.89.10.0/24
 
 # Enable DNS resolution between containers on this network.
 DNS=true
@@ -235,7 +235,7 @@ A `.pod` file describes a Podman pod — a group of containers that share a netw
 
 ```ini
 [Pod]
-PublishPort=9101:9101
+PublishPort=127.0.0.1:9101:9101
 Network=bareos.network
 ```
 
@@ -685,9 +685,9 @@ Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,z
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 EnvironmentFile=/home/bareos/.config/bareos/db.env
 
-# The Director listens on port 9101 for File Daemon connections.
-# We publish this port so external clients can connect.
-PublishPort=9101:9101
+# Director listen port — localhost-only in the lab stack (Chapter 6).
+# Widen only after TLS (Chapter 15) if remote consoles must reach the host.
+PublishPort=127.0.0.1:9101:9101
 
 # Health check: verify the Director's listener port is accepting TCP
 # connections. A TCP check is more reliable than running bconsole
@@ -759,8 +759,8 @@ Volume=bareos-working.volume:/var/lib/bareos
 
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 
-# The SD listens on 9103 for Director connections.
-PublishPort=9103:9103
+# SD listen port — localhost-only in the lab stack (Chapter 6 / Chapter 15).
+PublishPort=127.0.0.1:9103:9103
 
 # Prefer a TCP check — official Bareos storage images do not ship
 # /usr/local/bin/healthcheck.sh. Adjust if your image provides one.
@@ -1106,7 +1106,8 @@ BAREOS_SD_PASSWORD=change-me-sd-password
 BAREOS_FD_PASSWORD=change-me-fd-password
 
 # Director's own password (used by bconsole to authenticate).
-BAREOS_DIR_PASSWORD=change-me-dir-password
+# Canonical name matches Chapter 6 bareos.env (not BAREOS_DIR_PASSWORD).
+BAREOS_DIRECTOR_PASSWORD=change-me-dir-password
 
 # Hostname of the database container (used by Director config).
 BAREOS_DB_HOST=bareos-db
@@ -1575,7 +1576,7 @@ EOF
 sudo -u bareos tee /home/bareos/.config/bareos/bareos.env > /dev/null << 'EOF'
 BAREOS_SD_PASSWORD=BareosProd2026SD!
 BAREOS_FD_PASSWORD=BareosProd2026FD!
-BAREOS_DIR_PASSWORD=BareosProd2026DIR!
+BAREOS_DIRECTOR_PASSWORD=BareosProd2026DIR!
 BAREOS_DB_HOST=bareos-db
 BAREOS_DB_NAME=bareos
 BAREOS_DB_USER=bareos
