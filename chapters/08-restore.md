@@ -717,9 +717,17 @@ This is test file 2 for restore lab
 Contains: important data
 EOF
 
-# Step 2: Modify the FileSet to include the host path via /hostfs
-# (For this lab only — add to the RHEL10-Standard Include block)
-# Add: File = /hostfs/tmp/restore-lab-source
+# Step 2: Add the lab path to the RHEL10-Standard FileSet (Include block).
+# Without this edit + reload, the backup will not contain the test files.
+sudo -u bareos bash -c '
+  FILESET=/etc/bareos/bareos-dir.d/fileset/RHEL10-Standard.conf
+  if ! grep -q "restore-lab-source" "$FILESET"; then
+    # Insert before the closing brace of the Include block (before Exclude or final })
+    sed -i "/File = \\/var\\/lib\\/bareos/a\\    File = /hostfs/tmp/restore-lab-source" "$FILESET" \
+      || echo "Edit $FILESET manually: add  File = /hostfs/tmp/restore-lab-source  inside Include { }"
+  fi
+  grep -n "restore-lab-source" "$FILESET"
+'
 
 # Step 3: Run a Full backup including the test data
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<'EOF'

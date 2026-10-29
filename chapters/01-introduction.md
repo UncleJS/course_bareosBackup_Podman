@@ -194,7 +194,7 @@ Running Bareos in containers addresses all of these:
 ### What About the File Daemon?
 The **Bareos File Daemon** (the component that runs on each client being backed up) can be deployed in two ways: installed directly on the client machine via RPM, or run as a Podman container alongside the other Bareos components. In this course we deploy the File Daemon as a **container** (`bareos-client:24`) on the same Podman host, which demonstrates backing up the host's own container volumes and is fully consistent with the course's container-first philosophy.
 
-For backing up external client machines (bare-metal servers, VMs, etc.), you would install the File Daemon via RPM on that remote host — that pattern is standard and covered in the multi-client scenarios in later chapters.
+For backing up external client machines (bare-metal servers, VMs, etc.), install the File Daemon via RPM on that remote host, open firewall ports, and register a Director `Client` with a reachable `Address`. This course covers the **same-host hybrid** pattern in [Chapter 21](./21-host-file-daemon.md) (container DIR/SD/DB/WebUI + host FD with `CAP_DAC_READ_SEARCH`). A full multi-host remote-client lab is out of scope; Chapter 21's addressing notes (localhost SD publish vs host IP, TLS before widening publish) are the starting point for that extension.
 
 ---
 
@@ -205,12 +205,13 @@ For backing up external client machines (bare-metal servers, VMs, etc.), you wou
 This course is structured as a **progressive journey**:
 
 ```
-Beginner ──────────────────────────────────────────── Advanced
-    │                                                      │
-    ▼                                                      ▼
-Ch 1-2          Ch 3-6           Ch 7-8        Ch 9-14        Ch 15-20
+Beginner ──────────────────────────────────────────────── Advanced
+    │                                                           │
+    ▼                                                           ▼
+Ch 1-2          Ch 3-6           Ch 7-8        Ch 9-14        Ch 15-21
 Concepts     Prerequisites    First Backup   Podman Focus   Production
 & Theory     & Foundation     & Restore      Deep Dives     Hardening
+                                                              (TLS + host FD)
 ```
 
 ### How to Use Each Chapter

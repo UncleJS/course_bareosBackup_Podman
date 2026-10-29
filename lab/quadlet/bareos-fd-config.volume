@@ -1,0 +1,7 @@
+# bareos-fd-config.volume — File Daemon configuration (/etc/bareos inside the container)
+
+[Volume]
+VolumeName=bareos-fd-config
+Driver=local
+Label=app=bareos
+Label=component=fd

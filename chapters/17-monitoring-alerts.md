@@ -17,7 +17,7 @@
   - [Complete Messages Resource Configurations](#complete-messages-resource-configurations)
   - [Message Subject Line Customization](#message-subject-line-customization)
 - [4. Setting Up Email Delivery from Containers](#4-setting-up-email-delivery-from-containers)
-  - [Option A: msmtp (Recommended for Simple Setups)](#option-a-msmtp-recommended-for-simple-setups)
+  - [Option A: msmtp (Alternative — Prefer a Custom Image)](#option-a-msmtp-alternative--prefer-a-custom-image)
   - [Option B: Postfix on the Host as an SMTP Relay](#option-b-postfix-on-the-host-as-an-smtp-relay)
 - [5. Bareos bconsole Status Commands](#5-bareos-bconsole-status-commands)
   - [Accessing bconsole](#accessing-bconsole)
@@ -412,13 +412,13 @@ Bareos containers need to send email via SMTP. Since the containers run rootless
 
 > **Preferred: native `bsmtp`.** The Bareos image already ships `/usr/bin/bsmtp`, which speaks SMTP directly to a relay. If you set `Mail Command`/`Operator Command` to use `bsmtp -h <relay>:<port>` (as shown in [Section 3](#message-subject-line-customization)), you need **no extra binary inside the container** — point `-h` at any reachable relay (an SMTP smarthost, or the host's Postfix via `host.containers.internal:25`). The options below are only needed if you want a separate, configurable SMTP client (TLS auth from a config file, multiple accounts, etc.).
 
-### Option A: msmtp (Alternative — Configurable SMTP Client)
+### Option A: msmtp (Alternative — Prefer a Custom Image)
 
-`msmtp` is a minimal SMTP client that reads a config file and sends email. Use it instead of `bsmtp` when you need stored TLS credentials or multiple SMTP accounts. It is injected into the Director container via a bind mount.
+`msmtp` is a minimal SMTP client that reads a config file and sends email. Use it instead of `bsmtp` when you need stored TLS credentials or multiple SMTP accounts.
 
-**Approach**: Create a custom Director image that includes msmtp, or inject the binary via a bind mount.
+**Preferred approach:** build a small custom Director image that `dnf`/`apt`-installs `msmtp` so the binary matches the image libc. **Avoid bind-mounting the host `/usr/bin/msmtp`** into the Bareos container — RHEL’s binary usually fails inside a Debian-based Bareos image (dynamic linker / library mismatch).
 
-For this course, we use a bind mount to inject a pre-installed msmtp binary and configuration into the Director container.
+The bind-mount sketch below is for illustration only if you build a matching binary into a path you control; production should use a derived image.
 
 ```bash
 # On the RHEL 10 host — install msmtp to a location we can bind into the container
@@ -1040,7 +1040,7 @@ global:
 alerting:
   alertmanagers:
     - static_configs:
-        - targets: ['localhost:9093']
+        - targets: ['alertmanager:9093']   # same bareos.network DNS — not localhost
 
 # Load alert rules from files
 rule_files:
@@ -2500,7 +2500,7 @@ This chapter covered the complete monitoring and alerting stack for a production
 
 **Messages resources are the email routing system**: Every Bareos daemon (Director, Storage Daemon, File Daemon) has its own Messages resource. They use `director =` directives to forward messages upward to the Director, which does the actual sending. Understanding the message type selectors (`all`, `!skipped`, `error`, `fatal`) is essential for controlling notification volume.
 
-**msmtp is the right tool for container email**: Rather than running a full MTA inside the container, bind-mounting msmtp from the host gives you a lightweight, configurable SMTP client that works with any external relay.
+**Prefer in-image `bsmtp` for container email**: The Bareos Director image already ships `bsmtp`. Point `Mail Command` at a reachable SMTP relay. Use a custom image with `msmtp` only when you need config-file TLS accounts — do not bind-mount the host `msmtp` binary into a mismatched libc image.
 
 **bconsole is your primary diagnostic tool**: `status director`, `list jobs`, `list volumes`, and `list joblog jobid=N` answer 90% of diagnostic questions. Wrapping these in health check scripts gives you integration with external monitoring systems.
 

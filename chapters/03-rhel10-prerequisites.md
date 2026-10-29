@@ -287,7 +287,9 @@ firewalld uses the concept of **zones** — named trust levels for network inter
 | `internal` | Trusted internal network | LAN/data-center interfaces |
 | `trusted` | All traffic allowed | Management interfaces |
 
-For Bareos, we recommend assigning the server's primary network interface to the `internal` zone and opening Bareos ports there:
+> **Lab vs production:** Chapter 6 publishes Director/SD/FD/WebUI on **`127.0.0.1` only**. East-west traffic between containers uses the `bareos` Podman network (DNS names), not host firewall ports. Opening 9101–9103 on the LAN interface is for **remote** consoles/FDs (and Chapter 21 hybrid patterns after TLS). For the localhost-only lab stack, ensure loopback is trusted (below); LAN opens are optional until you widen `PublishPort`.
+
+For production or multi-host labs, assign the server's primary network interface to the `internal` zone and open Bareos ports there:
 
 ```bash
 # Check current zone assignment for the active interface
@@ -296,13 +298,13 @@ sudo firewall-cmd --get-active-zones
 # Assign interface to internal zone (replace ens3 with your interface name)
 sudo firewall-cmd --permanent --zone=internal --add-interface=ens3
 
-# Open Bareos Director port (for bconsole clients)
+# Open Bareos Director port (for remote bconsole / WebUI reverse proxies)
 sudo firewall-cmd --permanent --zone=internal --add-port=9101/tcp
 
-# Open Bareos Storage Daemon port (for File Daemons)
+# Open Bareos Storage Daemon port (for remote File Daemons)
 sudo firewall-cmd --permanent --zone=internal --add-port=9103/tcp
 
-# Open Bareos File Daemon port (for the Director to connect back to this host)
+# Open Bareos File Daemon port (for the Director to reach a host FD)
 sudo firewall-cmd --permanent --zone=internal --add-port=9102/tcp
 
 # Reload to apply permanent rules
@@ -314,7 +316,7 @@ sudo firewall-cmd --zone=internal --list-ports
 
 ### Why the File Daemon Port Matters on the Backup Server
 
-Even if you run the Director and Storage Daemon on the same host (as we do in this course), the Director initiates connections *back to* the File Daemon running on that same host. The firewall must allow this loopback connection, or the Director will fail to connect with a cryptic timeout error.
+Even if you run the Director and Storage Daemon on the same host (as we do in this course), the Director initiates connections *back to* the File Daemon. In the Chapter 6 container stack that path is **inside** the `bareos` network (Director → `bareos-fd:9102`), so host firewalld does not mediate it. When the FD is on the host (Chapter 21) or on a remote machine, firewalld (and `PublishPort`) must allow Director → FD on 9102. Loopback must remain trusted for localhost publishes:
 
 ```bash
 # Allow loopback traffic (should be allowed by default, but verify)

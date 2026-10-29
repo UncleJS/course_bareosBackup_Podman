@@ -17,6 +17,7 @@
 5. [Chapter Summary Table](#chapter-summary-table)
 6. [Quick Reference](#quick-reference)
 7. [Key Concepts Glossary](#key-concepts-glossary)
+8. [Lab Assets](#lab-assets)
 
 ---
 
@@ -48,8 +49,8 @@ Chapter 6 keeps the File Daemon in a container (with `/hostfs`) for the lab path
 ### Who This Course Is For
 
 This course is designed for Linux system administrators and DevOps engineers who:
-- Are responsible for backup and recovery in environments running RHEL 8/9/10
-- Are deploying or migrating to Podman-based container workloads
+- Are responsible for backup and recovery on **RHEL 10** (or CentOS Stream / AlmaLinux / Rocky Linux 10)
+- Are deploying or migrating to Podman-based container workloads (Podman 5 / pasta networking)
 - Want to replace aging backup solutions (Amanda, rsync scripts, Bacula) with a modern, supportable platform
 - Need to understand SELinux well enough to operate containers safely
 
@@ -83,7 +84,7 @@ You do **not** need prior experience with:
 - A RHEL 10 (or CentOS Stream 10 / AlmaLinux 10 / Rocky Linux 10) installation, either physical hardware, a VM, or a cloud instance
 - Internet access from the lab machine to pull container images from `docker.io`
 - A user account with `sudo` privileges to perform initial system setup
-- At least 20 GB of free disk space for backup storage and container images
+- At least **50 GB** free for backup storage (100 GB recommended on a separate disk) plus space for container images
 
 ### Recommended but Optional
 
@@ -252,39 +253,39 @@ Chapter 6 is the source of truth. Later chapters must reuse these names unless t
 
 | Chapter | Title | File |
 |---|---|---|
-| 1 | Introduction to Bareos and Backup Fundamentals | [chapters/01-introduction.md](chapters/01-introduction.md) |
-| 2 | Core Backup Concepts | [chapters/02-backup-concepts.md](chapters/02-backup-concepts.md) |
-| 3 | RHEL 10 Prerequisites and Setup | [chapters/03-rhel10-prerequisites.md](chapters/03-rhel10-prerequisites.md) |
-| 4 | Podman Primer for Backup Engineers | [chapters/04-podman-primer.md](chapters/04-podman-primer.md) |
+| 1 | What is Bareos and Why Use It? | [chapters/01-introduction.md](chapters/01-introduction.md) |
+| 2 | Backup Fundamentals | [chapters/02-backup-concepts.md](chapters/02-backup-concepts.md) |
+| 3 | RHEL 10 Prerequisites | [chapters/03-rhel10-prerequisites.md](chapters/03-rhel10-prerequisites.md) |
+| 4 | Podman Primer for Sysadmins | [chapters/04-podman-primer.md](chapters/04-podman-primer.md) |
 | 5 | Bareos Architecture Deep Dive | [chapters/05-bareos-architecture.md](chapters/05-bareos-architecture.md) |
 
 ### Part 2: Deployment
 
 | Chapter | Title | File |
 |---|---|---|
-| 6 | Running Bareos in Podman Containers | [chapters/06-bareos-in-podman.md](chapters/06-bareos-in-podman.md) |
+| 6 | Deploying Bareos in Podman | [chapters/06-bareos-in-podman.md](chapters/06-bareos-in-podman.md) |
 | 7 | Your First Backup Job | [chapters/07-first-backup-job.md](chapters/07-first-backup-job.md) |
-| 8 | Restoring Files and Directories | [chapters/08-restore.md](chapters/08-restore.md) |
+| 8 | Restoring Data | [chapters/08-restore.md](chapters/08-restore.md) |
 
 ### Part 3: Advanced Backup Targets
 
 | Chapter | Title | File |
 |---|---|---|
 | 9 | Backing Up Podman Volumes | [chapters/09-podman-volume-backups.md](chapters/09-podman-volume-backups.md) |
-| 10 | Pre- and Post-Job Hooks | [chapters/10-podman-hooks.md](chapters/10-podman-hooks.md) |
-| 11 | Backing Up Container Images | [chapters/11-podman-image-export.md](chapters/11-podman-image-export.md) |
-| 12 | Quadlet and systemd Integration | [chapters/12-quadlet-systemd-integration.md](chapters/12-quadlet-systemd-integration.md) |
-| 13 | Rootless Podman Security Model | [chapters/13-rootless-podman-specifics.md](chapters/13-rootless-podman-specifics.md) |
-| 14 | Backing Up Database Containers | [chapters/14-database-containers.md](chapters/14-database-containers.md) |
+| 10 | Pre- and Post-Job Hooks for Container-Aware Backups | [chapters/10-podman-hooks.md](chapters/10-podman-hooks.md) |
+| 11 | Backing Up and Restoring Podman Container Images | [chapters/11-podman-image-export.md](chapters/11-podman-image-export.md) |
+| 12 | Deep Dive into Quadlet and systemd Integration | [chapters/12-quadlet-systemd-integration.md](chapters/12-quadlet-systemd-integration.md) |
+| 13 | Rootless Podman — Security Model and Operational Nuances | [chapters/13-rootless-podman-specifics.md](chapters/13-rootless-podman-specifics.md) |
+| 14 | Backing Up Database Containers (MariaDB and PostgreSQL) | [chapters/14-database-containers.md](chapters/14-database-containers.md) |
 
 ### Part 4: Operations and Hardening
 
 | Chapter | Title | File |
 |---|---|---|
-| 15 | TLS Encryption and Certificate Management | [chapters/15-tls-security.md](chapters/15-tls-security.md) |
-| 16 | Advanced Schedules, Pools, and Retention | [chapters/16-advanced-schedules-pools.md](chapters/16-advanced-schedules-pools.md) |
+| 15 | TLS Encryption and Certificate Management for Bareos | [chapters/15-tls-security.md](chapters/15-tls-security.md) |
+| 16 | Advanced Schedules, Pools, and Retention Policies | [chapters/16-advanced-schedules-pools.md](chapters/16-advanced-schedules-pools.md) |
 | 17 | Monitoring, Alerting, and Reporting | [chapters/17-monitoring-alerts.md](chapters/17-monitoring-alerts.md) |
-| 18 | Disaster Recovery — Restoring from Scratch | [chapters/18-disaster-recovery.md](chapters/18-disaster-recovery.md) |
+| 18 | Disaster Recovery — Restoring Everything from Scratch | [chapters/18-disaster-recovery.md](chapters/18-disaster-recovery.md) |
 | 19 | Performance Tuning and Optimization | [chapters/19-performance-tuning.md](chapters/19-performance-tuning.md) |
 | 20 | Troubleshooting Guide | [chapters/20-troubleshooting.md](chapters/20-troubleshooting.md) |
 | 21 | Host File Daemon with CAP_DAC_READ_SEARCH | [chapters/21-host-file-daemon.md](chapters/21-host-file-daemon.md) |
@@ -295,25 +296,25 @@ Chapter 6 is the source of truth. Later chapters must reuse these names unless t
 
 | # | Title | Key Topics | Difficulty |
 |---|---|---|---|
-| 1 | Introduction to Bareos and Backup Fundamentals | What Bareos is, history, components overview, why containerized deployment, course roadmap | Beginner |
-| 2 | Core Backup Concepts | Full/incremental/differential backups, retention policies, RPO vs RTO, backup windows, deduplication, encryption at rest | Beginner |
-| 3 | RHEL 10 Prerequisites and Setup | bareos user creation, sub-UIDs, SELinux contexts, firewalld rules, storage partitioning, NTP | Beginner |
-| 4 | Podman Primer for Backup Engineers | Rootless vs rootful, namespaces, volumes, networks, pasta, `podman run`, `podman exec`, `podman logs` | Beginner |
+| 1 | What is Bareos and Why Use It? | What Bareos is, history, components overview, why containerized deployment, course roadmap | Beginner |
+| 2 | Backup Fundamentals | Full/incremental/differential backups, retention policies, RPO vs RTO, backup windows, deduplication, encryption at rest | Beginner |
+| 3 | RHEL 10 Prerequisites | bareos user creation, sub-UIDs, SELinux contexts, firewalld rules, storage partitioning, NTP | Beginner |
+| 4 | Podman Primer for Sysadmins | Rootless vs rootful, namespaces, volumes, networks, pasta, `podman run`, `podman exec`, `podman logs` | Beginner |
 | 5 | Bareos Architecture Deep Dive | Director, Storage Daemon, File Daemon, Catalog, Console; resource types; job lifecycle; data flow | Intermediate |
-| 6 | Running Bareos in Podman Containers | Quadlet `.container` files, MariaDB setup, database initialization, env files, named volumes, service dependencies, Bareos WebUI deployment | Intermediate |
+| 6 | Deploying Bareos in Podman | Quadlet `.container` files, MariaDB setup, database initialization, env files, named volumes, service dependencies, Bareos WebUI deployment | Intermediate |
 | 7 | Your First Backup Job | FileSet, Schedule, Pool, Job resources; running a Full backup; reading job logs; verifying in catalog | Beginner |
-| 8 | Restoring Files and Directories | `restore` command in bconsole, restore wizard, `where` parameter, replace modes, restoring to alternate client | Beginner |
+| 8 | Restoring Data | `restore` command in bconsole, restore wizard, `where` parameter, replace modes, restoring to alternate client | Beginner |
 | 9 | Backing Up Podman Volumes | Volume export patterns, `podman volume export`, bind-mounting volumes into FD, catalog tracking, restore strategy | Intermediate |
-| 10 | Pre- and Post-Job Hooks | `RunScript` directive, shell scripts in containers, stopping/starting application containers before backup, `ClientRunBeforeJob` | Intermediate |
-| 11 | Backing Up Container Images | `podman save`, exporting to tar archives, FileSet targeting tar files, restoring images with `podman load` | Intermediate |
-| 12 | Quadlet and systemd Integration | Quadlet generator, `.container` `.network` `.volume` files, `After=` / `Requires=`, `HealthCmd=`, drop-in overrides | Intermediate |
-| 13 | Rootless Podman Security Model | User namespaces, UID mapping, sub-UID ranges, capabilities, seccomp, SELinux MCS labels, `--userns=keep-id` | Advanced |
-| 14 | Backing Up Database Containers | MariaDB `mysqldump` in pre-job hooks, PostgreSQL `pg_dump`, MongoDB `mongodump`, verifying dump integrity | Advanced |
-| 15 | TLS Encryption and Certificates | Bareos TLS architecture, generating a CA + daemon certificates with `openssl`, configuring TLS in Director/SD/FD, verifying TLS | Advanced |
-| 16 | Advanced Schedules and Pools | Full/Differential/Incremental schedule design, pool definitions, volume retention, recycling, pool-per-client patterns | Advanced |
-| 17 | Monitoring and Alerting | `mail` command in Job resources, Bareos WebUI dashboards, Prometheus exporter, Grafana dashboard, failure alerting | Intermediate |
-| 18 | Disaster Recovery | Recovery scenarios (host failure, catalog loss, volume corruption), bootstrap files, bare-metal restore procedure, testing DR | Advanced |
-| 19 | Performance Tuning | Parallel jobs, spooling configuration, catalog query optimization, network bandwidth tuning, compression settings | Advanced |
+| 10 | Pre- and Post-Job Hooks for Container-Aware Backups | `RunScript` directive, shell scripts in containers, stopping/starting application containers before backup, `ClientRunBeforeJob` | Intermediate |
+| 11 | Backing Up and Restoring Podman Container Images | `podman save`, exporting to tar archives, FileSet targeting tar files, restoring images with `podman load` | Intermediate |
+| 12 | Deep Dive into Quadlet and systemd Integration | Quadlet generator, `.container` `.network` `.volume` files, `After=` / `Requires=`, `HealthCmd=`, drop-in overrides | Intermediate |
+| 13 | Rootless Podman — Security Model and Operational Nuances | User namespaces, UID mapping, sub-UID ranges, capabilities, seccomp, SELinux MCS labels, `--userns=keep-id` | Advanced |
+| 14 | Backing Up Database Containers (MariaDB and PostgreSQL) | MariaDB `mariadb-dump` in pre-job hooks, PostgreSQL `pg_dump`, verifying dump integrity | Advanced |
+| 15 | TLS Encryption and Certificate Management for Bareos | Bareos TLS architecture, generating a CA + daemon certificates with `openssl`, configuring TLS in Director/SD/FD, verifying TLS | Advanced |
+| 16 | Advanced Schedules, Pools, and Retention Policies | Full/Differential/Incremental schedule design, pool definitions, volume retention, recycling, pool-per-client patterns | Advanced |
+| 17 | Monitoring, Alerting, and Reporting | `mail` command in Job resources, Bareos WebUI dashboards, Prometheus exporter, Grafana dashboard, failure alerting | Intermediate |
+| 18 | Disaster Recovery — Restoring Everything from Scratch | Recovery scenarios (host failure, catalog loss, volume corruption), bootstrap files, bare-metal restore procedure, testing DR | Advanced |
+| 19 | Performance Tuning and Optimization | Parallel jobs, spooling configuration, catalog query optimization, network bandwidth tuning, compression settings | Advanced |
 | 20 | Troubleshooting Guide | Job log analysis, daemon logs, SELinux AVC diagnosis, Quadlet failures, dbcheck, authorization errors, volume problems | All levels |
 | 21 | Host File Daemon with CAP_DAC_READ_SEARCH | Hybrid stack (container DIR/SD/DB/WebUI + host FD), AmbientCapabilities, systemd drop-ins, FileSets without `/hostfs`, restore differences | Advanced |
 
@@ -600,6 +601,12 @@ If you are looking for help with a specific problem, go directly to [Chapter 20:
 
 ---
 
+## Lab Assets
+
+Reusable Quadlet units, env templates (no secrets), and helper scripts live under [`lab/`](lab/). Chapters remain the source of truth for procedure and narrative; use `lab/` to reduce copy-paste errors when deploying the Chapter 6 stack. See [`lab/README.md`](lab/README.md).
+
+---
+
 ## Container Image Reference
 
 All container images used in this course:
@@ -609,6 +616,7 @@ All container images used in this course:
 | Bareos Director | `docker.io/bareos/bareos-director` | `24` |
 | Bareos Storage Daemon | `docker.io/bareos/bareos-storage` | `24` |
 | Bareos File Daemon (client) | `docker.io/bareos/bareos-client` | `24` |
+| Bareos WebUI | `docker.io/bareos/bareos-webui` | `24` |
 | MariaDB (Catalog) | `docker.io/library/mariadb` | `10.11` |
 
 Pull all images before starting Chapter 6:
@@ -618,6 +626,7 @@ Pull all images before starting Chapter 6:
 podman pull docker.io/bareos/bareos-director:24
 podman pull docker.io/bareos/bareos-storage:24
 podman pull docker.io/bareos/bareos-client:24
+podman pull docker.io/bareos/bareos-webui:24
 podman pull docker.io/library/mariadb:10.11
 ```
 

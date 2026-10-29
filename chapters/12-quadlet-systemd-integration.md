@@ -368,7 +368,7 @@ cat /run/user/1001/systemd/generator/bareos-director.service
 Running multiple containers that depend on each other requires careful ordering. Bareos has a hard dependency chain:
 
 ```
-MariaDB must be healthy → Bareos Director can start → Bareos Storage Daemon can connect
+MariaDB must be healthy → Storage Daemon started → Bareos Director can start (Chapter 6: DIR Requires DB + SD)
 ```
 
 systemd provides several directives to express these relationships. They are placed in the `[Unit]` section of Quadlet files.
@@ -658,8 +658,9 @@ Description=Bareos Director
 # Requires= here; switch to BindsTo= only if you want hard teardown
 # coupling.) Because bareos-db sets Notify=healthy, ordering After= it
 # means the Director starts only once MariaDB reports healthy.
-After=bareos-db.service bareos-network.service
-Requires=bareos-db.service bareos-network.service
+# Match Chapter 6: Director waits for a healthy DB and a started Storage Daemon.
+After=bareos-db.service bareos-storage.service bareos-network.service
+Requires=bareos-db.service bareos-storage.service bareos-network.service
 
 [Container]
 Image=docker.io/bareos/bareos-director:24
@@ -825,6 +826,9 @@ Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,z
 # relabel /, so a relabel request would fail startup; instead the unit
 # sets SecurityLabelDisable=true (below).
 Volume=/:/hostfs:ro
+
+# Writable restore staging (Chapter 8+) — /hostfs is read-only.
+Volume=/var/tmp/bareos-restores:/var/tmp/bareos-restores:z
 
 # Mount the Podman socket so hook scripts can issue podman exec / pause /
 # stop commands against the host container runtime (Chapter 10, Sec 3).
@@ -1539,7 +1543,7 @@ sudo chown -R bareos:bareos /etc/bareos
 sudo -u bareos install -d -m 700 /home/bareos/.config/bareos
 ```
 
-> **Lab scope:** This lab brings up the core daemons — MariaDB, Director, Storage Daemon, and File Daemon — using the four volumes and one network from Section 6 (eight Quadlet files in total). The WebUI (`bareos-webui-config.volume` + `bareos-webui.container`) is optional and omitted here; add it afterward following Section 6 to reach the full ten-file stack. Populate the `bareos-dir.d`/`bareos-sd.d` config trees and the File Daemon's `bareos-fd-config` volume as shown in Chapter 6.
+> **Lab scope:** This lab rebuilds the **full Chapter 6 stack** — MariaDB, Director, Storage Daemon, File Daemon, **and WebUI** — using the network, volumes, and container Quadlets from Section 6 (ten Quadlet files). Populate the `bareos-dir.d`/`bareos-sd.d` config trees and the File Daemon / WebUI config volumes as shown in Chapter 6 before declaring the lab complete.
 
 ### Step 2: Set up the storage path with correct SELinux type
 
@@ -1563,30 +1567,31 @@ ls -laZ /srv/bareos-storage/volumes
 
 ### Step 3: Create the env files
 
+Generate unique secrets (do **not** copy memorable “Prod” passwords into real labs or production):
+
 ```bash
-# Create db.env
-sudo -u bareos tee /home/bareos/.config/bareos/db.env > /dev/null << 'EOF'
-MARIADB_ROOT_PASSWORD=BareosProd2026Root!
+# Create db.env with openssl-generated secrets (same pattern as Chapter 6)
+sudo -u bareos bash -c '
+  install -d -m 700 /home/bareos/.config/bareos
+  cat > /home/bareos/.config/bareos/db.env << EOF
+MARIADB_ROOT_PASSWORD=$(openssl rand -base64 32)
 MARIADB_DATABASE=bareos
 MARIADB_USER=bareos
-MARIADB_PASSWORD=BareosProd2026DB!
+MARIADB_PASSWORD=$(openssl rand -base64 32)
 EOF
-
-# Create bareos.env
-sudo -u bareos tee /home/bareos/.config/bareos/bareos.env > /dev/null << 'EOF'
-BAREOS_SD_PASSWORD=BareosProd2026SD!
-BAREOS_FD_PASSWORD=BareosProd2026FD!
-BAREOS_DIRECTOR_PASSWORD=BareosProd2026DIR!
+  cat > /home/bareos/.config/bareos/bareos.env << EOF
+BAREOS_SD_PASSWORD=$(openssl rand -base64 32)
+BAREOS_FD_PASSWORD=$(openssl rand -base64 32)
+BAREOS_DIRECTOR_PASSWORD=$(openssl rand -base64 32)
 BAREOS_DB_HOST=bareos-db
 BAREOS_DB_NAME=bareos
 BAREOS_DB_USER=bareos
 EOF
+  chmod 600 /home/bareos/.config/bareos/db.env /home/bareos/.config/bareos/bareos.env
+'
 
-# Secure the files
-sudo chmod 600 /home/bareos/.config/bareos/db.env
-sudo chmod 600 /home/bareos/.config/bareos/bareos.env
-sudo chown bareos:bareos /home/bareos/.config/bareos/db.env
-sudo chown bareos:bareos /home/bareos/.config/bareos/bareos.env
+# Copy the generated literals into bareos-dir.d / bareos-sd.d / FD configs
+# (EnvironmentFile= does not substitute into .conf files — see Chapter 6).
 
 # Verify permissions
 ls -la /home/bareos/.config/bareos/
@@ -1597,16 +1602,18 @@ ls -la /home/bareos/.config/bareos/
 Write each file from Section 6 into `/home/bareos/.config/containers/systemd/`. The complete list:
 
 ```bash
-# List the files to create (core daemons; WebUI files added separately)
+# Full Chapter 6 stack including WebUI
 ls /home/bareos/.config/containers/systemd/
 # bareos-db-data.volume
 # bareos-working.volume
 # bareos-fd-config.volume
+# bareos-webui-config.volume
 # bareos.network
 # bareos-db.container
 # bareos-director.container
 # bareos-storage.container
 # bareos-fd.container
+# bareos-webui.container
 ```
 
 Set correct ownership:

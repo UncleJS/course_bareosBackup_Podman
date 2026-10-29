@@ -589,7 +589,7 @@ Label=app=bareos
 NetworkName=bareos
 Driver=bridge
 Subnet=10.89.10.0/24
-Gateway=10.89.0.1
+Gateway=10.89.10.1
 Label=app=bareos
 ```
 
@@ -622,8 +622,9 @@ Description=Bareos Backup Stack Pod
 
 [Pod]
 PodName=bareos
-PublishPort=9101:9101
-PublishPort=9103:9103
+# Lab stack publishes on loopback only (match Chapter 6); widen after TLS.
+PublishPort=127.0.0.1:9101:9101
+PublishPort=127.0.0.1:9103:9103
 
 [Install]
 WantedBy=default.target

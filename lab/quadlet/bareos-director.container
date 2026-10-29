@@ -1,0 +1,33 @@
+# bareos-director.container — Bareos Director (Chapter 6)
+
+[Unit]
+Description=Bareos Director
+Documentation=https://docs.bareos.org
+After=network-online.target
+After=bareos-db.service
+After=bareos-storage.service
+Requires=bareos-db.service
+Requires=bareos-storage.service
+
+[Container]
+Image=docker.io/bareos/bareos-director:24
+ContainerName=bareos-director
+HostName=bareos-director
+EnvironmentFile=/home/bareos/.config/bareos/bareos.env
+EnvironmentFile=/home/bareos/.config/bareos/db.env
+Volume=/etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z
+Volume=bareos-working.volume:/var/lib/bareos
+Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,z
+Network=bareos.network
+PublishPort=127.0.0.1:9101:9101
+Memory=512m
+NoNewPrivileges=true
+Label=app=bareos
+Label=component=director
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

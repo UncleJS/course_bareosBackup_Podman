@@ -360,12 +360,18 @@ This approach keeps the image export process separate from the Bareos file trans
 
 ### Job configuration overview
 
+Lab 11-1 (manual export on the host) uses `FileSet-container-images` with
+`/hostfs/var/tmp/bareos-image-exports`. Lab 11-2 (RunScript hook inside the FD)
+uses a **separate** FileSet — `FileSet-container-images-hooked` — with the
+FD-local path `/var/tmp/bareos-image-exports` (no `/hostfs`). Do not reuse the
+Lab 11-1 FileSet for hooked jobs or the backup will miss the staged archives.
+
 ```
 Job {
   Name    = "backup-container-images"
   JobDefs = "StandardBackup"
   Client  = "bareos-fd"
-  FileSet = "FileSet-container-images"
+  FileSet = "FileSet-container-images-hooked"
   Storage = "File"
   Pool    = "Full"
   Type    = Backup
@@ -1174,8 +1180,8 @@ FileSet {
     }
 
     # Manual Lab 11-1 exports on the *host* under /var/tmp — prefix /hostfs
-    # so the containerized FD can read them. Lab 11-2 writes the same path
-    # *inside* the FD (no /hostfs) when export-images.sh runs as a client hook.
+    # so the containerized FD can read them. Lab 11-2 uses a different FileSet
+    # (FileSet-container-images-hooked) for FD-local staging — do not reuse this one.
     File = "/hostfs/var/tmp/bareos-image-exports"
   }
 
@@ -1547,7 +1553,30 @@ sudo restorecon /etc/bareos/scripts/export-images.sh
 sudo restorecon /etc/bareos/scripts/cleanup-image-exports.sh
 ```
 
-### Configure the Bareos Job with the export hook
+### Configure the FileSet and Job for the export hook
+
+`export-images.sh` writes archives **inside** the FD container at
+`/var/tmp/bareos-image-exports`. Create a dedicated FileSet for that path
+(do not reuse Lab 11-1's `/hostfs/...` FileSet):
+
+```
+#
+# /etc/bareos/bareos-dir.d/fileset/fileset-container-images-hooked.conf
+#
+FileSet {
+  Name = "FileSet-container-images-hooked"
+
+  Include {
+    Options {
+      Signature   = SHA1
+      Compression = GZIP1
+    }
+
+    # FD-local staging written by export-images.sh (RunsOnClient = yes)
+    File = "/var/tmp/bareos-image-exports"
+  }
+}
+```
 
 ```
 #
@@ -1557,7 +1586,7 @@ Job {
   Name      = "backup-container-images"
   JobDefs   = "StandardBackup"
   Client    = "bareos-fd"
-  FileSet   = "FileSet-container-images"
+  FileSet   = "FileSet-container-images-hooked"
   Storage   = "File"
   Pool      = "Full"
   Schedule  = "WeeklyCycleAfterBackup"
@@ -1647,39 +1676,56 @@ ls -ld /run/user/1001
 
 ### Step 2: Install and configure the Bareos File Daemon on the restore target
 
-The restore target needs bareos-fd to communicate with the Director. Install it (or start the bareos-fd container):
+The restore target needs an FD the Director knows as **`restore-target-fd`**. Create the client config volume, Quadlet, and Director `Client` resource before restoring.
 
 ```bash
-# As the bareos user, start a temporary bareos-fd container for the restore
+# --- On the restore target, as the bareos user ---
 export XDG_RUNTIME_DIR=/run/user/1001
 
-# Create the Quadlet directory
 mkdir -p /home/bareos/.config/containers/systemd/
+mkdir -p /var/tmp/bareos-restores
+# Create FD config volume and minimal client resource
+podman volume create bareos-fd-config 2>/dev/null || true
+FD_CFG=$(podman volume inspect bareos-fd-config --format '{{.Mountpoint}}')
+mkdir -p "${FD_CFG}/bareos-fd.d/client" "${FD_CFG}/bareos-fd.d/director"
 
-# Create a minimal bareos-fd Quadlet file for the restore operation
-cat > /home/bareos/.config/containers/systemd/bareos-fd.container << 'EOF'
+# Password must match the Director Client resource (step 2b). Generate one:
+#   openssl rand -base64 32
+cat > "${FD_CFG}/bareos-fd.d/client/myself.conf" << 'EOF'
+Client {
+  Name = restore-target-fd
+  # Maximum Concurrent Jobs = 2
+}
+EOF
+
+cat > "${FD_CFG}/bareos-fd.d/director/bareos-dir.conf" << 'EOF'
+Director {
+  Name = bareos-dir
+  Password = "CHANGEME_FD_PASSWORD"
+}
+EOF
+
+# Create a minimal bareos-fd Quadlet (join the bareos network OR publish 9102
+# so the Director on the backup server can reach this host). Same-lab shortcut:
+# run on the same host with a distinct ContainerName and PublishPort.
+cat > /home/bareos/.config/containers/systemd/bareos-fd-restore.container << 'EOF'
 [Unit]
-Description=Bareos File Daemon (for restore)
+Description=Bareos File Daemon (restore target)
 After=network-online.target
 Wants=network-online.target
 
 [Container]
 Image=docker.io/bareos/bareos-client:24
-ContainerName=bareos-fd
-
-# Restore target uses the same FD layout as Chapter 6: SELinux relabelling
-# is disabled on this container's mounts instead of per-volume :Z.
+ContainerName=restore-target-fd
 SecurityLabelDisable=true
-
-# Mount the restore staging directories
-Volume=/var/tmp:/var/tmp
-Volume=/home/bareos/.local/share/containers/storage/volumes:/mnt/volumes
-
-# Rootless Podman socket — host path for UID 1001 (same as Chapter 6)
+Volume=bareos-fd-config.volume:/etc/bareos
+Volume=/var/tmp/bareos-restores:/var/tmp/bareos-restores:z
 Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock
-
 Environment=XDG_RUNTIME_DIR=/run/user/1001
 Environment=CONTAINER_HOST=unix:///run/podman/podman.sock
+# Same-host lab: publish a distinct port; remote host: use host IP + firewalld
+PublishPort=127.0.0.1:9105:9102
+Network=bareos.network
 
 [Service]
 Restart=always
@@ -1688,28 +1734,47 @@ Restart=always
 WantedBy=default.target
 EOF
 
-# Reload systemd user daemon
 systemctl --user daemon-reload
-
-# Start bareos-fd
-systemctl --user start bareos-fd
-systemctl --user status bareos-fd
+systemctl --user start bareos-fd-restore.service
+systemctl --user status bareos-fd-restore.service
 ```
+
+**Step 2b — Register the client on the Director (backup server):**
+
+```bash
+# On the backup server — create Director Client resource
+sudo -u bareos tee /etc/bareos/bareos-dir.d/client/restore-target-fd.conf > /dev/null <<'EOF'
+Client {
+  Name = restore-target-fd
+  Address = restore-target-fd   # same-host lab: container DNS on bareos network
+  # Address = 127.0.0.1         # if using PublishPort=127.0.0.1:9105 and Port = 9105
+  # Port = 9105
+  Password = "CHANGEME_FD_PASSWORD"   # must match FD director/bareos-dir.conf
+  File Retention = 60 days
+  Job Retention = 6 months
+  AutoPrune = yes
+}
+EOF
+
+echo "reload" | sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole
+echo "status client=restore-target-fd" | sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole
+```
+
+Ensure a `RestoreFiles` job exists (Chapter 8) before restoring.
 
 ### Step 3: Restore the image archive from Bareos
 
-On the Bareos Director, initiate a restore to the restore target:
+On the Bareos Director, initiate a restore to the restore target. Prefer the scripted restore form (Chapter 8) over hardcoded menu numbers:
 
 ```bash
-# On the backup server, as bareos user:
-sudo -u bareos bconsole << 'EOF'
-restore client=restore-target-fd
-5
-<select the image backup job>
-mark /var/tmp/bareos-image-exports/bareos-bareos-director-24-20260224.tar
-mark /var/tmp/bareos-image-exports/bareos-bareos-director-24-20260224.meta
-done
-yes
+# On the backup server, as bareos user — adjust paths/job to your Lab 11-2 JobId:
+sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole << 'EOF'
+restore client=restore-target-fd restoreclient=restore-target-fd \
+  file=/var/tmp/bareos-image-exports select current all done \
+  where=/var/tmp/bareos-restores yes
+wait
+messages
+quit
 EOF
 ```
 

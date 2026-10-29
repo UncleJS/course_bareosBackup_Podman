@@ -15,7 +15,7 @@
   - [Volume File Format](#volume-file-format)
 - [4. The Bareos File Daemon](#4-the-bareos-file-daemon)
   - [What the File Daemon Does](#what-the-file-daemon-does)
-  - [File Daemon Installation](#file-daemon-installation)
+  - [File Daemon Deployment](#file-daemon-deployment)
 - [5. The Bareos Catalog](#5-the-bareos-catalog)
   - [What the Catalog Stores](#what-the-catalog-stores)
   - [Catalog Database Choice](#catalog-database-choice)
@@ -521,7 +521,7 @@ T+5s   Storage Daemon locates Volume files on disk
        (The Catalog's byte offsets make this a direct seek, not a full scan)
 
 T+6s   File Daemon receives connection from Storage Daemon
-       FD is told: "Write restored files to /tmp/bareos-restores/ "
+       FD is told: "Write restored files to /var/tmp/bareos-restores/ "
        (Or the original path, depending on restore options)
 
 T+7s   Data flows: SD reads from Volume → FD writes to restore path

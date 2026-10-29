@@ -314,23 +314,25 @@ Publish or bind the host FD:
 ss -lntp | grep 9102
 ```
 
-Ensure firewalld allows Director traffic to 9102 (Chapter 3). The Storage Daemon should remain published so the **host** FD can connect outbound to SD port 9103 (Chapter 6 publishes `9103:9103`). Point the Director `Storage` resource at the SD container name as before; the FD uses the SD address the Director sends (often the SD’s reachable IP/DNS). If jobs fail at “connect to storage”, give the host an address for the SD — commonly the host IP where 9103 is published, not the Quadlet-only DNS name `bareos-storage` (that name resolves only inside the `bareos` network).
+Ensure firewalld allows Director traffic to 9102 (Chapter 3). The host FD must reach the Storage Daemon on port 9103. Chapter 6 publishes SD as `PublishPort=127.0.0.1:9103:9103`, so on the **same host** the FD connects to `127.0.0.1:9103`. The Quadlet-only DNS name `bareos-storage` resolves only inside the `bareos` Podman network — a host RPM FD cannot use it.
 
-**Practical pattern for hybrid stacks:**
+**Practical pattern for hybrid stacks (same host as Chapter 6):**
 
 1. Keep Director → Client using `host.containers.internal:9102`.
-2. In the Director `Storage` resource used by host-FD jobs, set `Address` to an IP/DNS the **host** can reach (host IP or a split DNS name), while container-to-container jobs can keep using `bareos-storage`.
+2. Keep the Chapter 6 localhost SD publish (`127.0.0.1:9103:9103`).
+3. Give host-FD jobs a Storage resource with `Address = 127.0.0.1` (reachable via the published port). Container-to-container jobs can keep using `bareos-storage`.
+4. For a **remote** host FD later, widen SD publish (drop the `127.0.0.1:` bind), open firewalld, and set `Address` to the backup-server host IP — preferably only after Chapter 15 TLS.
 
-Example Storage resource for host-FD jobs:
+Example Storage resource for same-host hybrid FD jobs:
 
 ```conf
 Storage {
   Name = File-HostReachable
-  Address = 192.0.2.10          # host IP where SD PublishPort=9103 is exposed
+  Address = 127.0.0.1           # matches Ch6 PublishPort=127.0.0.1:9103:9103
   Password = "CHANGEME_SD_PASSWORD"
   Device = FileStorage
   Media Type = File
-  TLS Enable = No
+  TLS Enable = No               # lab default; enable TLS in Chapter 15 before exposing SD
 }
 ```
 

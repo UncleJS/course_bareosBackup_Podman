@@ -146,7 +146,7 @@ The application data lives at `/opt/webapp-data/` on the host — a completely n
 FileSet {
   Name = "WebApp-BindMount"
   Include {
-    Options { Signature = SHA256; Compression = ZSTD }
+    Options { Signature = SHA256; Compression = LZ4 }
     # FD sees the host read-only under /hostfs, so the host path /opt/webapp-data
     # is catalogued as /hostfs/opt/webapp-data.
     File = /hostfs/opt/webapp-data
@@ -175,7 +175,7 @@ In your Bareos FileSet:
 FileSet {
   Name = "Application-Data"
   Include {
-    Options { Signature = SHA256; Compression = ZSTD; AclSupport = yes; XattrSupport = yes }
+    Options { Signature = SHA256; Compression = LZ4; AclSupport = yes; XattrSupport = yes }
     File = /hostfs/srv/webapp
     File = /hostfs/srv/mariadb
   }
@@ -238,7 +238,7 @@ FileSet {
   Include {
     Options {
       Signature = SHA256
-      Compression = ZSTD
+      Compression = LZ4
       AclSupport = yes
       XattrSupport = yes
     }
@@ -284,33 +284,38 @@ Use this strategy for:
 
 A **sidecar container** is a temporary container that mounts the same volume as the application, creates a consistent export (e.g., a tar archive), and writes it to a location the FD can access.
 
+> **Chapter 6 FD prerequisite:** `ClientRunBeforeJob` runs **inside** `bareos-fd`. The stock `bareos-client:24` image has no `podman` CLI. Use the derived FD image and `CONTAINER_HOST=unix:///run/podman/podman.sock` from [Chapter 10](./10-podman-hooks.md) before relying on the script below. Prefer an FD-local staging directory (e.g. `/var/tmp/bareos-volume-exports`) that the FileSet can include without `/hostfs`, or bind-mount a host staging path into the FD.
+
 ```bash
 #!/bin/bash
-# pre-backup-myapp.sh — run as ClientRunBeforeJob
+# pre-backup-myapp.sh — run as ClientRunBeforeJob INSIDE bareos-fd
+# Requires Chapter 10 derived FD image with /usr/bin/podman + CONTAINER_HOST.
 
 set -euo pipefail
 
+export CONTAINER_HOST="${CONTAINER_HOST:-unix:///run/podman/podman.sock}"
+PODMAN="${PODMAN:-/usr/bin/podman}"
+
 VOLUME_NAME="myapp-data"
-EXPORT_DIR="/tmp/bareos-volume-exports"
+# FD-local staging (FileSet uses this path with NO /hostfs prefix)
+EXPORT_DIR="/var/tmp/bareos-volume-exports"
 TIMESTAMP=$(date +%Y%m%d%H%M%S)
 
 mkdir -p "${EXPORT_DIR}"
 
 # Stop the application container to ensure consistency
-podman stop myapp 2>/dev/null || true
+"${PODMAN}" stop myapp 2>/dev/null || true
 
 # Run a sidecar to create a tar archive of the volume
-sudo -u bareos XDG_RUNTIME_DIR=/run/user/$(id -u bareos) \
-  podman run --rm \
+"${PODMAN}" run --rm \
     --user root \
-    -v "${VOLUME_NAME}:/source:ro,Z" \
-    -v "${EXPORT_DIR}:/output:Z" \
+    -v "${VOLUME_NAME}:/source:ro" \
+    -v "${EXPORT_DIR}:/output" \
     docker.io/library/alpine:3.19 \
     tar -czf "/output/${VOLUME_NAME}-${TIMESTAMP}.tar.gz" -C /source .
 
 # Restart the application container
-sudo -u bareos XDG_RUNTIME_DIR=/run/user/$(id -u bareos) \
-  podman start myapp 2>/dev/null || true
+"${PODMAN}" start myapp 2>/dev/null || true
 
 echo "Volume export created: ${EXPORT_DIR}/${VOLUME_NAME}-${TIMESTAMP}.tar.gz"
 ```
@@ -321,8 +326,9 @@ The FileSet then backs up the export directory:
 FileSet {
   Name = "Volume-Exports"
   Include {
-    Options { Signature = SHA256 }
-    File = /hostfs/tmp/bareos-volume-exports
+    Options { Signature = SHA256; Compression = LZ4 }
+    # FD-local path written by the hook (no /hostfs)
+    File = /var/tmp/bareos-volume-exports
   }
 }
 ```
@@ -436,7 +442,7 @@ FileSet {
   Include {
     Options {
       Signature = SHA256
-      Compression = ZSTD
+      Compression = LZ4
       AclSupport = yes
       XattrSupport = yes
       OneFs = yes
@@ -647,7 +653,7 @@ FileSet {
   Include {
     Options {
       Signature = SHA256
-      Compression = ZSTD
+      Compression = LZ4
     }
     # The FD sees the host read-only under /hostfs, so prefix the host
     # mountpoint with /hostfs to reach the volume data inside the container.
@@ -713,7 +719,7 @@ FileSet {
   Include {
     Options {
       Signature = SHA256
-      Compression = ZSTD
+      Compression = LZ4
       AclSupport = yes
       XattrSupport = yes
     }
@@ -726,20 +732,35 @@ FileSet {
 }
 FEOF
 
-# Step 4: Run the backup
+# Step 4: Create a Job that uses BindMount-WebApp (do not reuse BackupLocalHost —
+# that job still points at RHEL10-Standard and would not demonstrate bind-mount backup)
+sudo -u bareos tee /etc/bareos/bareos-dir.d/job/BackupBindMount-WebApp.conf > /dev/null <<'JEOF'
+Job {
+  Name = "BackupBindMount-WebApp"
+  JobDefs = "StandardBackup"
+  Client = "bareos-fd"
+  FileSet = "BindMount-WebApp"
+  Storage = "File"
+  Pool = "Full"
+  Type = Backup
+  Level = Full
+}
+JEOF
+
+# Step 5: Run the bind-mount backup
 echo "reload" | bconsole
 bconsole <<'EOF'
-run job=BackupLocalHost level=Full yes
+run job=BackupBindMount-WebApp level=Full yes
 wait
 messages
 quit
 EOF
 
-# Step 5: Verify backed-up files
+# Step 6: Verify backed-up files
 # Capture the JobId of the backup we just ran, then list its files by number
 # (`jobid=latest` is not a valid selector for `list files`).
-JOBID=$(echo "list jobs job=BackupLocalHost" | bconsole \
-  | awk -F'|' '/BackupLocalHost/ {gsub(/ /,"",$2); id=$2} END {print id}')
+JOBID=$(echo "list jobs job=BackupBindMount-WebApp" | bconsole \
+  | awk -F'|' '/BackupBindMount-WebApp/ {gsub(/ /,"",$2); id=$2} END {print id}')
 echo "Backup JobId: ${JOBID}"
 echo "list files jobid=${JOBID}" | bconsole | grep testwebapp
 

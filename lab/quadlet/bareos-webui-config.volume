@@ -1,0 +1,7 @@
+# bareos-webui-config.volume — Bareos WebUI configuration (/etc/bareos-webui)
+
+[Volume]
+VolumeName=bareos-webui-config
+Driver=local
+Label=app=bareos
+Label=component=webui

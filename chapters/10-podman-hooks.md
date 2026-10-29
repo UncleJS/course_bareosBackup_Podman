@@ -416,20 +416,22 @@ When you pause a database container:
 This is **not** the same as a clean shutdown. The data files may not be fully flushed. **Therefore, pausing is only useful when combined with a logical dump (mariadb-dump/pg_dump) taken before the pause.** The workflow is:
 
 1. `mariadb-dump` → produces a clean SQL dump while the DB is still running
-2. `podman pause mariadb` → freeze the container so no more writes happen while Bareos copies the volume
+2. `podman pause bareos-db` → freeze the container so no more writes happen while Bareos copies the volume
 3. Bareos backs up both the SQL dump file AND the raw volume data
-4. `podman unpause mariadb` → resume the container
+4. `podman unpause bareos-db` → resume the container
 
-The SQL dump is your primary recovery artifact. The raw volume copy is a secondary option if you need to restore to an exact point in time without replaying SQL.
+Use the Chapter 6 container name **`bareos-db`**, not a generic `mariadb` name.
+
+The SQL dump is your primary recovery artifact. The raw volume copy is a secondary option if you need to restore to an exact point in time without replaying SQL. On the Chapter 6 FD, raw volume files under `bareos-db-data/_data` are often unreadable (DAC / UID 100998) — prefer the dump alone unless you have Chapter 21's host FD or have confirmed the FD can read those files.
 
 ### The pause/unpause commands
 
 ```bash
-# Pause all processes in the container
-/usr/bin/podman pause mariadb
+# Pause all processes in the container (canonical name from Chapter 6)
+/usr/bin/podman pause bareos-db
 
 # Resume all processes
-/usr/bin/podman unpause mariadb
+/usr/bin/podman unpause bareos-db
 
 # Check container status (should show "paused")
 /usr/bin/podman ps --format "{{.Names}} {{.Status}}"
@@ -440,15 +442,15 @@ The SQL dump is your primary recovery artifact. The raw volume copy is a seconda
 Always check the exit code and verify the container is actually paused before proceeding:
 
 ```bash
-/usr/bin/podman pause mariadb
+/usr/bin/podman pause bareos-db
 if [ $? -ne 0 ]; then
     echo "ERROR: Failed to pause container bareos-db" >&2
     exit 1
 fi
 
-STATUS=$(/usr/bin/podman inspect --format "{{.State.Status}}" mariadb)
+STATUS=$(/usr/bin/podman inspect --format "{{.State.Status}}" bareos-db)
 if [ "$STATUS" != "paused" ]; then
-    echo "ERROR: Container mariadb is in state '$STATUS', expected 'paused'" >&2
+    echo "ERROR: Container bareos-db is in state '$STATUS', expected 'paused'" >&2
     exit 1
 fi
 ```
@@ -480,7 +482,7 @@ Key options:
 
 ```bash
 /usr/bin/podman exec \
-    mariadb \
+    bareos-db \
     mariadb-dump \
         --password="${MARIADB_ROOT_PASSWORD}" \
         --all-databases \
@@ -526,7 +528,7 @@ Notice that in the examples above, the output of `podman exec` is redirected to 
 If you instead need the dump file to appear inside the *database* container, you would redirect inside the `podman exec` command:
 
 ```bash
-/usr/bin/podman exec mariadb \
+/usr/bin/podman exec bareos-db \
     sh -c 'mariadb-dump --all-databases > /tmp/dump.sql'
 ```
 
@@ -1578,10 +1580,10 @@ FileSet {
     # /hostfs/ prefix — it matches DUMP_DIR in backup-mariadb.sh exactly.
     File = "/var/tmp/bareos-dumps"
 
-    # Raw MariaDB volume data (consistent because we paused the container).
-    # This is a HOST path, so it carries the /hostfs/ prefix. Adjust to match
-    # your actual named volume.
-    File = "/hostfs/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data"
+    # Optional raw volume path — ONLY if you uncommented the pause block in
+    # backup-mariadb.sh AND the FD can read UID-100998 mode-600 InnoDB files
+    # (Chapter 6 FD usually cannot; see Chapter 14 §5.3 / Chapter 21).
+    # File = "/hostfs/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data"
   }
 
   Exclude {

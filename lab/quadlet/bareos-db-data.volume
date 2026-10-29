@@ -1,0 +1,7 @@
+# bareos-db-data.volume — Persistent storage for the Bareos MariaDB catalog
+
+[Volume]
+VolumeName=bareos-db-data
+Driver=local
+Label=app=bareos
+Label=component=catalog

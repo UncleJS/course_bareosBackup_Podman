@@ -1,0 +1,22 @@
+# bareos-webui.container — Bareos WebUI (Chapter 6)
+
+[Unit]
+Description=Bareos WebUI
+Documentation=https://docs.bareos.org/IntroductionAndTutorial/BareosWebui.html
+After=network-online.target bareos-director.service
+Requires=bareos-director.service
+
+[Container]
+Image=docker.io/bareos/bareos-webui:24
+ContainerName=bareos-webui
+Volume=bareos-webui-config.volume:/etc/bareos-webui
+PublishPort=127.0.0.1:9100:80
+Network=bareos.network
+Label=app=bareos
+Label=component=webui
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,29 @@
+# bareos-fd.container — Bareos File Daemon (Chapter 6)
+
+[Unit]
+Description=Bareos File Daemon
+Documentation=https://docs.bareos.org/Configuration/FileDaemon.html
+After=network-online.target
+
+[Container]
+Image=docker.io/bareos/bareos-client:24
+ContainerName=bareos-fd
+Volume=bareos-fd-config.volume:/etc/bareos
+Volume=bareos-working.volume:/var/lib/bareos
+Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,z
+Volume=/:/hostfs:ro
+Volume=/var/tmp/bareos-restores:/var/tmp/bareos-restores:z
+Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock
+EnvironmentFile=/home/bareos/.config/bareos/db.env
+EnvironmentFile=/home/bareos/.config/bareos/bareos.env
+SecurityLabelDisable=true
+Network=bareos.network
+PublishPort=127.0.0.1:9102:9102
+
+[Service]
+Restart=on-failure
+RestartSec=10
+Environment=XDG_RUNTIME_DIR=/run/user/1001
+
+[Install]
+WantedBy=default.target

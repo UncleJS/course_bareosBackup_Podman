@@ -1,0 +1,33 @@
+# bareos-db.container — MariaDB catalog database for Bareos (Chapter 6)
+
+[Unit]
+Description=Bareos Catalog Database (MariaDB)
+Documentation=https://docs.bareos.org
+After=network-online.target
+
+[Container]
+Image=docker.io/library/mariadb:10.11
+ContainerName=bareos-db
+HostName=bareos-db
+EnvironmentFile=/home/bareos/.config/bareos/db.env
+Volume=bareos-db-data.volume:/var/lib/mysql
+Network=bareos.network
+Memory=1g
+PublishPort=127.0.0.1:3306:3306
+NoNewPrivileges=true
+HealthCmd=healthcheck.sh --connect --innodb_initialized
+HealthInterval=10s
+HealthTimeout=5s
+HealthRetries=3
+HealthStartPeriod=30s
+Notify=healthy
+Label=app=bareos
+Label=component=catalog
+
+[Service]
+Restart=always
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

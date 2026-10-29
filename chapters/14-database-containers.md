@@ -240,10 +240,11 @@ The MariaDB container reads credentials from an environment file. This file must
 ```bash
 # /home/bareos/.config/bareos/db.env
 # Mode: 600, Owner: bareos:bareos
-MARIADB_ROOT_PASSWORD=SuperSecretRootPass
+# Use openssl rand -base64 32 (Chapter 6) — do not copy memorable example strings.
+MARIADB_ROOT_PASSWORD=CHANGEME_MARIADB_ROOT_PASSWORD
 MARIADB_DATABASE=bareos
 MARIADB_USER=bareos
-MARIADB_PASSWORD=BareosDBPass
+MARIADB_PASSWORD=CHANGEME_BAREOS_DB_PASSWORD
 ```
 
 These same credentials are needed in backup scripts that connect to MariaDB.
@@ -403,6 +404,8 @@ through the mounted Podman socket.
 ### 5.2 Pre/Post Scripts
 
 > **Warning:** In this course `bareos-db` is also the **Bareos catalog**. Stopping it during a job freezes Director catalog I/O (WebUI, `bconsole` status, concurrent jobs). Use this cold-copy pattern only against a **dedicated application** MariaDB container, or schedule a dedicated maintenance window with no other Bareos jobs. Prefer logical dumps (Section 4 / Chapter 7 `BackupCatalog`) for the catalog itself.
+>
+> **DAC blocker (Chapter 6 FD):** Even when the DB is stopped, InnoDB files owned by mapped UID `100998` (mode `600`) are unreadable to the container FD (host UID `1001`). Do **not** treat `BackupMariaDB-Physical` below as a working lab on the course stack — use it as reference for a host FD with `CAP_DAC_READ_SEARCH` (Chapter 21) or a DB volume the FD UID can read.
 
 ```bash
 #!/bin/bash
@@ -489,15 +492,27 @@ Job {
 
 ### 5.3 The Physical Data Path
 
-The Bareos FileSet for a physical backup points to the volume's data directory on the host. Because this is a **host** path and the File Daemon sees the host filesystem under `/hostfs` (Chapter 6), the `File =` line carries the `/hostfs/` prefix:
+> **Course FD: this path will not work as written.** MariaDB data files under
+> `bareos-db-data/_data` are typically mode `600` owned by mapped UID **100998**
+> (container mysql UID 999 + subuid base 100000). The Chapter 6 container FD runs
+> as host-mapped UID **1001** and **cannot read** those files (DAC denial), even
+> with `SecurityLabelDisable=true`. Use **logical dumps** (Section 4 / Chapter 7
+> `BackupCatalog` / Chapter 10 hooks) for the course stack. Cold physical backup
+> of live InnoDB files is only viable with a host FD that has
+> `CAP_DAC_READ_SEARCH` ([Chapter 21](./21-host-file-daemon.md)), or against a
+> dedicated application DB whose files the FD UID can read.
+
+The Bareos FileSet for a physical backup would point to the volume's data directory on the host. Because this is a **host** path and the File Daemon sees the host filesystem under `/hostfs` (Chapter 6), the `File =` line carries the `/hostfs/` prefix:
 
 ```
+# Conceptual only for Chapter 6 FD — expect "Permission denied" on InnoDB files.
+# Prefer File = /var/tmp/bareos-dumps/... from a logical dump hook instead.
 File = /hostfs/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data
 ```
 
 (The underlying host path is `/home/bareos/.local/share/containers/storage/volumes/bareos-db-data/_data/`.)
 
-**SELinux consideration:** The `_data/` directory is labeled `container_file_t`. The course File Daemon uses `SecurityLabelDisable=true` (Chapter 6), so MCS/`container_t` pairing is not what grants access — DAC (and for host FD, Chapter 21's `CAP_DAC_READ_SEARCH`) matters more. MariaDB files are often mode `600` owned by subordinate UID `100998`; confirm the FD can read them before relying on a cold physical FileSet. Prefer logical dumps (Section 4 / Chapter 10) when possible.
+**SELinux consideration:** The `_data/` directory is labeled `container_file_t`. The course File Daemon uses `SecurityLabelDisable=true` (Chapter 6), so MCS/`container_t` pairing is not what grants access — **DAC** is the blocker for UID 1001 vs 100998. Prefer logical dumps when using the Chapter 6 FD.
 
 ---
 
@@ -818,9 +833,9 @@ Volume=/home/bareos/backups/pg-wal-archive:/backup/pg-wal-archive:Z
 
 ### 9.2 Using WAL Archives for PITR
 
-To restore to a point in time:
+To restore to a point in time (PostgreSQL **12+**, including current container images):
 1. Restore the latest `pg_basebackup`
-2. Create a `recovery.conf` (PostgreSQL 11 and earlier) or `postgresql.auto.conf` (PostgreSQL 12+) entry pointing to the WAL archive and specifying the target time
+2. Place `restore_command` (and optional `recovery_target_time`) in `postgresql.auto.conf` or `postgresql.conf`, then create an empty `recovery.signal` file in the data directory. Do **not** use legacy `recovery.conf` (removed as a supported mechanism in PG12+)
 3. Start PostgreSQL — it will replay WAL until the target time
 
 This is an advanced topic beyond our current scope, but understanding that WAL archiving exists is essential context for any serious PostgreSQL deployment.
@@ -1798,13 +1813,16 @@ systemctl --user stop bareos-director.service
 
 ```bash
 # Use bextract to restore without the catalog, using the bootstrap file.
-# Form: -b <bootstrap> -V <volume> <storage_device> <output_dir>
-# (the storage device path is the SD's volume dir inside bareos-storage).
+# Form: -b <bootstrap> -V <volume> <Device-name> <output_dir>
+# Device argument is the SD Device NAME (FileStorage), not a filesystem path.
+# The device's Archive Device in bareos-sd.d points at /var/lib/bareos/storage.
+# Confirm flags with: podman exec bareos-storage bextract --help
 podman exec bareos-storage \
     bextract \
+    -c /etc/bareos \
     -b /var/lib/bareos/bareos-catalog.bsr \
     -V Full-0001 \
-    /var/lib/bareos/storage \
+    FileStorage \
     /tmp/catalog-restore
 
 # The dump file is now at:

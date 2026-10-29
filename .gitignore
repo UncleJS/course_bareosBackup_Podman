@@ -35,3 +35,7 @@ bareos.env
 db.env
 webui.ini
 *.cnf
+
+# Keep committed env *templates* under lab/ (not real secrets)
+!lab/env/*.env.example
+!lab/env/*.example

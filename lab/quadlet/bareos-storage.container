@@ -1,0 +1,28 @@
+# bareos-storage.container — Bareos Storage Daemon (Chapter 6)
+
+[Unit]
+Description=Bareos Storage Daemon
+Documentation=https://docs.bareos.org
+After=network-online.target
+
+[Container]
+Image=docker.io/bareos/bareos-storage:24
+ContainerName=bareos-storage
+HostName=bareos-storage
+EnvironmentFile=/home/bareos/.config/bareos/bareos.env
+Volume=/etc/bareos/bareos-sd.d:/etc/bareos/bareos-sd.d:ro,Z
+Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
+Volume=bareos-working.volume:/var/lib/bareos
+Network=bareos.network
+PublishPort=127.0.0.1:9103:9103
+Memory=512m
+NoNewPrivileges=true
+Label=app=bareos
+Label=component=storage
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=60
+
+[Install]
+WantedBy=default.target

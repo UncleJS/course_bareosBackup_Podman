@@ -1,0 +1,7 @@
+# bareos-working.volume — Bareos working directory (bootstrap files, etc.)
+
+[Volume]
+VolumeName=bareos-working
+Driver=local
+Label=app=bareos
+Label=component=working

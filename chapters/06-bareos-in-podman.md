@@ -924,9 +924,11 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   systemctl --user start bareos-db.service
 
-# Wait for MariaDB to be ready (watch health status)
+# Wait for MariaDB to be ready (inspect health status — do not grep
+# `podman healthcheck run` output for the word "healthy"; that command
+# returns exit status / check output, not the Status string)
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bash -c '
-  until podman healthcheck run bareos-db 2>/dev/null | grep -q "healthy"; do
+  until [ "$(podman inspect --format "{{.State.Health.Status}}" bareos-db 2>/dev/null)" = "healthy" ]; do
     echo "Waiting for MariaDB to be ready..."
     sleep 5
   done
@@ -1392,7 +1394,7 @@ bareos_run systemctl --user start bareos-db.service
 
 echo "Waiting for MariaDB to become healthy (up to 60 seconds)..."
 for i in $(seq 1 12); do
-  if bareos_run podman healthcheck run bareos-db 2>/dev/null | grep -q "healthy"; then
+  if [ "$(bareos_run podman inspect --format '{{.State.Health.Status}}' bareos-db 2>/dev/null)" = "healthy" ]; then
     echo "MariaDB is healthy!"
     break
   fi
@@ -1467,23 +1469,23 @@ echo "Login: webui-admin / <password from Section 12, Step 1>"
 ## 14. Lab 6-2: Verifying Inter-Container Connectivity
 
 ```bash
+# Bareos images typically do not ship `nc`. Use bash /dev/tcp instead
+# (bash is present in the official Bareos images).
+
 # Test 1: Director can reach the Storage Daemon
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman exec bareos-director \
-  nc -zv bareos-storage 9103
-# Expected: Connection to bareos-storage 9103 port [tcp] succeeded!
+  bash -c 'exec 3<>/dev/tcp/bareos-storage/9103 && echo "SD: OK" || echo "SD: FAIL"'
 
 # Test 2: Director can reach the Database
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman exec bareos-director \
-  nc -zv bareos-db 3306
-# Expected: Connection to bareos-db 3306 port [tcp] succeeded!
+  bash -c 'exec 3<>/dev/tcp/bareos-db/3306 && echo "DB: OK" || echo "DB: FAIL"'
 
 # Test 3: Director can reach the File Daemon container
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman exec bareos-director \
-  nc -zv bareos-fd 9102
-# Expected: Connection to bareos-fd 9102 port [tcp] succeeded!
+  bash -c 'exec 3<>/dev/tcp/bareos-fd/9102 && echo "FD: OK" || echo "FD: FAIL"'
 
 # Test 4: Storage Daemon can write to the volume path (and clean up after)
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
@@ -1504,8 +1506,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 # Test 6: WebUI can reach the Director
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman exec bareos-webui \
-  nc -zv bareos-director 9101
-# Expected: Connection to bareos-director 9101 port [tcp] succeeded!
+  bash -c 'exec 3<>/dev/tcp/bareos-director/9101 && echo "DIR: OK" || echo "DIR: FAIL"'
 
 # Test 7: WebUI HTTP endpoint is responding
 curl -sI http://localhost:9100/bareos-webui/ | head -3

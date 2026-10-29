@@ -1,0 +1,9 @@
+# bareos.network — Internal network for Bareos containers (Chapter 6)
+
+[Network]
+NetworkName=bareos
+Driver=bridge
+Subnet=10.89.10.0/24
+Gateway=10.89.10.1
+Label=app=bareos
+Label=managed-by=quadlet

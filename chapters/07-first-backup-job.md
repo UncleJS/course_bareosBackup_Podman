@@ -144,15 +144,15 @@ Checksums serve three purposes:
 **Compression:**
 ```bareos
 Options {
-  Compression = LZ4     # Fastest: minimal CPU, ~20% smaller than uncompressed
+  Compression = LZ4     # Recommended: fast, good ratio (Bareos 24 default choice in this course)
   # OR
-  Compression = GZIP    # Slower: moderate CPU, ~50-60% smaller
+  Compression = LZ4HC   # Slower: better ratio than LZ4, higher CPU
   # OR
-  Compression = ZSTD    # Best: excellent ratio AND speed (recommended for modern hardware)
+  Compression = GZIP    # Slower: moderate CPU, ~50-60% smaller (GZIP1–GZIP9 for level)
 }
 ```
 
-> **Rule**: Always enable compression for network-based backups. The CPU cost is negligible compared to the bandwidth and storage savings. Choose `ZSTD` for best results, `LZ4` if CPU is constrained.
+> **Rule**: Always enable compression for network-based backups. The CPU cost is usually negligible compared to bandwidth and storage savings. Choose `LZ4` for best results on modern hardware; use `LZ4HC` or `GZIP` when ratio matters more than speed. Bareos 24 supports `GZIP|GZIP1–9|LZO|LZFAST|LZ4|LZ4HC` — there is no `ZSTD` FileSet option.
 
 **OneFs (don't cross filesystem boundaries):**
 ```bareos
@@ -194,7 +194,7 @@ FileSet {
   Include {
     Options {
       Signature = SHA256
-      Compression = ZSTD
+      Compression = LZ4
       AclSupport = yes
       XattrSupport = yes
       OneFs = yes
@@ -675,7 +675,7 @@ Bareos bareos-dir 24.0.0:
   FD Bytes Written:       15,234,567,890 (15.23 GB)
   SD Bytes Written:       4,123,456,789 (4.12 GB)       ← compressed!
   Rate:                   16,621 KB/s
-  Software Compression:   3.7:1 (73.0%)                 ← ZSTD compression ratio
+  Software Compression:   3.7:1 (73.0%)                 ← LZ4 compression ratio
   Non-fatal FD errors:    0
   SD Errors:              0
   FD termination status:  OK
@@ -770,7 +770,7 @@ FileSet {
   Include {
     Options {
       Signature = SHA256
-      Compression = ZSTD
+      Compression = LZ4
       AclSupport = yes
       XattrSupport = yes
       OneFs = yes
@@ -1009,7 +1009,7 @@ rm -f /etc/bareos-test-change.txt
 In this chapter you created and ran your first complete Bareos backup configuration:
 
 - **Job anatomy**: A Job resource ties together Client, FileSet, Schedule, Storage, Pool, Messages, and an optional JobDefs template.
-- **FileSet**: Defined exactly what to include (`/home`, `/etc`, etc.) and what to exclude (`/proc`, `/sys`, container overlay layers, the backup storage itself). Options control checksum type (SHA256), compression (ZSTD), ACL/xattr preservation, and filesystem boundary control.
+- **FileSet**: Defined exactly what to include (`/home`, `/etc`, etc.) and what to exclude (`/proc`, `/sys`, container overlay layers, the backup storage itself). Options control checksum type (SHA256), compression (LZ4), ACL/xattr preservation, and filesystem boundary control.
 - **Schedule**: Weekly Full on Sunday, Incremental Mon-Sat. Schedules can override job-level `Level` on a per-run basis.
 - **JobDefs**: DRY template for shared job settings. Multiple jobs inherit from one `JobDefs` to reduce repetition.
 - **BackupCatalog job**: Critical — always configure this. A `RunScript` with `RunsOnClient = no` dumps the MariaDB catalog from inside the Director container (over the network to `bareos-db`) onto the shared `bareos-working` volume, and the File Daemon backs that dump up to a Volume. This is your recovery path if you lose the catalog.

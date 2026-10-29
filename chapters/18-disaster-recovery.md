@@ -351,11 +351,13 @@ Messages {
   # Mail the job *report* to the admin. Bareos does not automatically attach
   # the .bsr file; copy bootstrap files off-host separately (rsync, git, or
   # a script that mails /var/lib/bareos/*.bsr after successful jobs).
-  Mail Command = "/usr/sbin/bsmtp -h localhost -f \"\(Bareos\) %r\" -s \"Bareos: %t %e of %c %l\" %r"
+  # Use /usr/bin/bsmtp (path inside Bareos images). localhost has no SMTP in the
+  # container — point -h at a reachable relay (see Chapter 17).
+  Mail Command = "/usr/bin/bsmtp -h smtp.example.com:587 -f \"\(Bareos\) %r\" -s \"Bareos: %t %e of %c %l\" %r"
   # Prefer MailOnError for routine jobs (only failures). Use Mail = ... = all
   # only if you truly want a message after every successful job.
   MailOnError = "bareos-admin@example.com" = all
-  Operator Command = "/usr/sbin/bsmtp -h localhost -f \"\(Bareos\) %r\" -s \"Bareos: Intervention needed for %j\" %r"
+  Operator Command = "/usr/bin/bsmtp -h smtp.example.com:587 -f \"\(Bareos\) %r\" -s \"Bareos: Intervention needed for %j\" %r"
   Operator = "bareos-admin@example.com" = all
   Mail = "bareos-admin@example.com" = all, !skipped
 }
@@ -529,9 +531,11 @@ sudo -u bareos bash -c '
   done
 '
 
-# 3. Fix ownership — all files must be owned by bareos (UID 1001)
-sudo chown -R 1001:1001 \
-  /home/bareos/.local/share/containers/storage/volumes/
+# 3. Do NOT chown named-volume _data trees to UID 1001.
+# MariaDB files inside bareos-db-data are owned by the mapped container UID
+# (typically 100998 = subuid 100000 + mysql 999). Forcing 1001:1001 breaks
+# the DB container on next start. Preserve UIDs from the tar archive.
+# Only chown host-owned trees (configs, Quadlets, /srv/bareos-storage) if needed.
 
 # 4. Fix SELinux contexts on the volume directories
 sudo restorecon -Rv \
@@ -821,8 +825,8 @@ cat > /home/bareos/.config/containers/systemd/bareos.network << 'EOF'
 # NetworkName pins the actual Podman network name to "bareos".
 NetworkName=bareos
 Driver=bridge
-Subnet=172.20.0.0/24
-Gateway=172.20.0.1
+Subnet=10.89.10.0/24
+Gateway=10.89.10.1
 EOF
 
 # 5. Write the volume Quadlet file for the database
@@ -980,8 +984,11 @@ Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
 
 Network=bareos.network
 
-# Storage Daemon port — accessible from the network for File Daemons
-PublishPort=9103:9103
+# Storage Daemon port — localhost-only until TLS (Chapter 15). For a same-host
+# hybrid FD (Chapter 21), 127.0.0.1:9103 is reachable from the host. Remote FDs
+# need a wider PublishPort and firewall rules — do not expose 9103 on all
+# interfaces before TLS is configured.
+PublishPort=127.0.0.1:9103:9103
 
 [Service]
 Restart=always
@@ -1016,10 +1023,20 @@ Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,z
 SecurityLabelDisable=true
 Volume=/:/hostfs:ro
 
+# Writable restore staging (Chapter 8+) — /hostfs is read-only.
+Volume=/var/tmp/bareos-restores:/var/tmp/bareos-restores:z
+
 # Podman socket — allows hook scripts to manage containers
 Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock
 
+# Secrets for hook scripts (Chapters 10/14) — same as Chapter 6 baseline
+EnvironmentFile=/home/bareos/.config/bareos/db.env
+EnvironmentFile=/home/bareos/.config/bareos/bareos.env
+
 Network=bareos.network
+
+# File Daemon port — Director connects inbound on 9102
+PublishPort=127.0.0.1:9102:9102
 
 [Service]
 Restart=always
@@ -1096,9 +1113,21 @@ sudo -u bareos bash -c '
   echo "Configuration restored."
 '
 
-# 6c. Fix ownership of all restored configs inside the named volumes
-sudo chown -R 1001:1001 \
-  /home/bareos/.local/share/containers/storage/volumes/
+# 6c. Fix ownership only on host-owned config trees — NOT bareos-db-data.
+# FD/WebUI config volumes are typically written as UID 1001; MariaDB datadir
+# must keep mapped UID 100998 (see Chapter 13). Never chown -R the whole
+# volumes/ tree to 1001:1001.
+sudo -u bareos bash -c '
+  XDG_RUNTIME_DIR=/run/user/1001
+  for vol in bareos-fd-config bareos-webui-config bareos-working; do
+    DATA_DIR=$(podman volume inspect "$vol" --format "{{.Mountpoint}}" 2>/dev/null) || continue
+    # Working volume may contain dumps owned by mapped UIDs; prefer leave as-is
+    # after tar extract. Only force 1001 on pure config volumes:
+    if [ "$vol" = "bareos-fd-config" ] || [ "$vol" = "bareos-webui-config" ]; then
+      chown -R 1001:1001 "$DATA_DIR"
+    fi
+  done
+'
 
 # 7. Fix SELinux labels
 sudo restorecon -Rv \

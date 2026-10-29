@@ -1202,7 +1202,7 @@ FileSet {
       # Compress data before sending to storage daemon.
       # Reduces bandwidth and storage. GZIP is balanced.
       # Alternatives: GZIP1-9 (level), LZO (faster, less compression),
-      #               LZFAST, LZ4 (very fast), ZSTD (modern, excellent ratio).
+      #               LZFAST, LZ4 (very fast), LZ4HC (better ratio), GZIP1–9.
 
       No Atime        = yes
       # Do not update file access times when reading files.
@@ -1281,7 +1281,7 @@ FileSet {
 | Directive | Values | Purpose |
 |---|---|---|
 | `Signature` | MD5, SHA1, SHA256, SHA512 | File checksum algorithm |
-| `Compression` | GZIP, GZIP1-9, LZO, LZ4, ZSTD, no | Compression algorithm |
+| `Compression` | GZIP, GZIP1-9, LZO, LZFAST, LZ4, LZ4HC | Compression algorithm (no ZSTD in Bareos 24) |
 | `No Atime` | yes/no | Preserve file access times |
 | `Portable` | yes/no | POSIX-only vs full attributes |
 | `OneFS` | yes/no | Stay on one filesystem (don't cross mount points) |
