@@ -784,9 +784,9 @@ sudo semanage port -a -t unreserved_port_t -p tcp 9101
 
 Container-to-container traffic on a shared Podman network is permitted by the default
 `container_t` policy, so `container_connect_any` is generally **not** needed for the
-Director, SD, and FD to talk to each other (see Chapter 21, Section on container
-connectivity). Set it only if a container must reach an arbitrary host-side service and
-`ausearch` shows a matching network AVC:
+Director, SD, and FD to talk to each other (see [Section 21](#21-webui-troubleshooting)
+and [Section 13](#13-network-troubleshooting) in this chapter). Set it only if a container
+must reach an arbitrary host-side service and `ausearch` shows a matching network AVC:
 
 ```bash
 # Allow containers to initiate connections to any network port (rarely required)
@@ -2313,6 +2313,10 @@ This chapter has given you a complete toolkit for diagnosing and resolving Bareo
 **The Quick-Reference Error Table** (Section 25) and the Diagnostic Decision Tree (Section 26) are your quick-lookup guides for the most common problems.
 
 With the techniques in this chapter, you can confidently diagnose and resolve the full range of issues that arise in a production Bareos deployment.
+
+---
+
+**Next Chapter:** [Chapter 21: Host File Daemon with CAP_DAC_READ_SEARCH](./21-host-file-daemon.md)
 
 ---
 

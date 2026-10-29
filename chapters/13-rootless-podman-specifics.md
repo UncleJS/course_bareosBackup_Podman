@@ -424,6 +424,7 @@ Examples of capabilities relevant to containers:
 | `CAP_SYS_ADMIN` | Mount filesystems, namespace operations |
 | `CAP_CHOWN` | Change file ownership |
 | `CAP_DAC_OVERRIDE` | Bypass file read/write/execute permission checks |
+| `CAP_DAC_READ_SEARCH` | Bypass DAC for **read** and directory **search** only (preferred for backup agents; see [Chapter 21](./21-host-file-daemon.md)) |
 | `CAP_SETUID` | Set arbitrary UIDs |
 | `CAP_NET_ADMIN` | Configure network interfaces |
 | `CAP_SYS_PTRACE` | Trace/debug other processes |
@@ -1631,7 +1632,7 @@ In this chapter, you gained a thorough understanding of the rootless Podman secu
 
 **Backup implications:** Always be aware of which UID namespace you observe data from. Run the File Daemon inside the container namespace for consistent ownership records.
 
-**Capabilities:** Rootless containers have capabilities scoped to their user namespace. They cannot affect the host even with `CAP_SYS_ADMIN`. Drop unnecessary capabilities for defense in depth.
+**Capabilities:** Rootless containers have capabilities scoped to their user namespace. They cannot affect the host even with `CAP_SYS_ADMIN`. Drop unnecessary capabilities for defense in depth. Granting `CAP_DAC_READ_SEARCH` *inside* a rootless FD container does **not** bypass host DAC for files under `/hostfs` — use a host systemd File Daemon for that pattern ([Chapter 21](./21-host-file-daemon.md)).
 
 **Networking:** Rootless containers use pasta (user-space network stack) instead of kernel bridges. Bareos's ports (9101-9103) are all above 1024, so there are no port-binding restrictions to work around.
 

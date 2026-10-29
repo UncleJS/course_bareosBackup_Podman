@@ -848,6 +848,8 @@ EOF
 ```
 
 > **File paths in FileSet resources:** Because the host filesystem is mounted at `/hostfs` inside the container, any `File =` directive in a Bareos FileSet that should back up host paths must use the `/hostfs/` prefix. For example: `File = /hostfs/home` backs up `/home` on the RHEL 10 host. See Chapter 7 for the first backup job using this convention.
+>
+> **Production alternative:** If you prefer a host RPM File Daemon with `CAP_DAC_READ_SEARCH` (no `/hostfs`, no `SecurityLabelDisable`) while keeping Director/SD/DB/WebUI in containers, see [Chapter 21](./21-host-file-daemon.md).
 
 ### Start the File Daemon
 
@@ -1470,7 +1472,7 @@ In this chapter you deployed the complete Bareos stack as rootless Podman contai
 - **MariaDB catalog**: Dedicated named volume for data persistence; health check ensures Director starts only when DB is ready.
 - **Storage Daemon**: Bind-mounted to `/srv/bareos-storage/volumes` on the dedicated backup disk, using `:z` SELinux label for shared access.
 - **Director**: Reads `/etc/bareos/bareos-dir.d/` as a read-only bind mount. Connects to SD and DB by container name (DNS-resolved within the Quadlet network).
-- **File Daemon**: Deployed as `bareos-fd` container (`bareos-client:24` image) on the Quadlet network. The host filesystem is bind-mounted at `/hostfs` (read-only) so FileSet paths use the `/hostfs/` prefix. The Podman socket is mounted so hook scripts can manage containers from within the FD.
+- **File Daemon**: Deployed as `bareos-fd` container (`bareos-client:24` image) on the Quadlet network. The host filesystem is bind-mounted at `/hostfs` (read-only) so FileSet paths use the `/hostfs/` prefix. The Podman socket is mounted so hook scripts can manage containers from within the FD. For the production alternative — host RPM File Daemon with `CAP_DAC_READ_SEARCH`, while Director/SD/DB/WebUI stay containerized — see [Chapter 21](./21-host-file-daemon.md).
 - **Catalog initialization**: Run `create_bareos_database` and `grant_bareos_privileges` scripts in a temporary Director container before the Director starts.
 - **WebUI**: Deployed as `bareos-webui` container (port 9100), authenticated to the Director via a dedicated `Console` resource with the `webui-admin` profile. Configuration in the `bareos-webui-config` named volume.
 - **All services enabled**: `systemctl --user enable` ensures all containers start at boot via lingering.

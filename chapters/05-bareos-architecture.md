@@ -269,6 +269,8 @@ sudo vim /etc/bareos/bareos-fd.d/director/bareos-dir.conf
 sudo systemctl enable --now bareos-fd
 ```
 
+For a **hybrid production pattern** on the backup server itself — Director, Storage Daemon, catalog, and WebUI stay in containers, while only the File Daemon runs on the host with `CAP_DAC_READ_SEARCH` — see [Chapter 21: Host File Daemon with CAP_DAC_READ_SEARCH](./21-host-file-daemon.md).
+
 The File Daemon only has two configuration concerns:
 1. Its own identity (name, port, TLS settings)
 2. Which Directors are authorized to connect to it (by name + password)

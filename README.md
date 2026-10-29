@@ -28,6 +28,8 @@ Bareos (Backup Archiving REcovery Open Sourced) is an enterprise-class, open-sou
 
 Running Bareos inside Podman containers — rather than as native RPM-installed daemons — gives you several advantages: clean version management, easy upgrades and rollbacks, isolation between the backup infrastructure and the host OS, and the ability to co-locate Bareos with the containerized applications it protects. Using rootless Podman adds a further security layer: the Bareos processes never run as root on the host.
 
+Chapter 6 keeps the File Daemon in a container (with `/hostfs`) for the lab path. **Chapter 21** documents the production hybrid: Director, Storage Daemon, catalog, and WebUI stay containerized; only the File Daemon runs on the host as a systemd service with `CAP_DAC_READ_SEARCH` so a non-root process can read the host filesystem without disabling SELinux labels on a container that mounts `/`.
+
 ### What This Course Covers
 
 - The theoretical foundations of backup strategies (full, incremental, differential, retention)
@@ -41,6 +43,7 @@ Running Bareos inside Podman containers — rather than as native RPM-installed 
 - Monitoring, alerting, and disaster recovery (including the Bareos WebUI browser interface, deployed in Chapter 6 and covered in depth in Chapter 17)
 - Performance tuning for large environments
 - Comprehensive troubleshooting with SELinux-aware diagnosis
+- Hybrid host File Daemon with `CAP_DAC_READ_SEARCH`, managed by the containerized Director (Chapter 21)
 
 ### Who This Course Is For
 
@@ -267,6 +270,7 @@ chmod 600 /home/bareos/.config/bareos/bareos.env
 | 18 | Disaster Recovery | [chapters/18-disaster-recovery.md](chapters/18-disaster-recovery.md) |
 | 19 | Performance Tuning | [chapters/19-performance-tuning.md](chapters/19-performance-tuning.md) |
 | 20 | Troubleshooting Guide | [chapters/20-troubleshooting.md](chapters/20-troubleshooting.md) |
+| 21 | Host File Daemon with CAP_DAC_READ_SEARCH | [chapters/21-host-file-daemon.md](chapters/21-host-file-daemon.md) |
 
 ---
 
@@ -294,6 +298,7 @@ chmod 600 /home/bareos/.config/bareos/bareos.env
 | 18 | Disaster Recovery | Recovery scenarios (host failure, catalog loss, volume corruption), bootstrap files, bare-metal restore procedure, testing DR | Advanced |
 | 19 | Performance Tuning | Parallel jobs, spooling configuration, catalog query optimization, network bandwidth tuning, compression settings | Advanced |
 | 20 | Troubleshooting Guide | Job log analysis, daemon logs, SELinux AVC diagnosis, Quadlet failures, dbcheck, authorization errors, volume problems | All levels |
+| 21 | Host File Daemon with CAP_DAC_READ_SEARCH | Hybrid stack (container DIR/SD/DB/WebUI + host FD), AmbientCapabilities, systemd drop-ins, FileSets without `/hostfs`, restore differences | Advanced |
 
 ---
 
