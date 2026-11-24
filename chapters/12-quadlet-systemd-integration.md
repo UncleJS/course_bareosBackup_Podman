@@ -417,14 +417,14 @@ For the Bareos Director, this chapter uses `Requires=bareos-db.service` rather t
 
 For the Bareos stack:
 
-```
-bareos-db-data-volume.service ─┐
-bareos-working-volume.service ─┼─ Requires + After → bareos-db.service
-bareos-network.service        ─┘       ↓ (Requires + After)
-                                  bareos-director.service
-                                         ↓ (Requires + After)
-                                 bareos-storage.service
-                                 bareos-fd.service
+```mermaid
+flowchart TD
+    V1["bareos-db-data-volume.service"] -- "Requires + After" --> DB["bareos-db.service"]
+    V2["bareos-working-volume.service"] -- "Requires + After" --> DB
+    N["bareos-network.service"] -- "Requires + After" --> DB
+    DB -- "Requires + After" --> DIR["bareos-director.service"]
+    DIR -- "Requires + After" --> SD["bareos-storage.service"]
+    DIR -- "Requires + After" --> FD["bareos-fd.service"]
 ```
 
 In practice, the `[Unit]` section of `bareos-director.container` should look like:

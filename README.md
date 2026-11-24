@@ -10,17 +10,43 @@
 
 ## Table of Contents
 
-1. [About This Course](#about-this-course)
-2. [Prerequisites](#prerequisites)
-3. [Lab Environment](#lab-environment)
-4. [Course Chapter Index](#course-chapter-index)
-5. [Chapter Summary Table](#chapter-summary-table)
-6. [Quick Reference](#quick-reference)
-7. [Key Concepts Glossary](#key-concepts-glossary)
-8. [Recommended Learning Path](#recommended-learning-path)
-9. [Lab Assets](#lab-assets)
-10. [Local Test Pod (scripts/)](#local-test-pod-scripts)
-11. [Container Image Reference](#container-image-reference)
+- [About This Course](#about-this-course)
+    - [What This Course Covers](#what-this-course-covers)
+    - [Who This Course Is For](#who-this-course-is-for)
+- [Prerequisites](#prerequisites)
+    - [Knowledge Prerequisites](#knowledge-prerequisites)
+    - [Software Prerequisites](#software-prerequisites)
+    - [Recommended but Optional](#recommended-but-optional)
+- [Lab Environment](#lab-environment)
+    - [Hardware/VM Specifications](#hardwarevm-specifications)
+    - [Operating System](#operating-system)
+    - [The bareos System User](#the-bareos-system-user)
+    - [Backup Storage](#backup-storage)
+    - [Quadlet File Location](#quadlet-file-location)
+    - [Network Layout](#network-layout)
+    - [Secrets and Credentials](#secrets-and-credentials)
+    - [Canonical Lab Stack Vocabulary](#canonical-lab-stack-vocabulary)
+- [Course Chapter Index](#course-chapter-index)
+    - [Part 1: Foundations](#part-1-foundations)
+    - [Part 2: Deployment](#part-2-deployment)
+    - [Part 3: Advanced Backup Targets](#part-3-advanced-backup-targets)
+    - [Part 4: Operations and Hardening](#part-4-operations-and-hardening)
+- [Chapter Summary Table](#chapter-summary-table)
+- [Quick Reference](#quick-reference)
+    - [Entering the bareos User Environment](#entering-the-bareos-user-environment)
+    - [systemctl — Managing Bareos Services](#systemctl--managing-bareos-services)
+    - [podman — Container Management](#podman--container-management)
+    - [bconsole — Bareos Console Commands](#bconsole--bareos-console-commands)
+    - [journalctl — Reading Logs](#journalctl--reading-logs)
+    - [SELinux Diagnostics](#selinux-diagnostics)
+- [Key Concepts Glossary](#key-concepts-glossary)
+    - [Bareos-Specific Terms](#bareos-specific-terms)
+    - [Podman and Container Terms](#podman-and-container-terms)
+    - [SELinux Terms](#selinux-terms)
+- [Recommended Learning Path](#recommended-learning-path)
+- [Lab Assets](#lab-assets)
+- [Local Test Pod (scripts/)](#local-test-pod-scripts)
+- [Container Image Reference](#container-image-reference)
 
 ---
 
@@ -59,6 +85,8 @@ This course is designed for Linux system administrators and DevOps engineers who
 
 No prior Bareos or Bacula experience is required. Familiarity with basic Linux administration (file permissions, systemd, firewall-cmd) is assumed.
 
+[↑ Back to TOC](#table-of-contents)
+
 ---
 
 ## Prerequisites
@@ -93,6 +121,8 @@ You do **not** need prior experience with:
 
 - A second RHEL 10 machine to act as a backup client (you can use the same machine in a pinch, with the FD container representing a "remote" client)
 - Access to a MariaDB client on your workstation for inspecting the catalog from outside the containers
+
+[↑ Back to TOC](#table-of-contents)
 
 ---
 
@@ -265,6 +295,8 @@ Chapter 6 is the source of truth. Later chapters must reuse these names unless t
 | Host FileSet prefix | `/hostfs/...` |
 | Test restore `Where` | `/var/tmp/bareos-restores` (writable bind-mount; `/hostfs` is read-only) |
 
+[↑ Back to TOC](#table-of-contents)
+
 ---
 
 ## Course Chapter Index
@@ -310,6 +342,8 @@ Chapter 6 is the source of truth. Later chapters must reuse these names unless t
 | 20 | Troubleshooting Guide | [chapters/20-troubleshooting.md](chapters/20-troubleshooting.md) |
 | 21 | Host File Daemon with CAP_DAC_READ_SEARCH | [chapters/21-host-file-daemon.md](chapters/21-host-file-daemon.md) |
 
+[↑ Back to TOC](#table-of-contents)
+
 ---
 
 ## Chapter Summary Table
@@ -337,6 +371,8 @@ Chapter 6 is the source of truth. Later chapters must reuse these names unless t
 | 19 | Performance Tuning and Optimization | Parallel jobs, spooling configuration, catalog query optimization, network bandwidth tuning, compression settings | Advanced |
 | 20 | Troubleshooting Guide | Job log analysis, daemon logs, SELinux AVC diagnosis, Quadlet failures, dbcheck, authorization errors, volume problems | All levels |
 | 21 | Host File Daemon with CAP_DAC_READ_SEARCH | Hybrid stack (container DIR/SD/DB/WebUI + host FD), AmbientCapabilities, systemd drop-ins, FileSets without `/hostfs`, restore differences | Advanced |
+
+[↑ Back to TOC](#table-of-contents)
 
 ---
 
@@ -513,6 +549,8 @@ semanage fcontext -a -t container_file_t "/srv/bareos-storage(/.*)?"
 restorecon -Rv /srv/bareos-storage/
 ```
 
+[↑ Back to TOC](#table-of-contents)
+
 ---
 
 ## Key Concepts Glossary
@@ -607,6 +645,8 @@ A tool that reads AVC denial messages and generates a SELinux Type Enforcement (
 **Enforcing Mode**  
 SELinux's active mode: all policy violations are blocked and logged. The correct production mode. Never change to Permissive or Disabled to work around a problem.
 
+[↑ Back to TOC](#table-of-contents)
+
 ---
 
 ## Recommended Learning Path
@@ -619,11 +659,15 @@ If you have experience with Podman but are new to Bareos, read Chapters 1–2 ca
 
 If you are looking for help with a specific problem, go directly to [Chapter 20: Troubleshooting Guide](chapters/20-troubleshooting.md).
 
+[↑ Back to TOC](#table-of-contents)
+
 ---
 
 ## Lab Assets
 
 Reusable Quadlet units, env templates (no secrets), and helper scripts live under [`lab/`](lab/). Chapters remain the source of truth for procedure and narrative; use `lab/` to reduce copy-paste errors when deploying the Chapter 6 stack. See [`lab/README.md`](lab/README.md).
+
+[↑ Back to TOC](#table-of-contents)
 
 ---
 
@@ -662,6 +706,8 @@ scripts/uninstall.sh --purge --remove-quadlets
 
 Parallel instances: with `JOB=<slug> PORT_OFFSET=<n>`, every name gets the suffix `-<slug>` and every host port is shifted by `<n>` (for example `JOB=test PORT_OFFSET=1000` publishes 11110-11113), so an instance never collides with the main one. `uninstall.sh` with `JOB` set removes only that instance.
 
+[↑ Back to TOC](#table-of-contents)
+
 ---
 
 ## Container Image Reference
@@ -687,8 +733,8 @@ podman pull docker.io/bareos/bareos-webui:24
 podman pull docker.io/library/mariadb:10.11
 ```
 
+[↑ Back to TOC](#table-of-contents)
+
 ---
 
-[Back to Table of Contents](#table-of-contents)
-
-© 2026 UncleJS — Licensed under CC BY-NC-SA 4.0
+© 2026 UncleJS — Licensed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)

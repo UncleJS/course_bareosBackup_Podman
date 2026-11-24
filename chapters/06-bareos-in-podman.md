@@ -1124,12 +1124,11 @@ All three statuses should report successful connections.
 
 The Bareos WebUI is a PHP-based web application that provides a graphical interface for job monitoring, restore operations, and day-to-day Bareos management. It is **part of the standard deployment** in this course — not an optional extra. It connects to the Director's console API on port 9101 using a dedicated `Console` resource, exactly like `bconsole`, exposed over HTTP instead of a terminal.
 
-```
-Browser ──→ bareos-webui container (Apache + PHP-FPM, port 80; host 127.0.0.1:10110)
-                    │
-                    └──→ bareos-director:9101  (console API)
-                                │
-                                └──→ bareos-db:3306 (catalog)
+```mermaid
+flowchart LR
+  browser["Browser"] -- "host 127.0.0.1:10110" --> webui["bareos-webui container<br/>(Apache + PHP-FPM, port 80)"]
+  webui -- "console API" --> dir["bareos-director:9101"]
+  dir -- "catalog" --> db["bareos-db:3306"]
 ```
 
 The WebUI is **stateless** — it translates web requests into bconsole API calls. All persistent state lives in the Director and Catalog. The container image `docker.io/bareos/bareos-webui:24` bundles Apache and PHP-FPM; there is no separate web server to install or configure on the host.

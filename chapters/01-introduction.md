@@ -204,14 +204,12 @@ For backing up external client machines (bare-metal servers, VMs, etc.), install
 
 This course is structured as a **progressive journey**:
 
-```
-Beginner ──────────────────────────────────────────────── Advanced
-    │                                                           │
-    ▼                                                           ▼
-Ch 1-2          Ch 3-6           Ch 7-8        Ch 9-14        Ch 15-21
-Concepts     Prerequisites    First Backup   Podman Focus   Production
-& Theory     & Foundation     & Restore      Deep Dives     Hardening
-                                                              (TLS + host FD)
+```mermaid
+flowchart LR
+    A["Ch 1-2<br/>Concepts<br/>& Theory"] --> B["Ch 3-6<br/>Prerequisites<br/>& Foundation"]
+    B --> C["Ch 7-8<br/>First Backup<br/>& Restore"]
+    C --> D["Ch 9-14<br/>Podman Focus<br/>Deep Dives"]
+    D --> E["Ch 15-21<br/>Production Hardening<br/>(TLS + host FD)"]
 ```
 
 ### How to Use Each Chapter
@@ -243,37 +241,29 @@ You do **not** need prior knowledge of Bareos, Podman, containers, or backup the
 
 By the end of this course, you will have built and understood every component of this architecture:
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                            RHEL 10 Host                                  │
-│                                                                          │
-│  ┌──────────────────── Podman (rootless, user: bareos) ───────────────┐  │
-│  │                                                                    │  │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐ │  │
-│  │  │   Bareos     │  │   Bareos     │  │   MariaDB                │ │  │
-│  │  │  Director    │◄─►  Storage     │  │   Catalog (port 3306)    │ │  │
-│  │  │  (port 9101) │  │  Daemon      │  │                          │ │  │
-│  │  │              │  │  (port 9103) │  └──────────────────────────┘ │  │
-│  │  └──────┬───────┘  └──────────────┘                               │  │
-│  │         │  ▲                        ┌──────────────────────────┐  │  │
-│  │         │  │ port 9101              │   Bareos WebUI           │  │  │
-│  │         │  └────────────────────────┤   (port 80→host:10110)    │  │  │
-│  │         │                           │   Browser interface      │  │  │
-│  │         │  TCP 9102                 └──────────────────────────┘  │  │
-│  │         ▼                                                          │  │
-│  │  ┌──────────────────────────────────────────────────────────────┐ │  │
-│  │  │   Bareos File Daemon (container: bareos-fd)                   │ │  │
-│  │  │   /hostfs → accesses /data, Podman volumes, DB dumps          │ │  │
-│  │  └──────────────────────────────────────────────────────────────┘ │  │
-│  └──────────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│  ┌───────────────────────── Podman Workloads ────────────────────────┐   │
-│  │  web-app container  │  mariadb container  │  other-app container  │   │
-│  │  (volume: app-data) │  (volume: db-data)  │  (volume: app2-data)  │   │
-│  └───────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-│  Your browser → http://localhost:10110 → WebUI → Director (port 9101)    │
-└──────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  browser["Your browser<br/>http://localhost:10110"]
+  subgraph host["RHEL 10 Host"]
+    subgraph podman["Podman (rootless, user: bareos)"]
+      dir["Bareos Director<br/>(port 9101)"]
+      sd["Bareos Storage Daemon<br/>(port 9103)"]
+      db["MariaDB Catalog<br/>(port 3306, not published)"]
+      webui["Bareos WebUI<br/>(port 80→host:10110)<br/>Browser interface"]
+      fd["Bareos File Daemon (container: bareos-fd)<br/>/hostfs → accesses /data, Podman volumes, DB dumps"]
+    end
+    subgraph workloads["Podman Workloads"]
+      app["web-app container<br/>(volume: app-data)"]
+      mdb["mariadb container<br/>(volume: db-data)"]
+      app2["other-app container<br/>(volume: app2-data)"]
+    end
+  end
+  dir <--> sd
+  dir --- db
+  webui -- "port 9101" --> dir
+  dir -- "TCP 9102" --> fd
+  browser --> webui
+  fd -. "/hostfs" .-> workloads
 ```
 
 You will be able to:

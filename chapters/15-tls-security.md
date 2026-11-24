@@ -106,23 +106,12 @@ TLS adds CPU overhead for encryption and decryption. On modern hardware, this ov
 
 Bareos uses a three-component architecture. Understanding which component communicates with which, and in which direction, is essential before configuring TLS.
 
-```
-┌────────────────┐    DIR:9101    ┌────────────────────┐
-│    bconsole    │ ─────────────> │   Bareos Director  │
-│   (operator)   │                │  (bareos-director)  │
-└────────────────┘                └─────────┬──────────┘
-                                            │
-                       DIR→SD: 9103         │         DIR→FD: 9102
-                              ┌──────────────┴──────────────┐
-                              │                             │
-                     ┌────────▼─────────┐         ┌─────────▼────────┐
-                     │  Storage Daemon  │         │   File Daemon    │
-                     │ (bareos-storage)  │ <─────── │   (bareos-fd)    │
-                     └──────────────────┘  FD→SD:  └──────────────────┘
-                                            9103
-                                        (data channel —
-                                     FD initiates connection
-                                          to the SD)
+```mermaid
+flowchart TB
+    BC["bconsole<br/>(operator)"] -- "DIR:9101" --> DIR["Bareos Director<br/>(bareos-director)"]
+    DIR -- "DIR→SD: 9103" --> SD["Storage Daemon<br/>(bareos-storage)"]
+    DIR -- "DIR→FD: 9102" --> FD["File Daemon<br/>(bareos-fd)"]
+    FD -- "FD→SD: 9103<br/>(data channel — FD initiates connection to the SD)" --> SD
 ```
 
 There are **four distinct TLS connections** to configure:

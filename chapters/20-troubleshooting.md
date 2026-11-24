@@ -2179,119 +2179,48 @@ The deleted volume should either be gone from the catalog or marked in a state t
 
 The following ASCII art flowchart guides you through the most common failure scenarios. Start at the top and follow the branches.
 
+```mermaid
+flowchart TD
+    subgraph JOB["Backup job failed"]
+        A["BACKUP JOB FAILED<br/>or won't start"] --> B["Run: list joblog<br/>jobid=N in bconsole"]
+        B --> C1["'No route to client'"]
+        B --> C2["'Authorization error'"]
+        B --> C3["'Cannot open Volume'"]
+        C1 --> D1["Is FD running?<br/>podman ps"]
+        C2 --> D2["Check password<br/>on BOTH sides"]
+        C3 --> D3["Does file exist<br/>on disk?"]
+        D1 -- "No" --> E1["Start FD"]
+        D1 -- "Yes" --> E2["Check address"]
+        E2 --> F1["Check firewall<br/>firewall-cmd list"]
+        F1 --> F2["Check SELinux:<br/>ausearch -m avc<br/>-ts recent"]
+        D2 -- "Match? No" --> E3["Fix both"]
+        D3 -- "No" --> E4["Label or Relabel"]
+    end
 ```
-                    ┌────────────────────────┐
-                    │   BACKUP JOB FAILED    │
-                    │   or won't start       │
-                    └───────────┬────────────┘
-                                │
-                    ┌───────────▼────────────┐
-                    │  Run: list joblog      │
-                    │  jobid=N in bconsole   │
-                    └───────────┬────────────┘
-                                │
-              ┌─────────────────┼──────────────────┐
-              │                 │                  │
-    ┌─────────▼──────┐ ┌────────▼───────┐ ┌───────▼────────┐
-    │  "No route to  │ │ "Authorization │ │ "Cannot open   │
-    │   client"      │ │  error"        │ │  Volume"       │
-    └────────┬───────┘ └───────┬────────┘ └──────┬─────────┘
-             │                 │                  │
-    ┌────────▼───────┐ ┌───────▼────────┐ ┌──────▼─────────┐
-    │ Is FD running? │ │ Check password │ │ Does file exist│
-    │ podman ps      │ │ on BOTH sides  │ │ on disk?       │
-    └────────┬───────┘ └───────┬────────┘ └──────┬─────────┘
-             │                 │                  │
-        ┌────▼────┐       ┌────▼────┐        ┌───▼────┐
-        │  No     │       │Match?   │        │  No    │
-        │  Start  │       │  No     │        │ Label  │
-        │  FD     │       │  Fix    │        │ or     │
-        └────┬────┘       │  both   │        │ Relabel│
-             │            └─────────┘        └────────┘
-        ┌────▼────┐
-        │  Yes    │
-        │ Check   │
-        │ address │
-        └────┬────┘
-             │
-        ┌────▼──────────────┐
-        │ Check firewall    │
-        │ firewall-cmd list │
-        └────┬──────────────┘
-             │
-        ┌────▼──────────────┐
-        │ Check SELinux:    │
-        │ ausearch -m avc   │
-        │ -ts recent        │
-        └───────────────────┘
 
+```mermaid
+flowchart TD
+    A["CONTAINER WON'T START"] --> B["podman ps --all<br/>shows Exited?"]
+    B --> C["podman logs &lt;name&gt;"]
+    C --> D1["Config error<br/>Run: bareos-dir -t to test cfg"]
+    C --> D2["DB not available<br/>Check bareos-db<br/>systemctl status"]
+    C --> D3["Missing env var<br/>Check env-file<br/>permissions 600"]
+```
 
-                    ┌────────────────────────┐
-                    │  CONTAINER WON'T START │
-                    └───────────┬────────────┘
-                                │
-                    ┌───────────▼────────────┐
-                    │ podman ps --all        │
-                    │ shows Exited?          │
-                    └───────────┬────────────┘
-                                │
-                   ┌────────────▼───────────┐
-                   │ podman logs <name>     │
-                   └────────────┬───────────┘
-                                │
-         ┌──────────────────────┼──────────────────────┐
-         │                      │                      │
-┌────────▼────────┐  ┌──────────▼──────────┐ ┌────────▼────────┐
-│ Config error    │  │ DB not available    │ │ Missing env var │
-│ Run: bareos-dir │  │ Check bareos-db     │ │ Check env-file  │
-│ -t to test cfg  │  │ systemctl status   │ │ permissions 600 │
-└─────────────────┘  └─────────────────────┘ └─────────────────┘
+```mermaid
+flowchart TD
+    A["QUADLET UNIT MISSING"] --> B["systemctl --user daemon-reload"]
+    B --> C["systemctl --user list-unit-files<br/>| grep bareos"]
+    C --> D["Still missing?<br/>Check .container file syntax in:<br/>~/.config/containers/systemd/"]
+    D --> E["Check Quadlet generator<br/>journalctl --user -xe<br/>| grep -i quadlet"]
+```
 
-
-                    ┌────────────────────────┐
-                    │  QUADLET UNIT MISSING  │
-                    └───────────┬────────────┘
-                                │
-               ┌────────────────▼───────────────┐
-               │ systemctl --user daemon-reload  │
-               └────────────────┬───────────────┘
-                                │
-               ┌────────────────▼───────────────┐
-               │ systemctl --user list-unit-files│
-               │ | grep bareos                  │
-               └────────────────┬───────────────┘
-                                │
-                    ┌───────────▼────────────┐
-                    │ Still missing?         │
-                    │ Check .container file  │
-                    │ syntax in:             │
-                    │ ~/.config/containers/  │
-                    │ systemd/               │
-                    └───────────┬────────────┘
-                                │
-                    ┌───────────▼────────────┐
-                    │ Check Quadlet generator│
-                    │ journalctl --user -xe  │
-                    │ | grep -i quadlet      │
-                    └────────────────────────┘
-
-
-                    ┌────────────────────────┐
-                    │   SELinux DENIAL       │
-                    └───────────┬────────────┘
-                                │
-               ┌────────────────▼───────────────┐
-               │ ausearch -m avc -ts recent      │
-               │ | audit2why                     │
-               └────────────────┬───────────────┘
-                                │
-         ┌──────────────────────┼──────────────────────┐
-         │                      │                      │
-┌────────▼────────┐  ┌──────────▼──────────┐ ┌────────▼────────┐
-│ Wrong file type │  │ Port not allowed     │ │ No TE rule      │
-│ semanage +      │  │ semanage port -a     │ │ audit2allow -M  │
-│ restorecon      │  │ or setsebool         │ │ semodule -i     │
-└─────────────────┘  └─────────────────────┘ └─────────────────┘
+```mermaid
+flowchart TD
+    A["SELinux DENIAL"] --> B["ausearch -m avc -ts recent<br/>| audit2why"]
+    B --> C1["Wrong file type<br/>semanage + restorecon"]
+    B --> C2["Port not allowed<br/>semanage port -a<br/>or setsebool"]
+    B --> C3["No TE rule<br/>audit2allow -M<br/>semodule -i"]
 ```
 
 ---

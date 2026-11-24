@@ -43,15 +43,15 @@
 
 A Bareos backup job is the fundamental unit of work. Every job definition connects several resources together:
 
-```
-Job
- ├── Client     → Who is being backed up (which File Daemon)
- ├── FileSet    → What files to include/exclude
- ├── Schedule   → When to run automatically
- ├── Storage    → Which Storage Daemon and Device
- ├── Pool       → Which pool of Volumes to use
- ├── Messages   → How to report job outcomes
- └── JobDefs    → Optional template to inherit settings from
+```mermaid
+flowchart LR
+    Job["Job"] --> Client["Client<br/>Who is being backed up (which File Daemon)"]
+    Job --> FileSet["FileSet<br/>What files to include/exclude"]
+    Job --> Schedule["Schedule<br/>When to run automatically"]
+    Job --> Storage["Storage<br/>Which Storage Daemon and Device"]
+    Job --> Pool["Pool<br/>Which pool of Volumes to use"]
+    Job --> Messages["Messages<br/>How to report job outcomes"]
+    Job --> JobDefs["JobDefs<br/>Optional template to inherit settings from"]
 ```
 
 The `Job` resource glues all these pieces together. Each component can be shared across multiple jobs — for example, many jobs might use the same `FileSet` and `Schedule` but different `Pools` for different retention requirements.

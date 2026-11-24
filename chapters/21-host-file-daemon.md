@@ -61,26 +61,22 @@ It has trade-offs for backing up a production host OS:
 
 ### The Hybrid Model This Chapter Teaches
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  RHEL 10 Host                                               │
-│                                                             │
-│  ┌─ rootless Quadlet (user bareos) ──────────────────────┐  │
-│  │  bareos-director :9101                                 │  │
-│  │  bareos-storage  :9103                                 │  │
-│  │  bareos-db       :3306                                 │  │
-│  │  bareos-webui    :10110                                │  │
-│  └───────────────────────────┬────────────────────────────┘  │
-│                              │ Director → FD :9102            │
-│                              ▼                                │
-│  ┌─ host systemd ─────────────────────────────────────────┐  │
-│  │  bareos-fd.service  (RPM)                               │  │
-│  │  User=bareos                                            │  │
-│  │  AmbientCapabilities=CAP_DAC_READ_SEARCH                │  │
-│  └─────────────────────────────────────────────────────────┘  │
-│                                                             │
-│  /srv/bareos-storage/volumes  ← still bind-mounted into SD  │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph HOST["RHEL 10 Host"]
+        subgraph Q["rootless Quadlet (user bareos)"]
+            DIR["bareos-director :9101"]
+            SD["bareos-storage :9103"]
+            DB["bareos-db :3306"]
+            WUI["bareos-webui :10110"]
+        end
+        subgraph SYS["host systemd"]
+            FD["bareos-fd.service (RPM)<br/>User=bareos<br/>AmbientCapabilities=CAP_DAC_READ_SEARCH"]
+        end
+        VOL["/srv/bareos-storage/volumes<br/>← still bind-mounted into SD"]
+    end
+    Q -- "Director → FD :9102" --> SYS
+    SD --- VOL
 ```
 
 **Fully container-based Bareos control plane. Only the File Daemon runs on the host** — specifically so it can hold `CAP_DAC_READ_SEARCH` in the **initial** (host) user namespace, where that capability actually affects host DAC checks.

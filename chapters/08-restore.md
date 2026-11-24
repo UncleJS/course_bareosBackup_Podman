@@ -66,29 +66,21 @@ This chapter gives you all the tools to perform these drills efficiently.
 
 Understanding the restore mechanism prevents surprises. The restore process is the reverse of backup:
 
-```
-Restore Data Flow
-
-Director
-  │
-  ├── Query Catalog: "Which jobs contain /hostfs/home/alice/documents/?"
-  ├── Query Catalog: "Which Volumes contain those jobs?"
-  ├── Instruct Storage Daemon: "Read from Volume Inc-0042, seek to offset 1,234,567"
-  │
-  └── Instruct File Daemon: "Receive data and write to /var/tmp/bareos-restores/hostfs/home/alice/"
-
-Storage Daemon (bareos-storage container)
-  │
-  ├── Open Volume file: /var/lib/bareos/storage/Inc-0042 (host: /srv/bareos-storage/volumes/Inc-0042)
-  ├── Seek to offset 1,234,567 (catalog provides exact position)
-  └── Stream data directly to File Daemon
-
-File Daemon (container: bareos-fd)
-  │
-  ├── Receive data stream from Storage Daemon
-  ├── Verify checksums
-  ├── Write files to restore path
-  └── Restore file permissions, ownership, timestamps, ACLs, xattrs
+```mermaid
+sequenceDiagram
+    participant D as Director
+    participant SD as Storage Daemon (bareos-storage container)
+    participant FD as File Daemon (container: bareos-fd)
+    D->>D: Query Catalog: "Which jobs contain /hostfs/home/alice/documents/?"
+    D->>D: Query Catalog: "Which Volumes contain those jobs?"
+    D->>SD: Read from Volume Inc-0042, seek to offset 1,234,567
+    D->>FD: Receive data and write to /var/tmp/bareos-restores/hostfs/home/alice/
+    SD->>SD: Open Volume file /var/lib/bareos/storage/Inc-0042<br/>(host: /srv/bareos-storage/volumes/Inc-0042)
+    SD->>SD: Seek to offset 1,234,567 (catalog provides exact position)
+    SD->>FD: Stream data directly to File Daemon
+    FD->>FD: Verify checksums
+    FD->>FD: Write files to restore path
+    FD->>FD: Restore file permissions, ownership, timestamps, ACLs, xattrs
 ```
 
 ### Critical Point: Multiple Jobs in One Restore

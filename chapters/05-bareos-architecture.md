@@ -54,43 +54,17 @@
 
 Bareos is built around three cooperating daemons. Understanding what each does — and why it is a separate process — is the key to understanding every configuration file you will ever write.
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Bareos Architecture Overview                     │
-│                                                                     │
-│  ┌──────────────────────────────────────────┐                      │
-│  │            Bareos Director (bareos-dir)  │                      │
-│  │                                          │                      │
-│  │  • Orchestration brain                   │                      │
-│  │  • Reads all configuration               │                      │
-│  │  • Manages the job queue                 │                      │
-│  │  • Writes to the Catalog                 │  Port 9101           │
-│  │  • Accepts bconsole connections          │◄──── Operators       │
-│  └────────────────┬───────────────┬─────────┘                      │
-│                   │               │                                 │
-│              Port 9102       Port 9103                              │
-│                   │               │                                 │
-│                   ▼               ▼                                 │
-│  ┌────────────────────┐  ┌─────────────────────┐                  │
-│  │  Bareos File       │  │  Bareos Storage      │                  │
-│  │  Daemon (FD)       │  │  Daemon (SD)         │                  │
-│  │  bareos-fd         │  │  bareos-sd           │                  │
-│  │                    │  │                      │                  │
-│  │  • Reads files     │──►  • Writes Volumes    │                  │
-│  │    from client     │  │  • Labels Volumes    │                  │
-│  │  • Sends to SD     │  │  • Manages pools     │                  │
-│  │  • Runs scripts    │  │  • Reads for restore │                  │
-│  └────────────────────┘  └──────────────────────┘                  │
-│                                                                     │
-│  ┌─────────────────────────────────────────────┐                   │
-│  │         Bareos Catalog (MariaDB)             │                  │
-│  │                                              │                  │
-│  │  • Every file backed up → recorded here      │                  │
-│  │  • Volume inventory                          │                  │
-│  │  • Job history                               │                  │
-│  │  • Pool and storage definitions              │                  │
-│  └─────────────────────────────────────────────-┘                  │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    OP["Operators<br/>(bconsole)"] -- "Port 9101" --> DIR
+    DIR["<b>Bareos Director (bareos-dir)</b><br/>- Orchestration brain<br/>- Reads all configuration<br/>- Manages the job queue<br/>- Writes to the Catalog<br/>- Accepts bconsole connections"]
+    FD["<b>Bareos File Daemon (FD)</b><br/>bareos-fd<br/>- Reads files from client<br/>- Sends to SD<br/>- Runs scripts"]
+    SD["<b>Bareos Storage Daemon (SD)</b><br/>bareos-sd<br/>- Writes Volumes<br/>- Labels Volumes<br/>- Manages pools<br/>- Reads for restore"]
+    CAT[("<b>Bareos Catalog (MariaDB)</b><br/>- Every file backed up is recorded here<br/>- Volume inventory<br/>- Job history<br/>- Pool and storage definitions")]
+    DIR -- "Port 9102" --> FD
+    DIR -- "Port 9103" --> SD
+    FD -- "data" --> SD
+    DIR -. "writes" .-> CAT
 ```
 
 The three daemons can run:

@@ -57,16 +57,10 @@
 
 Docker uses a client-server architecture with a persistent daemon (`dockerd`) running as root:
 
-```
-┌─────────────────────────────────────────────────────┐
-│                    Docker Architecture               │
-│                                                     │
-│  docker CLI  ──── UNIX socket ──►  dockerd (root)   │
-│                                         │           │
-│                                    containers       │
-│                                  (all run as root   │
-│                                   on the host)      │
-└─────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    CLI["docker CLI"] -- "UNIX socket" --> D["dockerd (root)"]
+    D --> C["containers<br/>(all run as root on the host)"]
 ```
 
 Problems with this design:
@@ -79,18 +73,10 @@ Problems with this design:
 
 Podman is daemonless:
 
-```
-┌─────────────────────────────────────────────────────┐
-│                    Podman Architecture               │
-│                                                     │
-│  podman CLI  ──── fork/exec ──►  container process  │
-│  (user X)                        (runs as user X,   │
-│                                   or mapped UID)     │
-│                                                     │
-│  podman CLI  ──── fork/exec ──►  container process  │
-│  (user Y)                        (runs as user Y,   │
-│                                   or mapped UID)     │
-└─────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    X["podman CLI<br/>(user X)"] -- "fork/exec" --> PX["container process<br/>(runs as user X, or mapped UID)"]
+    Y["podman CLI<br/>(user Y)"] -- "fork/exec" --> PY["container process<br/>(runs as user Y, or mapped UID)"]
 ```
 
 Each `podman` command directly forks and execs the container. No daemon is involved. This means:
