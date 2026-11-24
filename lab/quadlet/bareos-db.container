@@ -13,7 +13,7 @@ EnvironmentFile=/home/bareos/.config/bareos/db.env
 Volume=bareos-db-data.volume:/var/lib/mysql
 Network=bareos.network
 Memory=1g
-PublishPort=127.0.0.1:3306:3306
+# No PublishPort: the catalog (3306) stays on the bareos network (bareos-db:3306)
 NoNewPrivileges=true
 HealthCmd=healthcheck.sh --connect --innodb_initialized
 HealthInterval=10s

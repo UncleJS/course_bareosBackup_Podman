@@ -18,7 +18,8 @@ EnvironmentFile=/home/bareos/.config/bareos/db.env
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 SecurityLabelDisable=true
 Network=bareos.network
-PublishPort=127.0.0.1:9102:9102
+# Host port from the course range 10110-10119; the FD listens on 9102 inside
+PublishPort=127.0.0.1:10112:9102
 
 [Service]
 Restart=on-failure
