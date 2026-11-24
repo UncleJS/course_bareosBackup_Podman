@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+# Copyright (C) 2026 UncleJS
+# bareos-lab-webui.container — WebUI
+# Installed by scripts/install.sh, which fills in the @..._PORT@ values from
+# scripts/common.sh (and renames everything for a JOB instance).
+
+[Unit]
+Description=Bareos lab WebUI
+Requires=bareos-lab-director.service
+After=bareos-lab-director.service
+
+[Container]
+Image=localhost/bareos-lab:latest
+ContainerName=bareos-lab-webui
+Pod=bareos-lab.pod
+Exec=webui
+Label=app=bareos-lab
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+# Copyright (C) 2026 UncleJS
+#
+# One image for the lab pod: Bareos Director, Storage Daemon, File Daemon and
+# WebUI from the Bareos community packages. scripts/build.sh builds it; the
+# Quadlet units in quadlet/ run it with a different command per container.
+FROM docker.io/library/debian:12-slim
+ARG BAREOS_REPO=https://download.bareos.org/current/Debian_12
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl gnupg openssl \
+ && install -d /etc/apt/keyrings \
+ && curl -fsSL "$BAREOS_REPO/Release.key" | gpg --dearmor -o /etc/apt/keyrings/bareos.gpg \
+ && printf 'Types: deb\nURIs: %s\nSuites: /\nSigned-By: /etc/apt/keyrings/bareos.gpg\n' "$BAREOS_REPO" > /etc/apt/sources.list.d/bareos.sources \
+ && echo "bareos-database-common bareos-database-common/dbconfig-install boolean false" | debconf-set-selections \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+      bareos-director bareos-storage bareos-filedaemon bareos-database-postgresql \
+      bareos-bconsole bareos-webui libapache2-mod-php postgresql-client \
+ && a2dismod -q mpm_event && a2enmod -q mpm_prefork php8.2 \
+ && rm -rf /var/lib/apt/lists/*
+COPY prepare-config.sh entrypoint.sh /usr/local/lib/bareos-lab/
+RUN sh /usr/local/lib/bareos-lab/prepare-config.sh \
+ && install -m 755 /usr/local/lib/bareos-lab/entrypoint.sh /usr/local/bin/bareos-lab
+ENTRYPOINT ["/usr/local/bin/bareos-lab"]

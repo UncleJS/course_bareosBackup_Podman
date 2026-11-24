@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+# Copyright (C) 2026 UncleJS
+# bareos-lab-db-data.volume — PostgreSQL catalog data
+# Installed by scripts/install.sh, which fills in the @..._PORT@ values from
+# scripts/common.sh (and renames everything for a JOB instance).
+
+[Volume]
+VolumeName=bareos-lab-db-data
+Label=app=bareos-lab

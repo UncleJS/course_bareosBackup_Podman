@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+# Copyright (C) 2026 UncleJS
+# bareos-lab.pod — the lab pod. Only these four ports reach the host, on loopback.
+# Installed by scripts/install.sh, which fills in the @..._PORT@ values from
+# scripts/common.sh (and renames everything for a JOB instance).
+
+[Unit]
+Description=Bareos lab pod
+
+[Pod]
+PodName=bareos-lab
+PodmanArgs=--label=app=bareos-lab
+# host port (registered range 10110-10119) -> port inside the pod
+PublishPort=127.0.0.1:@WEBUI_PORT@:80
+PublishPort=127.0.0.1:@DIR_PORT@:9101
+PublishPort=127.0.0.1:@FD_PORT@:9102
+PublishPort=127.0.0.1:@SD_PORT@:9103
+# The catalog database (5432) is pod-internal and never published.
+
+[Install]
+WantedBy=default.target

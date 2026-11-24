@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+# Copyright (C) 2026 UncleJS
+# bareos-lab-db.container — PostgreSQL catalog (Bareos supports no other catalog database)
+# Installed by scripts/install.sh, which fills in the @..._PORT@ values from
+# scripts/common.sh (and renames everything for a JOB instance).
+
+[Unit]
+Description=Bareos lab catalog database (PostgreSQL)
+
+[Container]
+Image=docker.io/library/postgres:17
+ContainerName=bareos-lab-db
+Pod=bareos-lab.pod
+Volume=bareos-lab-db-data.volume:/var/lib/postgresql/data
+Secret=bareos-lab-db-password,type=mount,target=db-password
+Environment=POSTGRES_USER=bareos POSTGRES_DB=bareos POSTGRES_PASSWORD_FILE=/run/secrets/db-password
+Environment="POSTGRES_INITDB_ARGS=--encoding=SQL_ASCII --lc-collate=C --lc-ctype=C"
+HealthCmd=pg_isready -h 127.0.0.1 -U bareos -d bareos
+HealthInterval=10s
+HealthStartPeriod=30s
+Notify=healthy
+Label=app=bareos-lab
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target
