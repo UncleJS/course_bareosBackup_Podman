@@ -356,7 +356,7 @@ Operators interact with the Director through one of two interfaces.
 
 ### bconsole
 
-`bconsole` is the command-line text interface. It connects to the Director on port 9101 and provides an interactive prompt for all Bareos operations.
+`bconsole` is the command-line text interface. It connects to the Director on port 9101 (from the host, through the published port 10111 in this course's lab) and provides an interactive prompt for all Bareos operations.
 
 ```bash
 # Connect to the local Director

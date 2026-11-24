@@ -6,8 +6,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 usage() { cat <<USAGE
 Usage: scripts/uninstall.sh [--purge] [--remove-quadlets]
 Stop the services and remove the pod, containers, the built image, unused
-base images, build cache, networks and the Podman secrets of the lab.
-  --purge            also remove the volumes (catalog, config, backups)
+base images, build cache, networks and the Podman secrets of the lab (the catalog
+secret stays with the volumes unless --purge).
+  --purge            also remove the volumes (catalog, config, backups) and
+                     the catalog password secret
   --remove-quadlets  also remove the units from $UNIT_DIR
 Without the flags, the volumes and the Quadlet units are kept.
 With JOB=<slug>, removes only that job's instance (names suffixed -<slug>)
@@ -56,7 +58,15 @@ fi
 
 log "Removing networks and secrets"
 ids=$(podman network ls -q --filter "label=$LABEL"); [ -z "$ids" ] || podman network rm -f $ids >/dev/null
-for s in "${SECRETS[@]}"; do podman secret rm "$s" >/dev/null 2>&1 || true; done
+# The catalog keeps its password in the data volume, so its secret goes only
+# together with the volumes (--purge); otherwise a reinstall would mismatch it.
+for s in "${SECRETS[@]}"; do
+  if [ "$PURGE" = 0 ] && [ "$s" = "$DB_SECRET" ]; then
+    log "Kept secret $s (matches the kept catalog volume; use --purge to remove it)"
+    continue
+  fi
+  podman secret rm "$s" >/dev/null 2>&1 || true
+done
 
 if [ "$PURGE" = 1 ]; then
   for v in "${VOLUMES[@]}"; do podman volume rm -f "$v" >/dev/null 2>&1 || true; done
@@ -82,7 +92,7 @@ add containers "$(podman ps -a --format '{{.Names}}' | grep -E "$NAME_RE" || tru
 add pods "$(podman pod ls --format '{{.Name}}' | grep -E "$NAME_RE" || true)"
 add images "$(podman images -a --format '{{.Repository}}:{{.Tag}}' | grep -E "$NAME_RE" || true)$(podman images -aq --filter "label=$LABEL")"
 add networks "$(podman network ls --format '{{.Name}}' | grep -E "$NAME_RE" || true)"
-add secrets "$(podman secret ls --format '{{.Name}}' | grep -E "$NAME_RE" || true)"
+add secrets "$(podman secret ls --format '{{.Name}}' | grep -E "$NAME_RE" | { [ "$PURGE" = 1 ] && cat || grep -vxF "$DB_SECRET"; } || true)"
 [ "$PURGE" = 0 ] || add volumes "$(podman volume ls --format '{{.Name}}' | grep -E "$NAME_RE" || true)"
 if [ "$RMQ" = 1 ]; then
   add units "$(ls "$UNIT_DIR" 2>/dev/null | grep -E "$UNIT_RE" || true)"
@@ -97,6 +107,6 @@ if [ -n "$left" ]; then
   exit 1
 fi
 kept=""
-[ "$PURGE" = 1 ] || kept+=" the volumes"
+[ "$PURGE" = 1 ] || kept+=" the volumes, the catalog secret"
 [ "$RMQ" = 1 ] || kept+="${kept:+ and} the Quadlet units"
 log "Clean: nothing from the Bareos lab${JOB:+ job $JOB} remains${kept:+ except$kept}"

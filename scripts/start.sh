@@ -18,7 +18,7 @@ systemctl --user start "$POD_SERVICE" "${CONTAINER_SERVICES[@]}"
 log "Waiting for the Director and the WebUI"
 for _ in $(seq 1 90); do
   if podman exec "$APP-webui$SFX" curl -fsS -o /dev/null http://127.0.0.1/bareos-webui/ 2>/dev/null \
-     && podman exec "$APP-director$SFX" sh -c 'echo "status director" | bconsole' 2>/dev/null | grep -q 'Daemon started'; then
+     && podman exec "$APP-director$SFX" sh -c 'echo "status director" | bconsole' 2>/dev/null | grep 'Daemon started' >/dev/null; then
     log "Bareos lab is running"
     log "  WebUI        $WEBUI_URL  (user admin, password: podman secret inspect --showsecret --format '{{.SecretData}}' $ADMIN_SECRET)"
     log "  Director     127.0.0.1:$DIR_PORT"

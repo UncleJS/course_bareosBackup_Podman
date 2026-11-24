@@ -338,7 +338,7 @@ The Director's configuration for the client must use an address that is reachabl
 XDG_RUNTIME_DIR=/run/user/1001 podman port bareos-fd
 
 # Should show something like:
-# 9102/tcp -> 0.0.0.0:10112
+# 9102/tcp -> 127.0.0.1:10112
 
 # Check the Client resource in the Director config
 podman exec bareos-director grep -r "Address" /etc/bareos/bareos-dir.d/client/

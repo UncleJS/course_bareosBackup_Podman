@@ -1939,29 +1939,29 @@ sudo semanage port -l | grep smtp
 ### Allow Container Ports for Prometheus Exporter
 
 ```bash
-# The bareos-exporter listens on port 9625
-# This is an unprivileged port for rootless containers but may still
-# need a SELinux port label for containers to bind to it.
+# The bareos-exporter listens on port 9625 inside its container; rootless
+# Podman binds its published host port 10116 on the host. That host port is
+# unprivileged but may still need a SELinux port label.
 
 # Add the port label
-sudo semanage port -a -t http_port_t -p tcp 9625
+sudo semanage port -a -t http_port_t -p tcp 10116
 # We use http_port_t as a general "web service" port type.
 
-# If port 9625 already exists, use -m to modify:
-sudo semanage port -m -t http_port_t -p tcp 9625
+# If port 10116 already exists, use -m to modify:
+sudo semanage port -m -t http_port_t -p tcp 10116
 
 # Verify
-sudo semanage port -l | grep 9625
+sudo semanage port -l | grep 10116
 ```
 
 ### Allow Grafana and Prometheus Ports
 
 ```bash
-# Port 3000 (Grafana)
-sudo semanage port -a -t http_port_t -p tcp 3000
+# Port 10118 (Grafana, host-published; container port 3000)
+sudo semanage port -a -t http_port_t -p tcp 10118
 
-# Port 9090 (Prometheus)
-sudo semanage port -a -t http_port_t -p tcp 9090
+# Port 10117 (Prometheus, host-published; container port 9090)
+sudo semanage port -a -t http_port_t -p tcp 10117
 
 # Port 10110 (Bareos WebUI, host-published port that nginx proxies to)
 sudo semanage port -a -t http_port_t -p tcp 10110
@@ -1969,8 +1969,8 @@ sudo semanage port -a -t http_port_t -p tcp 10110
 # Port 9110 (node-exporter on the host — kept off 9100, the node-exporter default that other stacks on the host commonly use)
 sudo semanage port -a -t http_port_t -p tcp 9110
 
-# Port 9093 (Alertmanager)
-sudo semanage port -a -t http_port_t -p tcp 9093
+# Port 10119 (Alertmanager, host-published; container port 9093)
+sudo semanage port -a -t http_port_t -p tcp 10119
 ```
 
 ### Allow Rootless Containers to Bind to Non-Privileged Ports

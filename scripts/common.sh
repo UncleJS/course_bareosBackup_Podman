@@ -19,7 +19,11 @@ PORT_OFFSET=$((10#$PORT_OFFSET))
 # (JOB=db-data would turn the pod into bareos-lab-db-data, the main volume's name).
 [[ ! "$JOB" =~ ^(db|director|storage|fd|webui|config|working|volumes|data|password|admin|pod|infra)(-|$) ]] \
   || { echo "JOB=$JOB clashes with a main-install name" >&2; exit 2; }
-[ -z "$JOB" ] || [ "$PORT_OFFSET" -gt 0 ] || { echo "JOB needs a PORT_OFFSET > 0 (the default ports belong to the main install)" >&2; exit 2; }
+# A slug ending in -infra would match another job's infra container name.
+[[ ! "$JOB" =~ -infra$ ]] || { echo "JOB must not end in -infra" >&2; exit 2; }
+# A job must not overlap the main install's range 10110-10119, and its ports must stay valid.
+[ -z "$JOB" ] || [ "$PORT_OFFSET" -ge 10 ] || { echo "JOB needs a PORT_OFFSET >= 10 (10110-10119 belong to the main install)" >&2; exit 2; }
+[ $((10119 + PORT_OFFSET)) -le 65535 ] || { echo "PORT_OFFSET is too large (ports above 65535)" >&2; exit 2; }
 SFX="${JOB:+-$JOB}"
 
 APP=bareos-lab
@@ -42,6 +46,7 @@ CONTAINERS=("$APP-db$SFX" "$APP-director$SFX" "$APP-storage$SFX" "$APP-fd$SFX" "
 VOLUMES=("$APP-db-data$SFX" "$APP-config$SFX" "$APP-working$SFX" "$APP-volumes$SFX")
 SECRETS=("$APP-db-password$SFX" "$APP-admin-password$SFX")
 ADMIN_SECRET="$APP-admin-password$SFX"
+DB_SECRET="$APP-db-password$SFX"
 IMAGE=localhost/$APP$SFX:latest
 BASE_IMAGES=(docker.io/library/debian:12-slim docker.io/library/postgres:17)
 CONTAINER_SERVICES=(); for c in "${CONTAINERS[@]}"; do CONTAINER_SERVICES+=("$c.service"); done
