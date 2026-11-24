@@ -917,7 +917,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 bconsole <<< "reload"
 
 ## 12. Lab 7-2: Running and Monitoring the Job
 
-Each step below shows both the `bconsole` command and the equivalent action in the **Bareos WebUI** (`http://localhost:9100/bareos-webui`). Use whichever you prefer — both achieve the same result.
+Each step below shows both the `bconsole` command and the equivalent action in the **Bareos WebUI** (`http://localhost:10110/bareos-webui`). Use whichever you prefer — both achieve the same result.
 
 ```bash
 # Step 1: Reload the Director to pick up new config
@@ -1017,7 +1017,7 @@ In this chapter you created and ran your first complete Bareos backup configurat
 - **Running jobs**: `run job=Name level=Full yes` in bconsole, or **Jobs → Run Job** in the WebUI. `messages` / the job details page shows the result. `list jobs` / **Jobs → All Jobs** shows history.
 - **Reading job reports**: `FD Files/Bytes Written` vs `SD Files/Bytes Written` reveals compression effectiveness. `Termination: Backup OK` is the only acceptable outcome.
 - **Accurate mode**: Enables precise change detection using a full file index comparison instead of mtime-only. Recommended for production.
-- **WebUI**: Every bconsole operation in this chapter has an equivalent in the WebUI at `http://localhost:9100/bareos-webui`. Use the WebUI for day-to-day monitoring; use bconsole for scripting and diagnostics.
+- **WebUI**: Every bconsole operation in this chapter has an equivalent in the WebUI at `http://localhost:10110/bareos-webui`. Use the WebUI for day-to-day monitoring; use bconsole for scripting and diagnostics.
 
 ---
 

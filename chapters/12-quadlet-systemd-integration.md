@@ -235,7 +235,7 @@ A `.pod` file describes a Podman pod — a group of containers that share a netw
 
 ```ini
 [Pod]
-PublishPort=127.0.0.1:9101:9101
+PublishPort=127.0.0.1:10111:9101
 Network=bareos.network
 ```
 
@@ -688,7 +688,7 @@ EnvironmentFile=/home/bareos/.config/bareos/db.env
 
 # Director listen port — localhost-only in the lab stack (Chapter 6).
 # Widen only after TLS (Chapter 15) if remote consoles must reach the host.
-PublishPort=127.0.0.1:9101:9101
+PublishPort=127.0.0.1:10111:9101
 
 # Health check: verify the Director's listener port is accepting TCP
 # connections. A TCP check is more reliable than running bconsole
@@ -761,7 +761,7 @@ Volume=bareos-working.volume:/var/lib/bareos
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 
 # SD listen port — localhost-only in the lab stack (Chapter 6 / Chapter 15).
-PublishPort=127.0.0.1:9103:9103
+PublishPort=127.0.0.1:10113:9103
 
 # Prefer a TCP check — official Bareos storage images do not ship
 # /usr/local/bin/healthcheck.sh. Adjust if your image provides one.
@@ -847,7 +847,7 @@ EnvironmentFile=/home/bareos/.config/bareos/db.env
 SecurityLabelDisable=true
 
 # The FD listens on 9102 for Director connections (localhost for lab).
-PublishPort=127.0.0.1:9102:9102
+PublishPort=127.0.0.1:10112:9102
 
 Label=io.containers.autoupdate=registry
 Label=app=bareos
@@ -885,7 +885,7 @@ Label=component=webui-config
 #
 # Bareos WebUI — the graphical management interface.
 # Connects to the Director's console API on port 9101.
-# Exposed on localhost:9100; place nginx in front for HTTPS.
+# Exposed on localhost:10110; place nginx in front for HTTPS.
 
 [Unit]
 Description=Bareos WebUI
@@ -906,7 +906,7 @@ Network=bareos.network
 Volume=bareos-webui-config.volume:/etc/bareos-webui
 
 # Expose the WebUI on localhost only.
-PublishPort=127.0.0.1:9100:80
+PublishPort=127.0.0.1:10110:80
 
 Label=io.containers.autoupdate=registry
 Label=app=bareos

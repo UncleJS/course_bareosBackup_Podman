@@ -304,7 +304,7 @@ A **Podman Pod** groups multiple containers that share a network namespace. This
 
 ```bash
 # Create a pod (all containers share localhost)
-podman pod create --name bareos-pod -p 9101:9101 -p 9103:9103
+podman pod create --name bareos-pod -p 127.0.0.1:10111:9101 -p 127.0.0.1:10113:9103
 
 # Add containers to the pod
 podman run -d --pod bareos-pod --name bareos-db docker.io/library/mariadb:10.11
@@ -549,8 +549,8 @@ Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
 # Network
 Network=bareos.network
 
-# Ports
-PublishPort=9101:9101
+# Ports (host 10111 from the course range 10110-10119; container 9101)
+PublishPort=10111:9101
 
 # Resource limits
 Memory=512m
@@ -623,8 +623,8 @@ Description=Bareos Backup Stack Pod
 [Pod]
 PodName=bareos
 # Lab stack publishes on loopback only (match Chapter 6); widen after TLS.
-PublishPort=127.0.0.1:9101:9101
-PublishPort=127.0.0.1:9103:9103
+PublishPort=127.0.0.1:10111:9101
+PublishPort=127.0.0.1:10113:9103
 
 [Install]
 WantedBy=default.target

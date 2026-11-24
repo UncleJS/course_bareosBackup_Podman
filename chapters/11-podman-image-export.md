@@ -1724,7 +1724,7 @@ Volume=/run/user/1001/podman/podman.sock:/run/podman/podman.sock
 Environment=XDG_RUNTIME_DIR=/run/user/1001
 Environment=CONTAINER_HOST=unix:///run/podman/podman.sock
 # Same-host lab: publish a distinct port; remote host: use host IP + firewalld
-PublishPort=127.0.0.1:9105:9102
+PublishPort=127.0.0.1:10115:9102
 Network=bareos.network
 
 [Service]
@@ -1747,8 +1747,8 @@ sudo -u bareos tee /etc/bareos/bareos-dir.d/client/restore-target-fd.conf > /dev
 Client {
   Name = restore-target-fd
   Address = restore-target-fd   # same-host lab: container DNS on bareos network
-  # Address = 127.0.0.1         # if using PublishPort=127.0.0.1:9105 and Port = 9105
-  # Port = 9105
+  # Address = 127.0.0.1         # if using PublishPort=127.0.0.1:10115 and Port = 10115
+  # Port = 10115
   Password = "CHANGEME_FD_PASSWORD"   # must match FD director/bareos-dir.conf
   File Retention = 60 days
   Job Retention = 6 months

@@ -69,7 +69,7 @@ It has trade-offs for backing up a production host OS:
 │  │  bareos-director :9101                                 │  │
 │  │  bareos-storage  :9103                                 │  │
 │  │  bareos-db       :3306                                 │  │
-│  │  bareos-webui    :9100                                 │  │
+│  │  bareos-webui    :10110                                │  │
 │  └───────────────────────────┬────────────────────────────┘  │
 │                              │ Director → FD :9102            │
 │                              ▼                                │
@@ -126,7 +126,7 @@ Before this chapter you need:
 1. The Chapter 6 stack running: **Director, Storage Daemon, MariaDB, WebUI** as Quadlet containers under user `bareos`.
 2. Matching Bareos **24** packages on the host for the File Daemon (same major as `docker.io/bareos/bareos-*:24`).
 3. The Bareos repository configured (see [Chapter 3](./03-rhel10-prerequisites.md)).
-4. Firewall allowing Director → FD on `9102/tcp` and FD → SD on `9103/tcp` (Lab 3-1 / host firewalld).
+4. Firewall allowing Director → FD on `9102/tcp` and FD → SD on the published SD port `10113/tcp` (Lab 3-1 / host firewalld).
 5. Willingness to **stop the Quadlet `bareos-fd` container** for this host once the host FD takes over (recommended path).
 
 You do **not** need to reinstall Director, SD, DB, or WebUI.
@@ -314,13 +314,13 @@ Publish or bind the host FD:
 ss -lntp | grep 9102
 ```
 
-Ensure firewalld allows Director traffic to 9102 (Chapter 3). The host FD must reach the Storage Daemon on port 9103. Chapter 6 publishes SD as `PublishPort=127.0.0.1:9103:9103`, so on the **same host** the FD connects to `127.0.0.1:9103`. The Quadlet-only DNS name `bareos-storage` resolves only inside the `bareos` Podman network — a host RPM FD cannot use it.
+Ensure firewalld allows Director traffic to 9102 (Chapter 3). The host FD must reach the Storage Daemon through its published host port. Chapter 6 publishes SD as `PublishPort=127.0.0.1:10113:9103`, so on the **same host** the FD connects to `127.0.0.1:10113`. Host ports come from the course's registered range 10110-10119; inside the containers Bareos keeps its default ports 9101-9103. The Quadlet-only DNS name `bareos-storage` resolves only inside the `bareos` Podman network — a host RPM FD cannot use it.
 
 **Practical pattern for hybrid stacks (same host as Chapter 6):**
 
 1. Keep Director → Client using `host.containers.internal:9102`.
-2. Keep the Chapter 6 localhost SD publish (`127.0.0.1:9103:9103`).
-3. Give host-FD jobs a Storage resource with `Address = 127.0.0.1` (reachable via the published port). Container-to-container jobs can keep using `bareos-storage`.
+2. Keep the Chapter 6 localhost SD publish (`127.0.0.1:10113:9103`).
+3. Give host-FD jobs a Storage resource with `Address = 127.0.0.1` and `Port = 10113` (reachable via the published port). Container-to-container jobs can keep using `bareos-storage`.
 4. For a **remote** host FD later, widen SD publish (drop the `127.0.0.1:` bind), open firewalld, and set `Address` to the backup-server host IP — preferably only after Chapter 15 TLS.
 
 Example Storage resource for same-host hybrid FD jobs:
@@ -328,7 +328,8 @@ Example Storage resource for same-host hybrid FD jobs:
 ```conf
 Storage {
   Name = File-HostReachable
-  Address = 127.0.0.1           # matches Ch6 PublishPort=127.0.0.1:9103:9103
+  Address = 127.0.0.1           # matches Ch6 PublishPort=127.0.0.1:10113:9103
+  Port = 10113                  # published SD host port (container side stays 9103)
   Password = "CHANGEME_SD_PASSWORD"
   Device = FileStorage
   Media Type = File
@@ -383,7 +384,7 @@ sudo -u bareos mv \
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload
 ```
 
-Free host port 9102 for the RPM service if the container had `PublishPort=127.0.0.1:9102:9102`.
+The lab publishes the container FD on host port 10112 (`PublishPort=127.0.0.1:10112:9102`), so it no longer clashes with the host RPM service on 9102. A clash only happens if someone publishes the container FD on host port 9102; stopping the container FD is still recommended so only one FD answers as `bareos-fd`.
 
 ### Hook Strategy Without a Container FD
 
@@ -433,7 +434,7 @@ Smoke-test restores with `Where=/tmp/bareos-restores` owned by `bareos`. Product
 3. `sudo systemctl daemon-reload && sudo systemctl enable --now bareos-fd`
 4. Run `getpcaps $(pgrep -n bareos-fd)` and confirm `dac_read_search`.
 5. Run `ss -lntp | grep 9102` and `systemctl is-active bareos-fd`.
-6. Stop the Quadlet container FD (Section 7) so only the host service owns 9102.
+6. Stop the Quadlet container FD (Section 7) so only one FD answers as `bareos-fd` (the host service owns 9102; the container FD was published on 10112).
 
 **Pass criteria:** Active host unit, capability present, port 9102 listening, container FD stopped.
 
@@ -499,8 +500,8 @@ Smoke-test restores with `Where=/tmp/bareos-restores` owned by `bareos`. Product
 | Director `Address = bareos-fd` | Timeout / connection refused after container FD stopped | Use `host.containers.internal` or host IP |
 | Director `Address = 127.0.0.1` | Connects to Director’s own loopback inside the container | Never use loopback for host FD from a container |
 | FileSet still uses `/hostfs/...` | Empty backup or “file not found” | Use real host paths |
-| SD address only valid on Quadlet DNS | FD cannot connect to storage | Publish 9103; Storage `Address` = host-reachable IP |
-| Container and host FD both bound to 9102 | One fails to start | Stop Quadlet `bareos-fd` |
+| SD address only valid on Quadlet DNS | FD cannot connect to storage | Publish SD on 10113; Storage `Address` = host-reachable IP, `Port = 10113` |
+| Container FD published on host port 9102 (instead of 10112) while the host FD runs | One fails to start | Publish the container FD on 10112, or stop Quadlet `bareos-fd` |
 | Expecting container caps to bypass host DAC | Still permission denied from Quadlet FD | Caps in user namespace ≠ host DAC; use this chapter’s host FD |
 | SELinux AVC on `bareos_t` | Silent denials / EACCES | `ausearch` / `audit2why`; do not `setenforce 0` |
 | In-place restore as `bareos` | Cannot overwrite root files | Restore to `/tmp/...` then copy with privilege |

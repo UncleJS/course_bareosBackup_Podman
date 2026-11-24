@@ -310,9 +310,9 @@ Network=bareos.network
 # Resource limits — MariaDB catalog uses moderate memory
 Memory=1g
 
-# Publish port only to localhost (not externally)
-# Remove or change 127.0.0.1 if Director is on a different host
-PublishPort=127.0.0.1:3306:3306
+# No PublishPort: the catalog is never published on the host. The Director
+# reaches it as bareos-db:3306 on bareos.network; for host-side access use
+# `podman exec -it bareos-db mariadb ...`.
 
 # Security hardening
 NoNewPrivileges=true
@@ -391,7 +391,7 @@ Network=bareos.network
 
 # Publish Storage Daemon port (localhost-only until Chapter 15 TLS;
 # remote FDs need a reachable address — see Chapter 21)
-PublishPort=127.0.0.1:9103:9103
+PublishPort=127.0.0.1:10113:9103
 
 # Resource limits
 Memory=512m
@@ -520,8 +520,10 @@ Volume=/etc/bareos/scripts:/etc/bareos/scripts:ro,z
 # Connect to the Bareos internal network
 Network=bareos.network
 
-# Expose Director port for host bconsole (localhost-only until Chapter 15 TLS)
-PublishPort=127.0.0.1:9101:9101
+# Expose Director port for host bconsole (localhost-only until Chapter 15 TLS).
+# Host ports come from the course's registered range 10110-10119; inside the
+# containers Bareos keeps its default ports 9101-9103.
+PublishPort=127.0.0.1:10111:9101
 
 # The Director needs to resolve the SD and DB by container name
 # (handled automatically by Quadlet network DNS)
@@ -869,7 +871,7 @@ SecurityLabelDisable=true
 Network=bareos.network
 
 # File Daemon port — Director connects inbound on 9102
-PublishPort=127.0.0.1:9102:9102
+PublishPort=127.0.0.1:10112:9102
 
 [Service]
 Restart=on-failure
@@ -1020,10 +1022,10 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 Expected output:
 ```
 NAMES              STATUS                   PORTS
-bareos-director    Up 2 minutes             127.0.0.1:9101->9101/tcp
-bareos-storage     Up 3 minutes             127.0.0.1:9103->9103/tcp
-bareos-fd          Up 1 minute              127.0.0.1:9102->9102/tcp
-bareos-db          Up 4 minutes (healthy)   127.0.0.1:3306->3306/tcp
+bareos-director    Up 2 minutes             127.0.0.1:10111->9101/tcp
+bareos-storage     Up 3 minutes             127.0.0.1:10113->9103/tcp
+bareos-fd          Up 1 minute              127.0.0.1:10112->9102/tcp
+bareos-db          Up 4 minutes (healthy)
 ```
 
 > **Lab vs production:** Publishing only on `127.0.0.1` keeps Director/SD/FD ports off the LAN until you enable TLS in Chapter 15. Containers still reach each other by name on `bareos.network`. For a remote host FD, publish selectively or terminate TLS at a reverse proxy — do not copy the early-lab `TLS Enable = No` config onto a reachable NIC.
@@ -1067,7 +1069,7 @@ sudo dnf install -y bareos-bconsole
 sudo tee /etc/bareos/bconsole.conf > /dev/null <<'EOF'
 Director {
   Name = bareos-dir
-  DIRport = 9101
+  DIRport = 10111   # published host port of the Director (container side 9101)
   Address = 127.0.0.1
   Password = "CHANGEME_DIRECTOR_PASSWORD"  # matches Director's Password directive
   TLS Enable = No
@@ -1085,7 +1087,7 @@ sudo chmod 640 /etc/bareos/bconsole.conf
 bconsole
 
 # Expected:
-# Connecting to Director 127.0.0.1:9101
+# Connecting to Director 127.0.0.1:10111
 # 1000 OK: bareos-dir Version: 24.0.0
 # *
 ```
@@ -1123,7 +1125,7 @@ All three statuses should report successful connections.
 The Bareos WebUI is a PHP-based web application that provides a graphical interface for job monitoring, restore operations, and day-to-day Bareos management. It is **part of the standard deployment** in this course — not an optional extra. It connects to the Director's console API on port 9101 using a dedicated `Console` resource, exactly like `bconsole`, exposed over HTTP instead of a terminal.
 
 ```
-Browser ──→ bareos-webui container (Apache + PHP-FPM, port 9100)
+Browser ──→ bareos-webui container (Apache + PHP-FPM, port 80; host 127.0.0.1:10110)
                     │
                     └──→ bareos-director:9101  (console API)
                                 │
@@ -1282,7 +1284,7 @@ Network=bareos.network
 Volume=bareos-webui-config.volume:/etc/bareos-webui
 
 # Expose the WebUI on localhost only — put nginx in front for HTTPS.
-PublishPort=127.0.0.1:9100:80
+PublishPort=127.0.0.1:10110:80
 
 Label=io.containers.autoupdate=registry
 Label=app=bareos
@@ -1317,7 +1319,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   podman ps --filter name=bareos-webui
 
 # Test the HTTP endpoint
-curl -sI http://localhost:9100/bareos-webui/
+curl -sI http://localhost:10110/bareos-webui/
 # Expected: HTTP/1.1 200 OK  or  302 Found (redirect to /bareos-webui/auth/login)
 
 # If not responding, check logs
@@ -1325,7 +1327,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   journalctl --user -u bareos-webui -n 30 --no-pager
 ```
 
-Open `http://localhost:9100/bareos-webui` in a browser on the RHEL 10 host. Log in with:
+Open `http://localhost:10110/bareos-webui` in a browser on the RHEL 10 host. Log in with:
 
 - **Username:** `webui-admin`
 - **Password:** the value you saved from Step 1
@@ -1454,11 +1456,11 @@ sudo -u bareos XDG_RUNTIME_DIR="${BAREOS_XDG}" bconsole <<< "status director" | 
 
 echo ""
 echo "=== Testing WebUI endpoint ==="
-curl -sI http://localhost:9100/bareos-webui/ | head -3
+curl -sI http://localhost:10110/bareos-webui/ | head -3
 
 echo ""
 echo "=== Smoke test complete ==="
-echo "WebUI is available at: http://localhost:9100/bareos-webui"
+echo "WebUI is available at: http://localhost:10110/bareos-webui"
 echo "Login: webui-admin / <password from Section 12, Step 1>"
 ```
 
@@ -1509,7 +1511,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
   bash -c 'exec 3<>/dev/tcp/bareos-director/9101 && echo "DIR: OK" || echo "DIR: FAIL"'
 
 # Test 7: WebUI HTTP endpoint is responding
-curl -sI http://localhost:9100/bareos-webui/ | head -3
+curl -sI http://localhost:10110/bareos-webui/ | head -3
 # Expected: HTTP/1.1 200 OK  or  HTTP/1.1 302 Found
 
 # Test 8: Verify all five containers are running
@@ -1533,9 +1535,9 @@ In this chapter you deployed the complete Bareos stack as rootless Podman contai
 - **Director**: Reads `/etc/bareos/bareos-dir.d/` as a read-only bind mount. Connects to SD and DB by container name (DNS-resolved within the Quadlet network).
 - **File Daemon**: Deployed as `bareos-fd` container (`bareos-client:24` image) on the Quadlet network. The host filesystem is bind-mounted at `/hostfs` (read-only) so FileSet paths use the `/hostfs/` prefix. The Podman socket is mounted so hook scripts can manage containers from within the FD. For the production alternative — host RPM File Daemon with `CAP_DAC_READ_SEARCH`, while Director/SD/DB/WebUI stay containerized — see [Chapter 21](./21-host-file-daemon.md).
 - **Catalog initialization**: Run `create_bareos_database` and `grant_bareos_privileges` scripts in a temporary Director container before the Director starts.
-- **WebUI**: Deployed as `bareos-webui` container (port 9100), authenticated to the Director via a dedicated `Console` resource with the `webui-admin` profile. Configuration in the `bareos-webui-config` named volume.
+- **WebUI**: Deployed as `bareos-webui` container (host port 10110), authenticated to the Director via a dedicated `Console` resource with the `webui-admin` profile. Configuration in the `bareos-webui-config` named volume.
 - **Boot-start**: `[Install] WantedBy=default.target` in each `.container` file plus linger — not `systemctl --user enable` on Quadlet units.
-- **bconsole**: Installed via RPM, connects to the Director on port 9101 — essential for scripting and diagnostics.
+- **bconsole**: Installed via RPM, connects to the Director on host port 10111 (container port 9101) — essential for scripting and diagnostics.
 
 ---
 

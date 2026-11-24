@@ -338,7 +338,7 @@ The Director's configuration for the client must use an address that is reachabl
 XDG_RUNTIME_DIR=/run/user/1001 podman port bareos-fd
 
 # Should show something like:
-# 9102/tcp -> 0.0.0.0:9102
+# 9102/tcp -> 0.0.0.0:10112
 
 # Check the Client resource in the Director config
 podman exec bareos-director grep -r "Address" /etc/bareos/bareos-dir.d/client/
@@ -1018,14 +1018,16 @@ XDG_RUNTIME_DIR=/run/user/1001 podman network inspect bareos
 If a container fails to start because its published port is already in use:
 
 ```bash
-# Check what process is using port 9101
-ss -tlnp | grep 9101
+# The lab publishes the Director on host port 10111 (container port 9101).
+# Check what process is using that host port
+ss -tlnp | grep 10111
 # Or
-lsof -i :9101
+lsof -i :10111
 
 # If another process owns it, either stop that process or change the host port
-# in the Quadlet .container file:
-# PublishPort=19101:9101  (use port 19101 on the host instead)
+# in the Quadlet .container file. Pick another free port inside the course's
+# registered range 10110-10119 and keep the container side unchanged, e.g.
+# PublishPort=127.0.0.1:<free port in 10110-10119>:9101
 ```
 
 ### Container-to-Container Connectivity
@@ -1776,7 +1778,7 @@ WEBUI_VOL=$(sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
 sudo restorecon -Rv "${WEBUI_VOL}"
 ```
 
-**Nginx proxy** (if used): nginx on the host proxying to `localhost:9100` does need the boolean:
+**Nginx proxy** (if used): nginx on the host proxying to `localhost:10110` does need the boolean:
 
 ```bash
 sudo setsebool -P httpd_can_network_connect on

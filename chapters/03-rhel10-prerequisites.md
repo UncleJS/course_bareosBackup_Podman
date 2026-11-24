@@ -287,7 +287,7 @@ firewalld uses the concept of **zones** — named trust levels for network inter
 | `internal` | Trusted internal network | LAN/data-center interfaces |
 | `trusted` | All traffic allowed | Management interfaces |
 
-> **Lab vs production:** Chapter 6 publishes Director/SD/FD/WebUI on **`127.0.0.1` only**. East-west traffic between containers uses the `bareos` Podman network (DNS names), not host firewall ports. Opening 9101–9103 on the LAN interface is for **remote** consoles/FDs (and Chapter 21 hybrid patterns after TLS). For the localhost-only lab stack, ensure loopback is trusted (below); LAN opens are optional until you widen `PublishPort`.
+> **Lab vs production:** Chapter 6 publishes Director/SD/FD/WebUI on **`127.0.0.1` only**, on host ports `10111`/`10113`/`10112`/`10110` from the course's registered range 10110-10119 (inside the containers Bareos keeps its default ports 9101-9103). East-west traffic between containers uses the `bareos` Podman network (DNS names), not host firewall ports. Opening 9101–9103 on the LAN interface is for **remote** consoles/FDs (and Chapter 21 hybrid patterns after TLS). For the localhost-only lab stack, ensure loopback is trusted (below); LAN opens are optional until you widen `PublishPort`. The ports below are the Bareos defaults for natively installed daemons; if you instead widen a container `PublishPort`, open its published host port (10111-10113).
 
 For production or multi-host labs, assign the server's primary network interface to the `internal` zone and open Bareos ports there:
 

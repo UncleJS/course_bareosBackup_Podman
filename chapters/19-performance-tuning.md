@@ -1058,7 +1058,7 @@ Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
 Volume=/srv/bareos-spool:/var/lib/bareos/spool:z
 
 Network=bareos.network
-PublishPort=9103:9103
+PublishPort=10113:9103
 
 [Service]
 Restart=always
@@ -1209,7 +1209,7 @@ Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
 Volume=/srv/bareos-spool:/var/lib/bareos/spool:z
 
 Network=bareos.network
-PublishPort=9103:9103
+PublishPort=10113:9103
 
 # === Resource Limits ===
 #
@@ -1260,7 +1260,7 @@ Volume=bareos-working.volume:/var/lib/bareos
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 
 Network=bareos.network
-PublishPort=127.0.0.1:9101:9101
+PublishPort=127.0.0.1:10111:9101
 
 # Director is mostly idle (coordinator), so modest limits are fine
 Memory=512M
@@ -2046,7 +2046,7 @@ Volume=/etc/bareos/bareos-dir.d:/etc/bareos/bareos-dir.d:ro,Z
 Volume=bareos-working.volume:/var/lib/bareos
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 Network=bareos.network
-PublishPort=127.0.0.1:9101:9101
+PublishPort=127.0.0.1:10111:9101
 
 # Director is mostly I/O wait and coordination — needs less CPU/RAM
 Memory=1G
@@ -2074,7 +2074,7 @@ Volume=bareos-working.volume:/var/lib/bareos
 Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
 Volume=/srv/bareos-spool:/var/lib/bareos/spool:z
 Network=bareos.network
-PublishPort=9103:9103
+PublishPort=10113:9103
 
 # Storage Daemon needs memory for spool buffers and block I/O
 Memory=2G
@@ -2099,7 +2099,7 @@ After=network-online.target
 Image=docker.io/bareos/bareos-client:24
 Volume=bareos-fd-config.volume:/etc/bareos
 Network=bareos.network
-PublishPort=9102:9102
+PublishPort=10112:9102
 
 # File Daemon reads client data — needs enough memory for compression buffers
 Memory=512M

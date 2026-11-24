@@ -1380,7 +1380,7 @@ Volume=bareos-storage-archive-config:/etc/bareos:Z
 
 EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 
-PublishPort=127.0.0.1:9104:9103
+PublishPort=127.0.0.1:10114:9103
 # Note: different host port to avoid conflict with primary SD
 
 [Service]

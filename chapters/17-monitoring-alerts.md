@@ -693,7 +693,7 @@ XDG_RUNTIME_DIR=/run/user/1001 podman exec bareos-director \
 
 ## 6. Using the Bareos WebUI for Monitoring
 
-The Bareos WebUI was deployed as part of the core stack in [Chapter 6, Section 12](./06-bareos-in-podman.md#12-deploying-the-bareos-webui). This section covers how to use it effectively for day-to-day monitoring and operations. Access it at `http://localhost:9100/bareos-webui` (login: `webui-admin`).
+The Bareos WebUI was deployed as part of the core stack in [Chapter 6, Section 12](./06-bareos-in-podman.md#12-deploying-the-bareos-webui). This section covers how to use it effectively for day-to-day monitoring and operations. Access it at `http://localhost:10110/bareos-webui` (login: `webui-admin`).
 
 ### The Dashboard
 
@@ -808,7 +808,7 @@ To force a volume out of service in the WebUI: go to **Storage → Volumes**, cl
 
 ### Accessing the HTTPS Reverse Proxy (Optional)
 
-The WebUI container exposes port 9100 on `localhost` only. To access it from another machine over HTTPS, place nginx in front. Install nginx on the RHEL 10 host (not in a container, so it can bind to port 443):
+The WebUI container is published on `localhost` port 10110 only (container port 80). To access it from another machine over HTTPS, place nginx in front. Install nginx on the RHEL 10 host (not in a container, so it can bind to port 443):
 
 ```bash
 sudo dnf install -y nginx
@@ -824,7 +824,7 @@ server {
     ssl_certificate_key /etc/pki/tls/private/bareos-webui.key;
 
     location /bareos-webui/ {
-        proxy_pass http://127.0.0.1:9100/bareos-webui/;
+        proxy_pass http://127.0.0.1:10110/bareos-webui/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -834,7 +834,7 @@ server {
 ```
 
 ```bash
-# SELinux: allow nginx to proxy to localhost:9100
+# SELinux: allow nginx to proxy to localhost:10110
 sudo setsebool -P httpd_can_network_connect on
 
 sudo systemctl enable --now nginx
@@ -943,7 +943,7 @@ The `bareos-exporter` project exposes Bareos job and volume metrics as a Prometh
 > deployment before relying on them in PromQL:
 >
 > ```bash
-> curl -s http://localhost:9625/metrics | grep -E '^bareos_'
+> curl -s http://localhost:10116/metrics | grep -E '^bareos_'
 > ```
 >
 > Adapt every query and alert rule in this chapter to the exact names your exporter emits.
@@ -998,8 +998,9 @@ EnvironmentFile=/home/bareos/.config/bareos/db.env
 # line such as BAREOS_DB_PASSWORD=<same value as MARIADB_PASSWORD>
 # directly to db.env (keep it mode 600).
 
-# The exporter listens on port 9625 by default.
-PublishPort=127.0.0.1:9625:9625
+# The exporter listens on port 9625 by default (inside the container);
+# the host side uses 10116 from the course's registered range 10110-10119.
+PublishPort=127.0.0.1:10116:9625
 
 [Service]
 Restart=always
@@ -1018,7 +1019,7 @@ XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload
 XDG_RUNTIME_DIR=/run/user/1001 systemctl --user start bareos-exporter
 
 # Verify metrics endpoint
-curl -s http://localhost:9625/metrics | head -40
+curl -s http://localhost:10116/metrics | head -40
 ```
 
 ### Prometheus Scrape Configuration
@@ -1068,8 +1069,8 @@ scrape_configs:
       - targets: ['localhost:9090']
 
   # ── Node Exporter (RHEL 10 host metrics) ────────────────────
-  # Node-exporter runs on port 9110 here — port 9100 is taken by the
-  # Bareos WebUI (Chapter 6). The host is reachable from the container
+  # Node-exporter runs natively on the host on port 9110 here — kept off 9100,
+  # the node-exporter default that other stacks on the host commonly use. The host is reachable from the container
   # via host.containers.internal.
   - job_name: 'node'
     scrape_interval: 15s
@@ -1175,7 +1176,7 @@ Volume=bareos-prometheus-data:/prometheus:Z
 # add --user=nobody: under rootless Podman it remaps to an unwritable UID
 # and breaks writes to the data volume.
 
-PublishPort=127.0.0.1:9090:9090
+PublishPort=127.0.0.1:10117:9090
 
 [Service]
 Restart=always
@@ -1209,7 +1210,7 @@ Environment=GF_SECURITY_ADMIN_PASSWORD=GrafanaAdmin_ChangeMe
 Environment=GF_ANALYTICS_REPORTING_ENABLED=false
 # Disable telemetry — Grafana sends usage data to grafana.com by default.
 
-PublishPort=127.0.0.1:3000:3000
+PublishPort=127.0.0.1:10118:3000
 
 [Service]
 Restart=always
@@ -1221,7 +1222,7 @@ WantedBy=default.target
 
 ### Recommended Grafana Dashboard Panels
 
-Once Grafana is running at `http://localhost:3000`, add Prometheus as a data source (`http://prometheus:9090` within the Podman network) and create a dashboard with these panels:
+Once Grafana is running at `http://localhost:10118`, add Prometheus as a data source (`http://prometheus:9090` within the Podman network) and create a dashboard with these panels:
 
 **Row 1: Current Status**
 
@@ -1521,7 +1522,7 @@ Network=bareos.network
 
 Volume=bareos-alertmanager-config:/etc/alertmanager:Z
 
-PublishPort=127.0.0.1:9093:9093
+PublishPort=127.0.0.1:10119:9093
 
 [Service]
 Restart=always
@@ -1962,10 +1963,10 @@ sudo semanage port -a -t http_port_t -p tcp 3000
 # Port 9090 (Prometheus)
 sudo semanage port -a -t http_port_t -p tcp 9090
 
-# Port 9100 (Bareos WebUI)
-sudo semanage port -a -t http_port_t -p tcp 9100
+# Port 10110 (Bareos WebUI, host-published port that nginx proxies to)
+sudo semanage port -a -t http_port_t -p tcp 10110
 
-# Port 9110 (node-exporter — moved off 9100 to avoid the WebUI clash)
+# Port 9110 (node-exporter on the host — kept off 9100, the node-exporter default that other stacks on the host commonly use)
 sudo semanage port -a -t http_port_t -p tcp 9110
 
 # Port 9093 (Alertmanager)
@@ -1974,7 +1975,7 @@ sudo semanage port -a -t http_port_t -p tcp 9093
 
 ### Allow Rootless Containers to Bind to Non-Privileged Ports
 
-By default, rootless containers cannot bind to ports below 1024. Ports 9xxx are all fine. If you encounter permission denied binding:
+By default, rootless containers cannot bind to ports below 1024. Ports 9xxx and the lab's host ports 10110-10119 are all fine. If you encounter permission denied binding:
 
 ```bash
 # Check net.ipv4.ip_unprivileged_port_start
@@ -2132,7 +2133,7 @@ podman exec bareos-director cat /var/log/bareos/msmtp.log | tail -10
 **Prerequisites:**
 - Running Bareos stack from Chapter 6 (all four containers up: `bareos-director`, `bareos-storage`, `bareos-webui`, `bareos-db`)
 - At least one completed backup job (from Chapter 7)
-- WebUI accessible at `http://localhost:9100/bareos-webui`
+- WebUI accessible at `http://localhost:10110/bareos-webui`
 
 ---
 
@@ -2182,7 +2183,7 @@ sleep 30
 
 ### Step 2: Find the Failed Job in the WebUI
 
-1. Open `http://localhost:9100/bareos-webui` and log in as `webui-admin`
+1. Open `http://localhost:10110/bareos-webui` and log in as `webui-admin`
 2. On the **Dashboard**, the "Jobs Last 24 Hours" widget should show at least one failed job (red)
 3. Click **Jobs → All Jobs** in the left navigation
 4. In the **Status** filter dropdown, select **Error**
@@ -2372,7 +2373,7 @@ Environment=BAREOS_DB_USER=bareos
 EnvironmentFile=/home/bareos/.config/bareos/db.env
 # BAREOS_DB_PASSWORD must be set directly in db.env (systemd does not
 # expand ${...} here) — use the same value as MARIADB_PASSWORD.
-PublishPort=127.0.0.1:9625:9625
+PublishPort=127.0.0.1:10116:9625
 
 [Service]
 Restart=always
@@ -2394,7 +2395,7 @@ ContainerName=prometheus
 Network=bareos.network
 Volume=bareos-prometheus-config:/etc/prometheus:Z
 Volume=bareos-prometheus-data:/prometheus:Z
-PublishPort=127.0.0.1:9090:9090
+PublishPort=127.0.0.1:10117:9090
 
 [Service]
 Restart=always
@@ -2420,7 +2421,7 @@ Environment=GF_SERVER_HTTP_PORT=3000
 Environment=GF_SECURITY_ADMIN_USER=admin
 Environment=GF_SECURITY_ADMIN_PASSWORD=Grafana_ChangeMe
 Environment=GF_ANALYTICS_REPORTING_ENABLED=false
-PublishPort=127.0.0.1:3000:3000
+PublishPort=127.0.0.1:10118:3000
 
 [Service]
 Restart=always
@@ -2451,10 +2452,10 @@ podman ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "bareos
 
 ```bash
 # Check bareos-exporter metrics
-curl -s http://localhost:9625/metrics | grep bareos_jobs_total
+curl -s http://localhost:10116/metrics | grep bareos_jobs_total
 
 # Check Prometheus targets
-curl -s http://localhost:9090/api/v1/targets | \
+curl -s http://localhost:10117/api/v1/targets | \
   python3 -c "import sys,json; targets=json.load(sys.stdin)['data']['activeTargets']; \
   [print(t['labels']['job'], t['health']) for t in targets]"
 ```
@@ -2467,7 +2468,7 @@ prometheus  up
 
 ### Step 6: Configure Grafana
 
-1. Open `http://localhost:3000` in a browser. Log in with `admin` / `Grafana_ChangeMe`.
+1. Open `http://localhost:10118` in a browser. Log in with `admin` / `Grafana_ChangeMe`.
 2. Navigate to **Configuration** → **Data Sources** → **Add data source**.
 3. Select **Prometheus**. Set URL to `http://prometheus:9090`. Click **Save & Test**.
 4. Navigate to **Dashboards** → **Import**.
@@ -2479,11 +2480,11 @@ If you deployed Alertmanager:
 
 ```bash
 # Check Alertmanager UI
-curl -s http://localhost:9093/-/healthy
+curl -s http://localhost:10119/-/healthy
 # Expected: OK
 
 # Trigger a test alert
-curl -s -XPOST http://localhost:9093/api/v1/alerts \
+curl -s -XPOST http://localhost:10119/api/v1/alerts \
   -H 'Content-Type: application/json' \
   -d '[{"labels":{"alertname":"TestAlert","severity":"warning"},"annotations":{"summary":"Test alert from lab"}}]'
 ```

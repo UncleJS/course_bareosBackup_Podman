@@ -371,7 +371,7 @@ echo "status director" | bconsole
 
 Once connected:
 ```
-Connecting to Director localhost:9101
+Connecting to Director localhost:10111
 1000 OK: bareos-dir Version: 24.0.0 (01 Jan 2025)
 Enter a period to cancel a command.
 *                           ← the bconsole prompt
@@ -418,7 +418,7 @@ In keeping with the Podman-first approach of this course, the WebUI is deployed 
 docker.io/bareos/bareos-webui:24
 ```
 
-It embeds Apache + PHP-FPM and exposes port 80 inside the container, which is mapped to `127.0.0.1:9100` on the host. An optional nginx reverse proxy in front adds HTTPS for remote access.
+It embeds Apache + PHP-FPM and exposes port 80 inside the container, which is mapped to `127.0.0.1:10110` on the host (the course's host ports come from its registered range 10110-10119). An optional nginx reverse proxy in front adds HTTPS for remote access.
 
 The WebUI requires:
 1. A `Console` resource in the Director config with a dedicated password and the `webui-admin` profile.

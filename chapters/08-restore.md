@@ -196,7 +196,7 @@ The file-tree browser is powered by the **Bvfs (Bareos Virtual Filesystem) cache
 
 ### Navigating the File Tree
 
-1. Log in to the WebUI at `http://localhost:9100/bareos-webui`
+1. Log in to the WebUI at `http://localhost:10110/bareos-webui`
 2. Go to **Restore** in the left sidebar
 3. Select the **Client** to restore from (e.g., `bareos-fd`)
 4. Select the **Backup Job** or a point-in-time — the WebUI shows the most recent available backup
@@ -761,7 +761,7 @@ EOF
 
 **Restore Option B — WebUI browser:**
 
-1. Open `http://localhost:9100/bareos-webui` → **Restore**
+1. Open `http://localhost:10110/bareos-webui` → **Restore**
 2. Select client `bareos-fd`, choose the most recent Full backup
 3. Navigate to `/hostfs/tmp/restore-lab-source` and tick the directory checkbox
 4. Click **Restore**, set Restore Location to `/var/tmp/bareos-restores/restore-lab-destination`, Replace = `never`

@@ -505,9 +505,9 @@ The performance overhead of pasta is small for typical backup workloads (a few p
 Because rootless containers use pasta for networking, they can bind to *any* port inside the container. However, to *publish* that port to the host (making it accessible from outside), the host-side port must be above 1024.
 
 **This is not a problem for Bareos:**
-- Port 9101 (Director): host port > 1024 ✓
-- Port 9102 (File Daemon): host port > 1024 ✓
-- Port 9103 (Storage Daemon): host port > 1024 ✓
+- Director (container port 9101): published on host port 10111 > 1024 ✓
+- File Daemon (container port 9102): published on host port 10112 > 1024 ✓
+- Storage Daemon (container port 9103): published on host port 10113 > 1024 ✓
 
 If you needed a port below 1024 (e.g., port 443 for HTTPS), you would need to either:
 - Use a port above 1024 and set up a redirect with firewalld.
@@ -1634,7 +1634,7 @@ In this chapter, you gained a thorough understanding of the rootless Podman secu
 
 **Capabilities:** Rootless containers have capabilities scoped to their user namespace. They cannot affect the host even with `CAP_SYS_ADMIN`. Drop unnecessary capabilities for defense in depth. Granting `CAP_DAC_READ_SEARCH` *inside* a rootless FD container does **not** bypass host DAC for files under `/hostfs` — use a host systemd File Daemon for that pattern ([Chapter 21](./21-host-file-daemon.md)).
 
-**Networking:** Rootless containers use pasta (user-space network stack) instead of kernel bridges. Bareos's ports (9101-9103) are all above 1024, so there are no port-binding restrictions to work around.
+**Networking:** Rootless containers use pasta (user-space network stack) instead of kernel bridges. Bareos's ports (9101-9103) are all above 1024, so there are no port-binding restrictions to work around; the lab publishes them on host ports 10111-10113.
 
 **XDG paths and lingering:** Always set `XDG_RUNTIME_DIR=/run/user/1001` when running commands as the bareos user from root via `sudo`. Enable lingering with `loginctl enable-linger bareos` so containers survive logouts and start at boot.
 

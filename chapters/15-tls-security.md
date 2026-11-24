@@ -677,7 +677,7 @@ Certificates expire (our certificates are valid for 365 days). When you rotate a
 
 ### 9.2 Updated Quadlet Files with TLS Mounts
 
-> **Do not replace the Chapter 6 Quadlet units wholesale.** Keep the drop-in config mounts (`bareos-dir.d`, `bareos-sd.d`, named volumes, scripts, `/hostfs`, restore staging) and **add** the TLS certificate `Volume=` lines below. Keep localhost publishes (`127.0.0.1:9101`, `127.0.0.1:9103`, `127.0.0.1:9102`) until you intentionally expose daemons on the LAN.
+> **Do not replace the Chapter 6 Quadlet units wholesale.** Keep the drop-in config mounts (`bareos-dir.d`, `bareos-sd.d`, named volumes, scripts, `/hostfs`, restore staging) and **add** the TLS certificate `Volume=` lines below. Keep localhost publishes (`127.0.0.1:10111`, `127.0.0.1:10113`, `127.0.0.1:10112`) until you intentionally expose daemons on the LAN. Host ports come from the course's registered range 10110-10119; inside the containers Bareos keeps its default ports 9101-9103.
 
 #### Director Container (TLS additions on the Chapter 6 unit)
 
@@ -690,7 +690,7 @@ Volume=/home/bareos/.config/bareos/tls/certs/director.pem:/etc/bareos/tls/direct
 Volume=/home/bareos/.config/bareos/tls/private/director.key:/etc/bareos/tls/director.key:ro,Z
 Volume=/home/bareos/.config/bareos/tls/dh2048.pem:/etc/bareos/tls/dh2048.pem:ro,z
 # Keep Chapter 6 publish binding:
-PublishPort=127.0.0.1:9101:9101
+PublishPort=127.0.0.1:10111:9101
 ```
 
 #### Storage Daemon Container (TLS additions)
@@ -702,7 +702,7 @@ Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,z
 Volume=/home/bareos/.config/bareos/tls/certs/storage.pem:/etc/bareos/tls/storage.pem:ro,Z
 Volume=/home/bareos/.config/bareos/tls/private/storage.key:/etc/bareos/tls/storage.key:ro,Z
 Volume=/home/bareos/.config/bareos/tls/dh2048.pem:/etc/bareos/tls/dh2048.pem:ro,z
-PublishPort=127.0.0.1:9103:9103
+PublishPort=127.0.0.1:10113:9103
 ```
 
 #### File Daemon Container (TLS additions)
@@ -713,7 +713,7 @@ PublishPort=127.0.0.1:9103:9103
 Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,z
 Volume=/home/bareos/.config/bareos/tls/certs/client.pem:/etc/bareos/tls/client.pem:ro,Z
 Volume=/home/bareos/.config/bareos/tls/private/client.key:/etc/bareos/tls/client.key:ro,Z
-PublishPort=127.0.0.1:9102:9102
+PublishPort=127.0.0.1:10112:9102
 ```
 
 ### 9.3 Reload Systemd to Apply Quadlet Changes
@@ -942,7 +942,7 @@ The File Daemon opens an **outbound** TLS connection to the Storage Daemon when 
 1. **Director `Storage` resource** — TLS client settings the Director tells the FD to use when contacting the SD (see Section 10).
 2. **Storage Daemon listener** — TLS server settings in Section 11 (`TLS Enable` / `TLS Require` / certificates on the SD).
 
-The stock File Daemon does **not** need a separate `Storage { }` TLS stanza for the data channel when the Director passes the connection parameters. After enabling TLS on the Director Storage resource and on the SD, run a Full job and confirm the job log shows a successful connection to the SD with no TLS handshake errors. If you only enable TLS on DIR↔FD and forget the Storage/SD side, backup **metadata** paths are encrypted while the **data** path may still fail or remain misconfigured — always verify with a real job, not only `openssl s_client` against 9102.
+The stock File Daemon does **not** need a separate `Storage { }` TLS stanza for the data channel when the Director passes the connection parameters. After enabling TLS on the Director Storage resource and on the SD, run a Full job and confirm the job log shows a successful connection to the SD with no TLS handshake errors. If you only enable TLS on DIR↔FD and forget the Storage/SD side, backup **metadata** paths are encrypted while the **data** path may still fail or remain misconfigured — always verify with a real job, not only `openssl s_client` against `localhost:10112`.
 
 ---
 
@@ -1041,7 +1041,7 @@ A *failed* handshake, by contrast, would read `TLS negotiation failed for SD "ba
 
 ### 14.2 Testing with openssl s_client
 
-`openssl s_client` is the definitive tool for testing TLS connections. It acts as a TLS client and shows the full certificate chain and negotiated cipher suite.
+`openssl s_client` is the definitive tool for testing TLS connections. It acts as a TLS client and shows the full certificate chain and negotiated cipher suite. From the host, connect to the published ports (Director `10111`, Storage Daemon `10113`, File Daemon `10112`); the port numbers in the headings below are the Bareos defaults used inside the containers.
 
 #### Test the Director (port 9101)
 
@@ -1053,7 +1053,7 @@ TLS_DIR="/home/bareos/.config/bareos/tls"
 # Note: Bareos uses a custom protocol on top of TLS,
 # so the connection will hang after the handshake — that is normal
 openssl s_client \
-    -connect localhost:9101 \
+    -connect localhost:10111 \
     -CAfile "${TLS_DIR}/certs/ca.pem" \
     -cert "${TLS_DIR}/certs/console.pem" \
     -key "${TLS_DIR}/private/console.key" \
@@ -1089,7 +1089,7 @@ If you see `Verify return code: 0 (ok)`, the certificate chain is valid. If you 
 TLS_DIR="/home/bareos/.config/bareos/tls"
 
 openssl s_client \
-    -connect localhost:9103 \
+    -connect localhost:10113 \
     -CAfile "${TLS_DIR}/certs/ca.pem" \
     -cert "${TLS_DIR}/certs/director.pem" \
     -key "${TLS_DIR}/private/director.key" \
@@ -1103,7 +1103,7 @@ openssl s_client \
 TLS_DIR="/home/bareos/.config/bareos/tls"
 
 openssl s_client \
-    -connect localhost:9102 \
+    -connect localhost:10112 \
     -CAfile "${TLS_DIR}/certs/ca.pem" \
     -cert "${TLS_DIR}/certs/director.pem" \
     -key "${TLS_DIR}/private/director.key" \
@@ -1121,7 +1121,7 @@ This test connects with `s_client` but offers **neither** a client certificate *
 ```bash
 # Attempt connection with no client cert and no PSK
 openssl s_client \
-    -connect localhost:9101 \
+    -connect localhost:10111 \
     -CAfile "${TLS_DIR}/certs/ca.pem" \
     </dev/null 2>&1 | grep -E "error|alert|handshake"
 
@@ -1246,7 +1246,7 @@ journalctl --user -u bareos-fd.service -n 20
 TLS_DIR="/home/bareos/.config/bareos/tls"
 
 openssl s_client \
-    -connect localhost:9102 \
+    -connect localhost:10112 \
     -CAfile "${TLS_DIR}/certs/ca.pem" \
     </dev/null 2>&1 | grep "Not After"
 
@@ -1527,7 +1527,7 @@ ls -laZ /home/bareos/.config/bareos/tls/certs/ca.pem
 
 **Step 2: Add TLS mounts to the existing Director Quadlet (do not replace Chapter 6)**
 
-Edit `/home/bareos/.config/containers/systemd/bareos-director.container` and **append** these `Volume=` lines under `[Container]` (keep `Volume=/etc/bareos/bareos-dir.d:...`, env files, `PublishPort=127.0.0.1:9101:9101`, and service deps):
+Edit `/home/bareos/.config/containers/systemd/bareos-director.container` and **append** these `Volume=` lines under `[Container]` (keep `Volume=/etc/bareos/bareos-dir.d:...`, env files, `PublishPort=127.0.0.1:10111:9101`, and service deps):
 
 ```ini
 Volume=/home/bareos/.config/bareos/tls/certs/ca.pem:/etc/bareos/tls/ca.pem:ro,z
@@ -1538,7 +1538,7 @@ Volume=/home/bareos/.config/bareos/tls/certs/console.pem:/etc/bareos/tls/console
 Volume=/home/bareos/.config/bareos/tls/private/console.key:/etc/bareos/tls/console.key:ro,Z
 ```
 
-Repeat the same pattern for `bareos-storage.container` and `bareos-fd.container` using the certificate paths from Section 9 (storage/client key+cert + shared `ca.pem` / `dh2048.pem`). Keep `PublishPort=127.0.0.1:9103:9103` and `127.0.0.1:9102:9102`.
+Repeat the same pattern for `bareos-storage.container` and `bareos-fd.container` using the certificate paths from Section 9 (storage/client key+cert + shared `ca.pem` / `dh2048.pem`). Keep `PublishPort=127.0.0.1:10113:9103` and `127.0.0.1:10112:9102`.
 
 **Step 3: Enable TLS in the Director drop-in (Chapter 6 layout)**
 
@@ -1619,27 +1619,27 @@ The job should complete with status `T` (Terminated OK). Any TLS handshake failu
 ```bash
 TLS_DIR="/home/bareos/.config/bareos/tls"
 
-echo "=== Testing Director (port 9101) ==="
+echo "=== Testing Director (host port 10111) ==="
 openssl s_client \
-    -connect localhost:9101 \
+    -connect localhost:10111 \
     -CAfile "${TLS_DIR}/certs/ca.pem" \
     -cert "${TLS_DIR}/certs/console.pem" \
     -key "${TLS_DIR}/private/console.key" \
     </dev/null 2>&1 | grep -E "subject|issuer|Cipher|Protocol|Verify return"
 
 echo ""
-echo "=== Testing Storage Daemon (port 9103) ==="
+echo "=== Testing Storage Daemon (host port 10113) ==="
 openssl s_client \
-    -connect localhost:9103 \
+    -connect localhost:10113 \
     -CAfile "${TLS_DIR}/certs/ca.pem" \
     -cert "${TLS_DIR}/certs/director.pem" \
     -key "${TLS_DIR}/private/director.key" \
     </dev/null 2>&1 | grep -E "subject|issuer|Cipher|Protocol|Verify return"
 
 echo ""
-echo "=== Testing File Daemon (port 9102) ==="
+echo "=== Testing File Daemon (host port 10112) ==="
 openssl s_client \
-    -connect localhost:9102 \
+    -connect localhost:10112 \
     -CAfile "${TLS_DIR}/certs/ca.pem" \
     -cert "${TLS_DIR}/certs/director.pem" \
     -key "${TLS_DIR}/private/director.key" \
@@ -1736,7 +1736,7 @@ TLS_DIR="/home/bareos/.config/bareos/tls"
 # The new certificate's 'Not After' date should be about one year from
 # the moment you generated it (it was signed with -days 365)
 openssl s_client \
-    -connect localhost:9102 \
+    -connect localhost:10112 \
     -CAfile "${TLS_DIR}/certs/ca.pem" \
     </dev/null 2>&1 | grep -E "CN|Not After|Verify return"
 

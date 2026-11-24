@@ -188,8 +188,8 @@ Volume=bareos-db-data:/var/lib/mysql
 # Environment file for secrets (mode 600, never committed to git)
 EnvironmentFile=/home/bareos/.config/bareos/db.env
 
-# The database listens on the default MariaDB port
-PublishPort=127.0.0.1:3306:3306
+# The database listens on the default MariaDB port 3306 on bareos.network only.
+# No PublishPort: the catalog is never published on the host.
 
 [Service]
 Restart=always

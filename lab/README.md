@@ -39,7 +39,7 @@ sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 systemctl --user daemon-reload
 
 ## Canonical names
 
-See README **Canonical Lab Stack Vocabulary**: network `bareos` (`10.89.10.0/24`), containers `bareos-db` / `bareos-storage` / `bareos-director` / `bareos-fd` / `bareos-webui`, localhost publishes `9101`–`9103` and `9100`.
+See README **Canonical Lab Stack Vocabulary**: network `bareos` (`10.89.10.0/24`), containers `bareos-db` / `bareos-storage` / `bareos-director` / `bareos-fd` / `bareos-webui`, localhost publishes `127.0.0.1:10111` (Director), `10112` (FD), `10113` (SD) and `10110` (WebUI) from the course range 10110-10119; inside the containers Bareos keeps 9101-9103 and the WebUI 80. The catalog (`bareos-db:3306`) is never published.
 
 ## Remote multi-client note
 

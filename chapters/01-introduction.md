@@ -257,7 +257,7 @@ By the end of this course, you will have built and understood every component of
 │  │  └──────┬───────┘  └──────────────┘                               │  │
 │  │         │  ▲                        ┌──────────────────────────┐  │  │
 │  │         │  │ port 9101              │   Bareos WebUI           │  │  │
-│  │         │  └────────────────────────┤   (port 80→host:9100)    │  │  │
+│  │         │  └────────────────────────┤   (port 80→host:10110)    │  │  │
 │  │         │                           │   Browser interface      │  │  │
 │  │         │  TCP 9102                 └──────────────────────────┘  │  │
 │  │         ▼                                                          │  │
@@ -272,7 +272,7 @@ By the end of this course, you will have built and understood every component of
 │  │  (volume: app-data) │  (volume: db-data)  │  (volume: app2-data)  │   │
 │  └───────────────────────────────────────────────────────────────────┘   │
 │                                                                          │
-│  Your browser → http://localhost:9100 → WebUI → Director (port 9101)     │
+│  Your browser → http://localhost:10110 → WebUI → Director (port 9101)    │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -281,7 +281,7 @@ You will be able to:
 - Back up Podman container volumes safely, with pre/post hooks
 - Dump MariaDB and PostgreSQL databases inside containers before backing them up
 - Monitor job outcomes and receive email alerts on failures
-- **Use the Bareos WebUI** to monitor jobs, browse backup history, and run restores from a browser at `http://localhost:9100`
+- **Use the Bareos WebUI** to monitor jobs, browse backup history, and run restores from a browser at `http://localhost:10110`
 - Perform a complete restore — including to a different path or client
 - Recover from a catastrophic failure (lost Director host)
 - Tune performance for large datasets
@@ -309,7 +309,7 @@ Before diving in, establish this vocabulary. These terms appear throughout the c
 | **Schedule** | A timed trigger that causes the Director to run Jobs automatically. |
 | **Retention** | How long Bareos keeps backup data before it is eligible for pruning/overwriting. |
 | **bconsole** | The Bareos command-line console — the primary operator interface to the Director. |
-| **Bareos WebUI** | A web-based graphical interface for Bareos. Runs as a Podman container (port 9100). Used for job monitoring, restore operations, and pool/volume management. Deployed in Chapter 6. |
+| **Bareos WebUI** | A web-based graphical interface for Bareos. Runs as a Podman container (host port 10110). Used for job monitoring, restore operations, and pool/volume management. Deployed in Chapter 6. |
 | **Quadlet** | A systemd-native mechanism for managing Podman containers as systemd units via declarative `.container` files. |
 | **Rootless Podman** | Running Podman containers under a non-root user account. Containers cannot gain root privileges on the host. |
 | **SELinux** | Security-Enhanced Linux — mandatory access control built into RHEL. Always enforcing in this course. |

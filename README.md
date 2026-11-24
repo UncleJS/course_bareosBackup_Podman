@@ -17,7 +17,10 @@
 5. [Chapter Summary Table](#chapter-summary-table)
 6. [Quick Reference](#quick-reference)
 7. [Key Concepts Glossary](#key-concepts-glossary)
-8. [Lab Assets](#lab-assets)
+8. [Recommended Learning Path](#recommended-learning-path)
+9. [Lab Assets](#lab-assets)
+10. [Local Test Pod (scripts/)](#local-test-pod-scripts)
+11. [Container Image Reference](#container-image-reference)
 
 ---
 
@@ -187,30 +190,47 @@ Named Podman volume data is stored at:
 
 ### Network Layout
 
+```mermaid
+flowchart TB
+  subgraph host["RHEL 10 host (lab machine)"]
+    browser["Browser / bconsole on the host"]
+    subgraph ns["bareos user namespace (rootless Podman), network bareos 10.89.10.0/24"]
+      dir["bareos-director<br/>Director :9101"]
+      db["bareos-db<br/>MariaDB :3306<br/>(never published)"]
+      sd["bareos-storage<br/>Storage Daemon :9103"]
+      fd["bareos-fd<br/>File Daemon :9102"]
+      webui["bareos-webui<br/>Apache :80"]
+    end
+    storage[("/srv/bareos-storage/volumes<br/>(backup data)")]
+    secrets[("/home/bareos/.config/bareos/<br/>(secrets/env files)")]
+  end
+  dir <--> db
+  dir --> sd
+  dir --> fd
+  fd --> sd
+  webui --> dir
+  sd --> storage
+  browser -- "127.0.0.1:10110" --> webui
+  browser -- "127.0.0.1:10111" --> dir
+  browser -. "127.0.0.1:10112" .-> fd
+  browser -. "127.0.0.1:10113" .-> sd
 ```
-┌─────────────────────────────────────────────────────────┐
-│  RHEL 10 Host (lab machine)                             │
-│                                                         │
-│  ┌──────────────────────────────────────────────┐      │
-│  │  bareos user namespace (rootless Podman)     │      │
-│  │                                              │      │
-│  │  ┌───────────────┐   ┌──────────────┐        │      │
-│  │  │ bareos-director│   │  bareos-db   │        │      │
-│  │  │ Director       │◄─►│  MariaDB     │        │      │
-│  │  │ :9101          │   │  :3306       │        │      │
-│  │  └──────┬────────┘    └──────────────┘        │      │
-│  │         │                                     │      │
-│  │  ┌──────▼────────┐    ┌──────────────┐        │      │
-│  │  │ bareos-storage│    │  bareos-fd   │        │      │
-│  │  │ Storage        │   │  File Daemon │        │      │
-│  │  │ :9103          │   │  :9102       │        │      │
-│  │  └───────────────┘    └──────────────┘        │      │
-│  └──────────────────────────────────────────────┘      │
-│                                                         │
-│  /srv/bareos-storage/volumes  (backup data)             │
-│  /home/bareos/.config/bareos/ (secrets/env files)       │
-└─────────────────────────────────────────────────────────┘
-```
+
+Host ports come from the course's registered range **10110-10119** and are bound to `127.0.0.1` only. Inside the containers Bareos keeps its default ports (9101-9103, WebUI on 80); containers reach each other by name on the `bareos` network. The MariaDB catalog (3306) is never published on the host.
+
+| Service | Host port (`127.0.0.1`) | Container port |
+|---|---|---|
+| Bareos WebUI | 10110 | 80 |
+| Director | 10111 | 9101 |
+| File Daemon | 10112 | 9102 |
+| Storage Daemon | 10113 | 9103 |
+| Archive Storage Daemon (Chapter 16) | 10114 | 9103 |
+| Restore-target File Daemon (Chapter 11) | 10115 | 9102 |
+| bareos-exporter (Chapter 17) | 10116 | 9625 |
+| Prometheus (Chapter 17) | 10117 | 9090 |
+| Grafana (Chapter 17) | 10118 | 3000 |
+| Alertmanager (Chapter 17) | 10119 | 9093 |
+| MariaDB catalog | not published | 3306 |
 
 ### Secrets and Credentials
 
@@ -241,7 +261,7 @@ Chapter 6 is the source of truth. Later chapters must reuse these names unless t
 | Primary FileSet | `RHEL10-Standard` |
 | Director Storage resource | `File` (device `FileStorage`) |
 | Env password vars | `BAREOS_DIRECTOR_PASSWORD`, `BAREOS_FD_PASSWORD`, `BAREOS_SD_PASSWORD` in `bareos.env` |
-| Published ports (lab) | `127.0.0.1:9101`, `127.0.0.1:9102`, `127.0.0.1:9103`, `127.0.0.1:9100` (WebUI) |
+| Published ports (lab) | `127.0.0.1:10111` (Director), `127.0.0.1:10112` (FD), `127.0.0.1:10113` (SD), `127.0.0.1:10110` (WebUI); range 10110-10119, catalog not published |
 | Host FileSet prefix | `/hostfs/...` |
 | Test restore `Where` | `/var/tmp/bareos-restores` (writable bind-mount; `/hostfs` is read-only) |
 
@@ -604,6 +624,43 @@ If you are looking for help with a specific problem, go directly to [Chapter 20:
 ## Lab Assets
 
 Reusable Quadlet units, env templates (no secrets), and helper scripts live under [`lab/`](lab/). Chapters remain the source of truth for procedure and narrative; use `lab/` to reduce copy-paste errors when deploying the Chapter 6 stack. See [`lab/README.md`](lab/README.md).
+
+---
+
+## Local Test Pod (scripts/)
+
+The repo root also has a self-contained test stack that runs the whole Bareos lab in **one rootless Podman pod** on any host with Podman and a systemd user session, without the `bareos` user, host bind mounts or host RPMs. It is used to check that the course's ports and daemons work; the chapters' Chapter 6 stack under `lab/` stays the course procedure.
+
+- Image `localhost/bareos-lab:latest`, built from [`container/Containerfile`](container/Containerfile) (Debian 12 + Bareos community packages: Director, Storage Daemon, File Daemon, WebUI, bconsole).
+- Catalog: `postgres:17` in the same pod. Bareos 21 and later ship only the PostgreSQL catalog backend, so the test pod cannot use MariaDB. The catalog port 5432 is never published.
+- Quadlet units in [`quadlet/`](quadlet/): `bareos-lab.pod`, one `.container` per daemon, named `.volume` units for the catalog, config, working directory and backup volumes. Passwords are Podman secrets created by `install.sh`.
+- Host ports, all bound to `127.0.0.1`, defined once in [`scripts/common.sh`](scripts/common.sh) (registered range `PORT_RANGE=10110-10119`):
+
+| Service | Host port | Container port |
+|---|---|---|
+| WebUI (`http://127.0.0.1:10110/bareos-webui/`) | 10110 | 80 |
+| Director | 10111 | 9101 |
+| File Daemon | 10112 | 9102 |
+| Storage Daemon | 10113 | 9103 |
+
+| Script | Does |
+|---|---|
+| `scripts/install.sh` | Checks rootless Podman and the systemd user session, builds the image, creates the secrets, renders `quadlet/*` into `~/.config/containers/systemd/`, runs `daemon-reload`. |
+| `scripts/build.sh` | Builds or rebuilds `localhost/bareos-lab:latest`. |
+| `scripts/start.sh` | Starts the pod and daemons, waits for the Director and WebUI, prints the URLs and how to read the WebUI `admin` password. |
+| `scripts/stop.sh` | Stops the pod and daemons. |
+| `scripts/restart.sh` | Runs `stop.sh`, then `start.sh`. |
+| `scripts/uninstall.sh` | Stops and removes the pod, containers, built image, unused base images, build cache, networks and secrets, then checks for leftovers. `--purge` also removes the volumes; `--remove-quadlets` also removes the units. Without the flags both are kept. |
+
+```bash
+scripts/install.sh
+scripts/start.sh
+podman exec -it bareos-lab-director bconsole    # status director, run job=backup-bareos-fd
+podman secret inspect --showsecret --format '{{.SecretData}}' bareos-lab-admin-password
+scripts/uninstall.sh --purge --remove-quadlets
+```
+
+Parallel instances: with `JOB=<slug> PORT_OFFSET=<n>`, every name gets the suffix `-<slug>` and every host port is shifted by `<n>` (for example `JOB=test PORT_OFFSET=1000` publishes 11110-11113), so an instance never collides with the main one. `uninstall.sh` with `JOB` set removes only that instance.
 
 ---
 

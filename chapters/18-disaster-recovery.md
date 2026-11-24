@@ -949,8 +949,9 @@ EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 # Connect to the bareos network so it can reach bareos-db by hostname
 Network=bareos.network
 
-# bconsole port — exposed on localhost only for security
-PublishPort=127.0.0.1:9101:9101
+# bconsole port — exposed on localhost only for security (host 10111 -> container 9101;
+# host ports come from the course's registered range 10110-10119)
+PublishPort=127.0.0.1:10111:9101
 
 [Service]
 Restart=always
@@ -985,10 +986,10 @@ Volume=/srv/bareos-storage/volumes:/var/lib/bareos/storage:z
 Network=bareos.network
 
 # Storage Daemon port — localhost-only until TLS (Chapter 15). For a same-host
-# hybrid FD (Chapter 21), 127.0.0.1:9103 is reachable from the host. Remote FDs
-# need a wider PublishPort and firewall rules — do not expose 9103 on all
+# hybrid FD (Chapter 21), 127.0.0.1:10113 is reachable from the host. Remote FDs
+# need a wider PublishPort and firewall rules — do not expose the SD on all
 # interfaces before TLS is configured.
-PublishPort=127.0.0.1:9103:9103
+PublishPort=127.0.0.1:10113:9103
 
 [Service]
 Restart=always
@@ -1035,8 +1036,8 @@ EnvironmentFile=/home/bareos/.config/bareos/bareos.env
 
 Network=bareos.network
 
-# File Daemon port — Director connects inbound on 9102
-PublishPort=127.0.0.1:9102:9102
+# File Daemon port — Director connects inbound on 9102 (published on host port 10112)
+PublishPort=127.0.0.1:10112:9102
 
 [Service]
 Restart=always
@@ -1061,7 +1062,7 @@ ContainerName=bareos-webui
 Volume=bareos-webui-config.volume:/etc/bareos-webui
 
 # Bind to loopback only; use nginx for HTTPS remote access (see Chapter 17)
-PublishPort=127.0.0.1:9100:80
+PublishPort=127.0.0.1:10110:80
 
 Network=bareos.network
 
@@ -1186,7 +1187,7 @@ sudo -u bareos bash -c '
 # *quit to exit.
 
 # 4. Verify the WebUI is accessible
-curl -sI http://localhost:9100/ | head -3
+curl -sI http://localhost:10110/ | head -3
 # Expected: HTTP/1.1 200 OK  or  302 Found (redirect to /bareos-webui/auth/login)
 # If the WebUI is not responding, check its logs:
 sudo -u bareos XDG_RUNTIME_DIR=/run/user/1001 \
